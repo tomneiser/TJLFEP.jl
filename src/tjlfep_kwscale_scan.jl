@@ -66,7 +66,7 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
     kyhat = fill(NaN, nkyhat)
 
     ikyhat_write = floor(Int, nkyhat/2) # 2
-    #println(ikyhat_write)
+    # println(ikyhat_write)
     iefwid_write = floor(Int, nefwid/2) # 5
     ifactor_write = nfactor # 10
     f_guess_mark = 1.0E20

@@ -29,7 +29,8 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     #println("GradBFactor:")
     #println(inputTJLF.GRADB_FACTOR)
 
-    inputTJLF.USE_TRANSPORT_MODEL = false # single-ky path: bypasses full spectral transport model
+    # inputTJLF.USE_TRANSPORT_MODEL = false # single-ky path: bypasses full spectral transport model
+    inputTJLF.USE_TRANSPORT_MODEL = true
     #println(inputTJLF.USE_TRANSPORT_MODEL)
     if (inputsEP.PROCESS_IN == 0)
         # See TGLF-EP if needed.

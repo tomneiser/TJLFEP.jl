@@ -475,11 +475,20 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
         # Allotting Ir_exp not from profile.
         Options.IR_EXP = fill(0, Options.SCAN_N)
         for i = 1:Options.SCAN_N
-            if (Options.SCAN_N != 1)
-                jr_exp = profile.IRS + floor((i-1)*(profile.NR-profile.IRS)/(Options.SCAN_N-1))
-            else
-                jr_exp = profile.IRS
-            end
+            # if (Options.SCAN_N != 1)
+                # jr_exp = profile.IRS + floor((i-1)*(profile.NR-profile.IRS)/(Options.SCAN_N-1))
+                # if (i == 1)
+                #     jr_exp = 11.0
+                # end
+                # println("type jr_exp ", typeof(jr_exp))
+                # if (i == Options.SCAN_N)
+                    # jr_exp = 99.0
+                # end
+            # else
+                # jr_exp = profile.IRS
+            # end
+            jr_exp = argmin(abs.(extraEP["grid"] .- rho[i]))
+            println("i = ", i, " jr_exp = ", jr_exp)
             Options.IR_EXP[i] = jr_exp
         end
 
@@ -533,6 +542,7 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     arrgrowth = fill(fill(NaN,(5, 10, 10, Options.NMODES)), n_ir)
 
     println("arrMTGLF is ", size(arrMTGLF))
+    println("!!!!! n_ir = ", n_ir, " !!!!!")
 
     for i in 1:n_ir
         #try
@@ -552,7 +562,7 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
 
             println("=============================================================")
             println("pre mainsub prints")
-            println("i is ", i)
+            println("i is ", i, " ir is ", ir)
             # println("input2 is ", size(input2))
             println("=============================================================")
 
@@ -564,7 +574,8 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
         #end
     end
 
-    println("arrgrowth is ", size(arrgrowth), arrgrowth)
+    println("CHKPT 1 [dd]: all ", n_ir, " mainsub calls complete")
+    # println("arrgrowth is ", size(arrgrowth), arrgrowth)
 
     # Print out basic information about the run (that is common to all radii):
     Options = arrTGLFEP[1]
@@ -780,27 +791,35 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
                     end # < 9000
                 end # over scan_n
                 dpdr_crit, dpdr_crit_out, ir_dum_1, ir_dum_2, l_accept_profile = tjlfep_complete_output(dpdr_crit, Options, profile)
+                println("CHKPT P1 [dd]: dpdr_crit complete_output returned"); flush(stdout)
                 
                 if (printout)
+                    println("CHKPT P2 [dd]: opening alpha_dpdr_crit.input"); flush(stdout)
                     io5 = open("alpha_dpdr_crit.input", "w")
+                    println("CHKPT P3 [dd]: writing Pressure critical gradient header"); flush(stdout)
                     println(io5, "Pressure critical gradient (10 kPa/m)")
+                    println("CHKPT P4 [dd]: writing dpdr_crit_out vector"); flush(stdout)
                     println(io5, dpdr_crit_out)
+                    println("CHKPT P5 [dd]: closing io5"); flush(stdout)
                     close(io5)
+                    println("CHKPT P6 [dd]: io5 closed"); flush(stdout)
                 end
             end # end prof. method 2
-
+            println("CHKPT P7 [dd]: entering EP density threshold block. IRS=", Options.IRS, " IS=", profile.IS, " size(profile.AS)=", size(profile.AS)); flush(stdout)
             if (printout)
                 println(io3, "--------------------------------------------------------------")
                 println(io3, "The EP density threshold n_EP/n_e (%) for gamma_AE = 0")
                 for i = 1:Options.SCAN_N
+                    println("CHKPT P8 [dd]: i=", i, " index=", Options.IRS+i-1, " IS=", profile.IS); flush(stdout)
                     println(io3, SFmin[i]*profile.AS[Options.IRS+i-1, profile.IS]*100.0) #percent
                 end
             end
-            
+            println("CHKPT P9 [dd]: entering EP beta crit block. size(BETAE)=", size(profile.BETAE), " size(TAUS)=", size(profile.TAUS), " size(KAPPA)=", size(profile.KAPPA)); flush(stdout)
             if (printout)
                 println(io3, "--------------------------------------------------------------")
                 println(io3, "The EP beta crit (%) = beta_e*(n_EP_th/n_e)*(T_EP/T_e)")
                 for i = 1:Options.SCAN_N
+                    println("CHKPT P10 [dd]: beta i=", i, " GEOMETRY_FLAG=", profile.GEOMETRY_FLAG); flush(stdout)
                     if (profile.GEOMETRY_FLAG == 0)
                         println(io3, SFmin[i]*profile.BETAE[Options.IRS+i-1]*100.0*profile.AS[Options.IRS+i-1, profile.IS]*profile.TAUS[Options.IRS+i-1, profile.IS]) #percent
                     else
@@ -808,17 +827,17 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
                     end
                 end
             end
-
+            println("CHKPT P11 [dd]: all output blocks done"); flush(stdout)
             # there is a process_in == 4 addition I won't be doing quite yet.
         else # ThreshFlag != 0
             # Skipping for now as I want to test just threshold flag == 0 first
         end # ThreshFlag
     end # process 4 || 5
-
+    println("CHKPT P12 [dd]: closing io3"); flush(stdout)
     if (printout)
         close(io3)
     end
-
+    println("CHKPT P13 [dd]: returning from runTHD"); flush(stdout)
     return width, kymark_out, SFmin, dpdr_crit_out, dndr_crit_out
 end  # End of struct-based runTHD
 

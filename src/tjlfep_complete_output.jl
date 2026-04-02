@@ -10,6 +10,7 @@ profile_in takes a vector of total ir values and outputs a 201 long vector with 
 """
 function tjlfep_complete_output(profile_in::Vector{T}, inputsEP::Options{Float64}, inputsPR::profile{Float64}) where (T<:Real)
 
+    println("TCHKPT A: entering tjlfep_complete_output. profile_in=", profile_in, " SCAN_N=", inputsEP.SCAN_N, " IRS=", inputsEP.IRS, " NR=", inputsPR.NR)
     # Default accept all scans and allocate profile_out and ir_out:
     l_accept_profile = fill(true, inputsEP.SCAN_N)
     profile_out = fill(0.0, inputsPR.NR)
@@ -93,7 +94,7 @@ function tjlfep_complete_output(profile_in::Vector{T}, inputsEP::Options{Float64
     ir_min = ir_mark[1]
     ir_max = ir_mark[ir_counter_max]
 
-    # For all radii until the first accepted radius, set the values
+    println("TCHKPT B: ir_min=", ir_min, " ir_max=", ir_max, " ir_counter_max=", ir_counter_max, " ir_mark[1]=", ir_mark[1])
     # of the profile to be equal to that radius' profile value.
     for i = 1:ir_mark[1]
         profile_out[i] = profile_out[ir_mark[1]]
@@ -130,5 +131,7 @@ function tjlfep_complete_output(profile_in::Vector{T}, inputsEP::Options{Float64
     # We return the profile_in which is unchanged, the interpolated and altered profile_out,
     # ir_min (radius of minimum accepted scan) and ir_max (radius of max accepted scan),
     # as well as the l_accept_profile for each scan.
+    println("TCHKPT C: tjlfep_complete_output returning. ir_min=", ir_min, " ir_max=", ir_max)
+    flush(stdout)
     return profile_in, profile_out, ir_min, ir_max, l_accept_profile
 end

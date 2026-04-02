@@ -546,7 +546,7 @@ function InputTGLF_EP(
     nef = ne_full[gridpoint_cp]
     dlnnedr_fast = dlnnedr_full[gridpoint_cp]
 
-    println("ne vs nef:", ne, nef)
+    # println("ne vs nef:", ne, nef)
 
     Ze = -1.0
     setproperty!(input_tglf, Symbol("ZS_4"), Ze)
@@ -558,9 +558,9 @@ function InputTGLF_EP(
     setproperty!(input_tglf, Symbol("RLNS_4"), a * dlnnedr_fast)
     setproperty!(input_tglf, Symbol("RLTS_4"), a * dlntedr_fast)
 
-    println("Te 4 is ", size(Te_fast), Te_fast)
-    println("dlntedr 4 is ", size(dlntedr_fast), dlntedr_fast)
-    println("dlnnedr 4 is ", size(dlnnedr_fast), dlnnedr_fast)
+    # println("Te 4 is ", size(Te_fast), Te_fast)
+    # println("dlntedr 4 is ", size(dlntedr_fast), dlntedr_fast)
+    # println("dlnnedr 4 is ", size(dlnnedr_fast), dlnnedr_fast)
 
     # Ion species (2 through NS) - full radial profiles
     for iion in eachindex(ions)
@@ -595,12 +595,12 @@ function InputTGLF_EP(
         ni = ni_full[gridpoint_cp]
         dlnnidr = dlnnidr_full[gridpoint_cp]
 
-        println("ni for $iion is ", size(ni), ni)
+        # println("ni for $iion is ", size(ni), ni)
 
         Zi = IMAS.avgZ(Float64(ions[iion].element[1].z_n), Ti)
 
         # println("Ti for $iion is ", size(Ti), Ti)
-        println("Zi for $iion is ", size(Zi), Zi)
+        # println("Zi for $iion is ", size(Zi), Zi)
 
         setproperty!(input_tglf, Symbol("ZS_$species"), Zi)
         setproperty!(input_tglf, Symbol("MASS_$species"), (ions[iion].element[1].a)[1] * mp / md)
@@ -640,7 +640,7 @@ function InputTGLF_EP(
         ni = ni_full[gridpoint_cp]
         dlnnidr = dlnnidr_full[gridpoint_cp]
 
-        println("ni for fast $fast is ", size(ni), ni)
+        # println("ni for fast $fast is ", size(ni), ni)
 
         Zi = IMAS.avgZ(Float64(ions[iion].element[1].z_n), Ti)
         # Floor at 1 where fast density=0 → Ti=0 → avgZ=0 → ZS=0 → singular matrix
@@ -659,9 +659,9 @@ function InputTGLF_EP(
 
     println("============================================================")
 
-    println("Te 6 is ", ep_species_data["TEMP_6"][gridpoint_cp])
-    println("dlntedr 6 is ", ep_species_data["DLNTDR_6"][gridpoint_cp])
-    println("dlnnedr 6 is ", ep_species_data["DLNNDR_6"][gridpoint_cp])
+    # println("Te 6 is ", ep_species_data["TEMP_6"][gridpoint_cp])
+    # println("dlntedr 6 is ", ep_species_data["DLNTDR_6"][gridpoint_cp])
+    # println("dlnnedr 6 is ", ep_species_data["DLNNDR_6"][gridpoint_cp])
 
     input_tglf.BETAE = 8.0 * pi .* ne .* k .* Te ./ bunit .^ 2
     loglam = 24.0 .- log.(sqrt.(ne) ./ Te)
@@ -810,6 +810,8 @@ function InputTGLF_EP(
     zs_full = hcat([ep_species_data["ZS_$j"] for j in 1:NS]...)
     mass_vec = vcat([getproperty(input_tglf, Symbol("MASS_$j"))[1] for j in 1:NS])
 
+    grid = collect(cp1d.grid.rho_tor_norm)
+    println("grid is ", size(grid), ", ", grid)
 
     # ===== Build extraEP dictionary with FULL radial profiles for TJLFEP =====
     extraEP = merge(ep_species_data, Dict(
@@ -840,7 +842,8 @@ function InputTGLF_EP(
         "ZEFF" => Float64.(cp1d.zeff),
         "N_ION" => ns_full - 4,
         "ZS" => zs_full,
-        "MASS" => mass_vec
+        "MASS" => mass_vec,
+        "grid" => grid
     ))
 
     return input_tglf, extraEP

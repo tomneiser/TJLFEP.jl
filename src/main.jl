@@ -2,15 +2,12 @@ using Revise
 using Pkg
 using Plots
 Pkg.activate("..")
-# println("Post activate, pre instantiate")
-# include("../../TJLF/src/TJLF.jl")
-# println("Post instantiate, pre include")
 include("TJLFEP.jl")
-Pkg.instantiate()
-println("Post include")
+# include("../../TJLF/src/TJLF.jl")
 using .TJLFEP
 using .TJLFEP: convert_input
 using .TJLFEP: revert_input
+# using .TJLF
 using TJLF
 using Base.Threads
 using LinearAlgebra
@@ -21,14 +18,13 @@ begin
     homedirectory = pwd()
 
     
-    tglfepfilepath = homedirectory*"/../tests/tglfep_tests/input.TGLFEP"
-    mtglffilepath = homedirectory*"/../tests/tglfep_tests/input.MTGLF"
-    exprofilepath = homedirectory*"/../tests/tglfep_tests/input.EXPRO"
-
-    # tjlf_ep_input = TJLF_EP_Input(dd)    
+    tglfepfilepath = homedirectory*"/../tests/isEP3v6/input.TGLFEP"
+    mtglffilepath = homedirectory*"/../tests/isEP3v6/input.MTGLF"
+    exprofilepath = homedirectory*"/../tests/isEP3v6/input.EXPRO"  
 
     runTHD(tglfepfilepath, mtglffilepath, exprofilepath, printout = true)
 end
+println("runTHD finished")
 # I will now run runTHDs on two examples:
 #=
 tglfepfilepath1 = homedirectory*"/outputs/tjlfeptests/isEP3v6/input.TGLFEP"

@@ -35,6 +35,7 @@ function readMTGLF(filename::String)
     #Translating MTGLF to usable InputTJLF form:
     inputMTGLF = profile{Float64}(nr, ns)
     irexp::Vector{Int64} = []
+    zs_temp = fill(NaN, ns)  # ZS is per-species in MTGLF file; broadcast to (NR,NS) matrix after reading
     
     for line in lines[1:length(lines)]
         line = split(line, "\n")
@@ -79,7 +80,9 @@ function readMTGLF(filename::String)
             else
                 speciesIndex = line[2]
             end
-            if (speciesField != "IR_EXP")
+            if (speciesField == "ZS")
+                zs_temp[parse(Int, speciesIndex)] = val
+            elseif (speciesField != "IR_EXP")
                 speciesField = Symbol(speciesField)
                 getfield(inputMTGLF, speciesField)[parse(Int,speciesIndex)] = val
             else
@@ -104,6 +107,10 @@ function readMTGLF(filename::String)
                 setfield!(inputMTGLF, field, val)
             end
         end
+    end
+    # Broadcast per-species ZS values to all radial grid points
+    for ir in 1:nr
+        inputMTGLF.ZS[ir, :] = zs_temp
     end
     # That's all for now folks!
     return inputMTGLF, irexp
@@ -502,13 +509,10 @@ function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
     end
 
     # This is one of the only things that is ran to for inputTJLF:
-    inputsEP.FREQ_AE_UPPER = -abs(TJLFEP.exproConst.omegaGAM[ir])
-    # inputsEP.FREQ_AE_UPPER = -abs(InputsPR.omegaGAM[ir])
+    inputsEP.FREQ_AE_UPPER = -abs(inputsPR.omegaGAM[ir])
     if inputsEP.ROTATIONAL_SUPPRESSION_FLAG == 1
-        inputsEP.GAMMA_THRESH_MAX = abs(TJLFEP.exproConst.gammap[ir]) * 2.0 * (min(1.0 - inputsPR.RMIN[ir], inputsPR.RMIN[ir]) / inputsPR.RMAJ[ir])
-        # inputsEP.GAMMA_THRESH_MAX = abs(InputsPR.gammap[ir]) * 2.0 * (min(1.0 - inputsPR.RMIN[ir], inputsPR.RMIN[ir]) / inputsPR.RMAJ[ir])
-        inputsEP.GAMMA_THRESH = 0.15 * abs(TJLFEP.exproConst.gammaE[ir] / inputsPR.SHEAR[ir])   # Bass PoP 2017 flow-shear suppression of AEs
-        # inputsEP.GAMMA_THRESH = 0.15 * abs(InputsPR.gammaE[ir] / inputsPR.SHEAR[ir])   # Bass PoP 2017 flow-shear suppression of AEs
+        inputsEP.GAMMA_THRESH_MAX = abs(inputsPR.gammap[ir]) * 2.0 * (min(1.0 - inputsPR.RMIN[ir], inputsPR.RMIN[ir]) / inputsPR.RMAJ[ir])
+        inputsEP.GAMMA_THRESH = 0.15 * abs(inputsPR.gammaE[ir] / inputsPR.SHEAR[ir])   # Bass PoP 2017 flow-shear suppression of AEs
         inputsEP.GAMMA_THRESH = min(inputsEP.GAMMA_THRESH, inputsEP.GAMMA_THRESH_MAX)
     else
         
