@@ -315,24 +315,18 @@ function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
 
     inputTJLF.NS = inputsPR.NS
     ns = inputsPR.NS
-    # println("ns = ", ns)
-
     is = inputsEP.IS_EP + 1
     inputsPR.IS = is
     ir = inputsEP.IR
-    # println("is = ", is)
-    # println("ir = ", ir)
 
     #TJLF deletes GEOMETRY_FLAG so this is redundant:
     #inputTJLF.GEOMETRY_FLAG = inputsEP.GEOMETRY_FLAG
+
     inputTJLF.ZS = inputsPR.ZS[ir, :]
-    # println("input ZS: ", inputTJLF.ZS)
     inputTJLF.MASS = inputsPR.MASS
-    # println("input MASS: ", inputsPR.MASS)
     inputTJLF.AS = inputsPR.AS[ir, :] # Check read_inputs for these
-    # println("input AS: ", inputsPR.AS[ir, :])
     inputTJLF.TAUS = inputsPR.TAUS[ir, :]
-    # println("input TAUS: ", inputsPR.TAUS[ir, :])
+
     # Prevent 0/0 = NaN in matrix (pol = sum(zs^2 * as/taus)) for zero-density
     # fast species where both AS=0 and TAUS=0. AS=0 already zeroes contribution.
     for i in 1:ns
@@ -509,10 +503,13 @@ function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
     end
 
     # This is one of the only things that is ran to for inputTJLF:
-    inputsEP.FREQ_AE_UPPER = -abs(inputsPR.omegaGAM[ir])
+    # inputsEP.FREQ_AE_UPPER = -abs(inputsPR.omegaGAM[ir])
+    inputsEP.FREQ_AE_UPPER = -abs(TJLFEP.exproConst.omegaGAM[ir])
     if inputsEP.ROTATIONAL_SUPPRESSION_FLAG == 1
-        inputsEP.GAMMA_THRESH_MAX = abs(inputsPR.gammap[ir]) * 2.0 * (min(1.0 - inputsPR.RMIN[ir], inputsPR.RMIN[ir]) / inputsPR.RMAJ[ir])
-        inputsEP.GAMMA_THRESH = 0.15 * abs(inputsPR.gammaE[ir] / inputsPR.SHEAR[ir])   # Bass PoP 2017 flow-shear suppression of AEs
+        # inputsEP.GAMMA_THRESH_MAX = abs(inputsPR.gammap[ir]) * 2.0 * (min(1.0 - inputsPR.RMIN[ir], inputsPR.RMIN[ir]) / inputsPR.RMAJ[ir])
+        inputsEP.GAMMA_THRESH_MAX = abs(TJLFEP.exproConst.gammap[ir]) * 2.0 * (min(1.0 - inputsPR.RMIN[ir], inputsPR.RMIN[ir]) / inputsPR.RMAJ[ir])
+        # inputsEP.GAMMA_THRESH = 0.15 * abs(inputsPR.gammaE[ir] / inputsPR.SHEAR[ir])   # Bass PoP 2017 flow-shear suppression of AEs
+        inputsEP.GAMMA_THRESH = 0.15 * abs(TJLFEP.exproConst.gammaE[ir] / inputsPR.SHEAR[ir])   # Bass PoP 2017 flow-shear suppression of AEs
         inputsEP.GAMMA_THRESH = min(inputsEP.GAMMA_THRESH, inputsEP.GAMMA_THRESH_MAX)
     else
         

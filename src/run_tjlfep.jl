@@ -127,7 +127,7 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
         #end
     end
 
-    # Options = arrTGLFEP[1]
+    Options = arrTGLFEP[1]
     
     kymark_out::Vector{Float64} = fill(NaN, Options.SCAN_N)
     width::Vector{Float64} = fill(NaN, Options.SCAN_N)
@@ -142,7 +142,7 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
         end
     end
 
-    Options = arrTGLFEP[1]
+    # Options = arrTGLFEP[1]
     if (printout)
         io2 = open("out.TGLFEP", "w")
         println(io2, "process_in = ", Options.PROCESS_IN)
