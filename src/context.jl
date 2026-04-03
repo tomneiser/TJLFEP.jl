@@ -425,9 +425,12 @@ function InputTGLF_EP(
         ions = cp1d.ion
     end
 
-    Rmaj = IMAS.interp1d(eq1d.rho_tor_norm, m_to_cm * 0.5 * (eq1d.r_outboard .+ eq1d.r_inboard)).(cp1d.grid.rho_tor_norm)
+    # Rmaj = IMAS.interp1d(eq1d.rho_tor_norm, m_to_cm * 0.5 * (eq1d.r_outboard .+ eq1d.r_inboard)).(cp1d.grid.rho_tor_norm)
+    Rmaj = IMAS.interp1d(eq1d.rho_tor_norm, 0.5 * (eq1d.r_outboard .+ eq1d.r_inboard)).(cp1d.grid.rho_tor_norm)
+
 
     rmin = GACODE.r_min_core_profiles(eqt.profiles_1d, cp1d.grid.rho_tor_norm)
+    rmin = rmin / m_to_cm
 
     q_profile = IMAS.interp1d(eq1d.rho_tor_norm, eq1d.q).(cp1d.grid.rho_tor_norm)
 
@@ -486,6 +489,8 @@ function InputTGLF_EP(
 
     # ===== EP Data: Calculate for ALL radii (TJLFEP needs full profiles) =====
     # Get FULL radial grid (not just selected points)
+    fac = 1e19
+
     nr_full = length(cp1d.grid.rho_tor_norm)
     ns_full = length(ions) + 1 + 3  # +1 for electrons, +3 for ep
     
@@ -496,7 +501,8 @@ function InputTGLF_EP(
     Te_full = cp1d.electrons.temperature
     dlntedr_full = -IMAS.calc_z(rmin, Te_full, :backward)
     
-    ne_full = cp1d.electrons.density_thermal ./ m³_to_cm³
+    # ne_full = cp1d.electrons.density_thermal ./ m³_to_cm³
+    ne_full = cp1d.electrons.density_thermal ./ fac
     dlnnedr_full = -IMAS.calc_z(rmin, ne_full, :backward)
     
     # Store full radial data for TJLFEP
@@ -524,7 +530,8 @@ function InputTGLF_EP(
     setproperty!(input_tglf, Symbol("RLTS_1"), a * dlntedr)
 
     # Full radial profiles for fast electrons
-    ne_full = cp1d.electrons.density_fast ./ m³_to_cm³
+    # ne_full = cp1d.electrons.density_fast ./ m³_to_cm³
+    ne_full = cp1d.electrons.density_fast ./ fac
     fast_zero = ne_full .== 0
     dlnnedr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(ne_full, eps(Float64)), :backward))
 
@@ -546,8 +553,6 @@ function InputTGLF_EP(
     nef = ne_full[gridpoint_cp]
     dlnnedr_fast = dlnnedr_full[gridpoint_cp]
 
-    # println("ne vs nef:", ne, nef)
-
     Ze = -1.0
     setproperty!(input_tglf, Symbol("ZS_4"), Ze)
     setproperty!(input_tglf, Symbol("MASS_4"), me / md)
@@ -558,23 +563,19 @@ function InputTGLF_EP(
     setproperty!(input_tglf, Symbol("RLNS_4"), a * dlnnedr_fast)
     setproperty!(input_tglf, Symbol("RLTS_4"), a * dlntedr_fast)
 
-    # println("Te 4 is ", size(Te_fast), Te_fast)
-    # println("dlntedr 4 is ", size(dlntedr_fast), dlntedr_fast)
-    # println("dlnnedr 4 is ", size(dlnnedr_fast), dlnnedr_fast)
-
     # Ion species (2 through NS) - full radial profiles
     for iion in eachindex(ions)
         species = iion + 1
 
         z_n = ions[iion].element[1].z_n
-        println("============================================================")
 
 
         # Full radial profiles for this ion species
         Ti_full = ions[iion].temperature
         dlntidr_full = -IMAS.calc_z(rmin, Ti_full, :backward)
         
-        ni_full = ions[iion].density_thermal ./ m³_to_cm³
+        # ni_full = ions[iion].density_thermal ./ m³_to_cm³
+        ni_full = ions[iion].density_thermal ./ fac
         dlnnidr_full = -IMAS.calc_z(rmin, ni_full, :backward)
         
         # Store full radial data for TJLFEP
@@ -595,12 +596,7 @@ function InputTGLF_EP(
         ni = ni_full[gridpoint_cp]
         dlnnidr = dlnnidr_full[gridpoint_cp]
 
-        # println("ni for $iion is ", size(ni), ni)
-
         Zi = IMAS.avgZ(Float64(ions[iion].element[1].z_n), Ti)
-
-        # println("Ti for $iion is ", size(Ti), Ti)
-        # println("Zi for $iion is ", size(Zi), Zi)
 
         setproperty!(input_tglf, Symbol("ZS_$species"), Zi)
         setproperty!(input_tglf, Symbol("MASS_$species"), (ions[iion].element[1].a)[1] * mp / md)
@@ -615,7 +611,8 @@ function InputTGLF_EP(
         fast = iion + 1 + 3
 
         # Full radial profiles for this ion species
-        ni_full = ions[iion].density_fast ./ m³_to_cm³
+        # ni_full = ions[iion].density_fast ./ m³_to_cm³
+        ni_full = ions[iion].density_fast ./ fac
         fast_zero = ni_full .== 0
         dlnnidr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(ni_full, eps(Float64)), :backward))
 
@@ -623,7 +620,6 @@ function InputTGLF_EP(
         Ti_full[fast_zero] .= 0.0
         dlntidr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(Ti_full, eps(Float64)), :backward))
         dlntidr_full[fast_zero] .= 0.0
-        # print("Ti for fast $iion is ", size(Ti_full), Ti_full)
         
         # Store full radial data for TJLFEP
         ep_species_data["DENS_$fast"] = ni_full
@@ -640,8 +636,6 @@ function InputTGLF_EP(
         ni = ni_full[gridpoint_cp]
         dlnnidr = dlnnidr_full[gridpoint_cp]
 
-        # println("ni for fast $fast is ", size(ni), ni)
-
         Zi = IMAS.avgZ(Float64(ions[iion].element[1].z_n), Ti)
         # Floor at 1 where fast density=0 → Ti=0 → avgZ=0 → ZS=0 → singular matrix
         Zi = max.(Zi, 1.0)
@@ -656,12 +650,6 @@ function InputTGLF_EP(
         setproperty!(input_tglf, Symbol("RLTS_$fast"), a * dlntidr)
 
     end
-
-    println("============================================================")
-
-    # println("Te 6 is ", ep_species_data["TEMP_6"][gridpoint_cp])
-    # println("dlntedr 6 is ", ep_species_data["DLNTDR_6"][gridpoint_cp])
-    # println("dlnnedr 6 is ", ep_species_data["DLNNDR_6"][gridpoint_cp])
 
     input_tglf.BETAE = 8.0 * pi .* ne .* k .* Te ./ bunit .^ 2
     loglam = 24.0 .- log.(sqrt.(ne) ./ Te)
@@ -811,7 +799,6 @@ function InputTGLF_EP(
     mass_vec = vcat([getproperty(input_tglf, Symbol("MASS_$j"))[1] for j in 1:NS])
 
     grid = collect(cp1d.grid.rho_tor_norm)
-    println("grid is ", size(grid), ", ", grid)
 
     # ===== Build extraEP dictionary with FULL radial profiles for TJLFEP =====
     extraEP = merge(ep_species_data, Dict(

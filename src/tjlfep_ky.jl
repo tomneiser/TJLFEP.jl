@@ -175,9 +175,9 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     end
 
 
-    if (inputsEP.IR == 101 && printout)
+    # if (inputsEP.IR == 101 && printout)
 
-        println("----------")
+        # println("----------")
         
         #println(satParams.y)
         #println(satParams.theta)
@@ -186,7 +186,7 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
         #println("nbasis: ",inputsEP.N_BASIS)
         #println("==========")
 
-    end
+    # end
 
     # This function was translated within TJLF so as to get the wavefunction.
     ms = 128
@@ -250,15 +250,15 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
         theta_2_moment[n] =0.0
         ef_phi_norm = 0.0
 
-        if (inputsEP.IR == 101 && n == 4 && printout)
-            println("wave_max: ", wave_max)
-            println("wave_max_loc: ", wave_max_loc)
-            println("mode: ", n)
-            #println("inputsEP.L_MAX_OUTER_PANEL[n]: ", inputsEP.L_MAX_OUTER_PANEL[n])
-            println("-----")
-            println("wavefunction: ", abs.(wavefunction[n,1,wave_max_loc:wave_max_loc+10]))
-            println("=====")
-        end
+        # if (inputsEP.IR == 101 && n == 4 && printout)
+        #     println("wave_max: ", wave_max)
+        #     println("wave_max_loc: ", wave_max_loc)
+        #     println("mode: ", n)
+        #     #println("inputsEP.L_MAX_OUTER_PANEL[n]: ", inputsEP.L_MAX_OUTER_PANEL[n])
+        #     println("-----")
+        #     println("wavefunction: ", abs.(wavefunction[n,1,wave_max_loc:wave_max_loc+10]))
+        #     println("=====")
+        # end
 
 
         if (n <= nmodes_out)#used to be nmodes_out

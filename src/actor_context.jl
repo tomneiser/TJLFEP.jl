@@ -369,7 +369,6 @@ should be populated from the InputTGLF data via readMTGLF or similar methods.
 function populate_tjlfep_profile!(prof::profile, extraEP::Dict, input::InputTGLFs, nr::Int, ns::Int)
     
     # Copy full radial arrays from extraEP to profile struct
-    println("prof ns is $ns and nr is $nr")
     prof.NS = ns
     prof.NR = nr
     prof.RMIN = extraEP["RMIN"]
@@ -404,10 +403,10 @@ function populate_tjlfep_profile!(prof::profile, extraEP::Dict, input::InputTGLF
     # extraEP["ZS"] should have length >= 4
 
     prof.ZS = extraEP["ZS"]
-    println("prof.ZS: ", prof.ZS)
+    # println("prof.ZS: ", prof.ZS)
     
     prof.MASS = extraEP["MASS"]
-    println("prof.MASS: ", prof.MASS)
+    # println("prof.MASS: ", prof.MASS)
 
     prof.N_ION = extraEP["N_ION"]
     

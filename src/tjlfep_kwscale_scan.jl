@@ -293,13 +293,13 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
             
             #println("Iteration ", i, ", id ", id)
 
-            if (inputsEP.IR == 101 && printout)
-                println("============== Iter: ", i)
+            # if (inputsEP.IR == 101 && printout)
+                # println("============== Iter: ", i)
                 #println("growthrate, l_max_outer_panel_i at: [", ikyhat, ", ", iefwid, ", ", ifactor, "]")
                 #println(growthrate[ikyhat, iefwid, ifactor, :])
                 #println("-----After----")
                 # println(lkeep_i[ikyhat,iefwid,ifactor, :])
-            end
+            # end
             #sds = -1
             #@assert sds != -1 "End"
         end # end of MPI process collection

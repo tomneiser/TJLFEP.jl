@@ -46,10 +46,8 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     # Set up profile struct:
     prof = TJLFEP.readMTGLF(inputMPfile)
     profile = prof[1]
-    println("profile ZS are ", profile.ZS)
-    # println("this is input mtglf",profile)
     ir_exp = prof[2]
-    # println("this is ir_exp",prof[2])
+
     # Set up TGLFEP struct:
     Options = TJLFEP.readTGLFEP(inputEPfile, ir_exp)
 
@@ -66,7 +64,6 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
             dpdr_EP[i] = ni[i]*Ti[i]*(dlnnidr[i]+dlntidr[i])# This has some small changes from old main
         end
         #println(Options.FACTOR)
-        println("ir_exp ",ir_exp)
         dpdr_EP_abs = abs.(dpdr_EP)
         dpdr_EP_max = maximum(dpdr_EP_abs)
         dpdr_EP_max_loc = argmax(dpdr_EP_abs)
@@ -74,8 +71,6 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
         if (Options.PROCESS_IN != 5)
             for ir = 1:Options.SCAN_N
                 Options.FACTOR = Options.FACTOR*dpdr_EP_max/dpdr_EP_abs[ir_exp[ir]] 
-                println("dpdr_EP_abs[ir_exp[ir]]", dpdr_EP_abs[ir_exp[ir]])  
-                println("Options.FACTOR ",Options.FACTOR)
             end
         end
         Options.FACTOR_MAX_PROFILE .= Options.FACTOR
@@ -113,7 +108,6 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     for i in 1:n_ir
         #try
             arrTGLFEP[i].IR = arrTGLFEP[i].IR_EXP[i]
-            #println(arrTGLFEP[i].IR)
             ir = arrTGLFEP[i].IR
             str_r = lpad(string(ir), 3, '0')
             arrTGLFEP[i].SUFFIX = "_r"*str_r
@@ -406,26 +400,6 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
 
     input_tglfep, extraEP = TJLFEP.InputTGLFEP(dd, rho)
 
-    # println("===============================================================")
-    # println("ZS and AS ")
-    # println(input_tglfep.ZS_1)
-    # println(input_tglfep.AS_1)
-    # println(input_tglfep.ZS_2)
-    # println(input_tglfep.AS_2)
-    # println(input_tglfep.ZS_3)
-    # println(input_tglfep.AS_3)
-    # println(input_tglfep.ZS_4)
-    # println(input_tglfep.AS_4)
-    # println(input_tglfep.ZS_5)
-    # println(input_tglfep.AS_5)
-    # println(input_tglfep.ZS_6)
-    # println(input_tglfep.AS_6)
-    # println(input_tglfep.ZS_7)
-    # println(input_tglfep.AS_7)
-    # println("===============================================================")
-
-    # The profile should have 4 species: electrons, ion 1, ion 2, EP
-    # extraEP["NS"] now includes the EP as the 4th species
     prof = TJLFEP.profile{Float64}(extraEP["NR"], extraEP["NS"])
     profile = TJLFEP.populate_tjlfep_profile!(prof, extraEP, input_tglfep, extraEP["NR"], extraEP["NS"])
 
@@ -457,7 +431,6 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     Options.NMODES = OptionsDict["nmodes"]
 
     ns = Options.IS_EP
-    println("ns = ", ns)
     # Set up EXPRO constants:
     ni = extraEP["DENS_$ns"]
     Ti = extraEP["TEMP_$ns"]
@@ -488,7 +461,6 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
                 # jr_exp = profile.IRS
             # end
             jr_exp = argmin(abs.(extraEP["grid"] .- rho[i]))
-            println("i = ", i, " jr_exp = ", jr_exp)
             Options.IR_EXP[i] = jr_exp
         end
 
@@ -497,7 +469,6 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
             dpdr_EP[i] = ni[i]*Ti[i]*(dlnnidr[i]+dlntidr[i])# This has some small changes from old main
         end
         #println(Options.FACTOR)
-        println("ir_exp ",ir_exp)
         dpdr_EP_abs = abs.(dpdr_EP)
         dpdr_EP_max = maximum(dpdr_EP_abs)
         dpdr_EP_max_loc = argmax(dpdr_EP_abs)
@@ -505,8 +476,6 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
         if (Options.PROCESS_IN != 5)
             for ir = 1:Options.SCAN_N
                 Options.FACTOR = Options.FACTOR*dpdr_EP_max/dpdr_EP_abs[ir_exp[ir]] 
-                println("dpdr_EP_abs[ir_exp[ir]]", dpdr_EP_abs[ir_exp[ir]])  
-                println("Options.FACTOR ",Options.FACTOR)
             end
         end
         Options.FACTOR_MAX_PROFILE .= Options.FACTOR
@@ -541,9 +510,6 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     arrMTGLF = fill(profile, n_ir)
     arrgrowth = fill(fill(NaN,(5, 10, 10, Options.NMODES)), n_ir)
 
-    println("arrMTGLF is ", size(arrMTGLF))
-    println("!!!!! n_ir = ", n_ir, " !!!!!")
-
     for i in 1:n_ir
         #try
             arrTGLFEP[i].IR = arrTGLFEP[i].IR_EXP[i]
@@ -574,7 +540,6 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
         #end
     end
 
-    println("CHKPT 1 [dd]: all ", n_ir, " mainsub calls complete")
     # println("arrgrowth is ", size(arrgrowth), arrgrowth)
 
     # Print out basic information about the run (that is common to all radii):
@@ -772,7 +737,7 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
                     close(io4)
                 end
             end
-
+            
             if (Options.INPUT_PROFILE_METHOD == 2)
                 dpdr_crit .= 10000.0
                 dpdr_EP[:] .= ni[:].*Ti[:].*(dlnnidr[:].+dlntidr[:]).*0.16022
@@ -791,35 +756,25 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
                     end # < 9000
                 end # over scan_n
                 dpdr_crit, dpdr_crit_out, ir_dum_1, ir_dum_2, l_accept_profile = tjlfep_complete_output(dpdr_crit, Options, profile)
-                println("CHKPT P1 [dd]: dpdr_crit complete_output returned"); flush(stdout)
                 
                 if (printout)
-                    println("CHKPT P2 [dd]: opening alpha_dpdr_crit.input"); flush(stdout)
                     io5 = open("alpha_dpdr_crit.input", "w")
-                    println("CHKPT P3 [dd]: writing Pressure critical gradient header"); flush(stdout)
                     println(io5, "Pressure critical gradient (10 kPa/m)")
-                    println("CHKPT P4 [dd]: writing dpdr_crit_out vector"); flush(stdout)
                     println(io5, dpdr_crit_out)
-                    println("CHKPT P5 [dd]: closing io5"); flush(stdout)
                     close(io5)
-                    println("CHKPT P6 [dd]: io5 closed"); flush(stdout)
                 end
             end # end prof. method 2
-            println("CHKPT P7 [dd]: entering EP density threshold block. IRS=", Options.IRS, " IS=", profile.IS, " size(profile.AS)=", size(profile.AS)); flush(stdout)
             if (printout)
                 println(io3, "--------------------------------------------------------------")
                 println(io3, "The EP density threshold n_EP/n_e (%) for gamma_AE = 0")
                 for i = 1:Options.SCAN_N
-                    println("CHKPT P8 [dd]: i=", i, " index=", Options.IRS+i-1, " IS=", profile.IS); flush(stdout)
                     println(io3, SFmin[i]*profile.AS[Options.IRS+i-1, profile.IS]*100.0) #percent
                 end
             end
-            println("CHKPT P9 [dd]: entering EP beta crit block. size(BETAE)=", size(profile.BETAE), " size(TAUS)=", size(profile.TAUS), " size(KAPPA)=", size(profile.KAPPA)); flush(stdout)
             if (printout)
                 println(io3, "--------------------------------------------------------------")
                 println(io3, "The EP beta crit (%) = beta_e*(n_EP_th/n_e)*(T_EP/T_e)")
                 for i = 1:Options.SCAN_N
-                    println("CHKPT P10 [dd]: beta i=", i, " GEOMETRY_FLAG=", profile.GEOMETRY_FLAG); flush(stdout)
                     if (profile.GEOMETRY_FLAG == 0)
                         println(io3, SFmin[i]*profile.BETAE[Options.IRS+i-1]*100.0*profile.AS[Options.IRS+i-1, profile.IS]*profile.TAUS[Options.IRS+i-1, profile.IS]) #percent
                     else
@@ -827,17 +782,14 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
                     end
                 end
             end
-            println("CHKPT P11 [dd]: all output blocks done"); flush(stdout)
             # there is a process_in == 4 addition I won't be doing quite yet.
         else # ThreshFlag != 0
             # Skipping for now as I want to test just threshold flag == 0 first
         end # ThreshFlag
     end # process 4 || 5
-    println("CHKPT P12 [dd]: closing io3"); flush(stdout)
     if (printout)
         close(io3)
     end
-    println("CHKPT P13 [dd]: returning from runTHD"); flush(stdout)
     return width, kymark_out, SFmin, dpdr_crit_out, dndr_crit_out
 end  # End of struct-based runTHD
 
