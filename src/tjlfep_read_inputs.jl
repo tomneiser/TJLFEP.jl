@@ -344,7 +344,7 @@ function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
         end
     end
     
-    inputsEP.FACTOR_MAX = 0.5*1.0/(inputTJLF.ZS[is]*inputsPR.AS[ir, is])
+    inputsEP.FACTOR_MAX = 0.5 / abs(inputTJLF.ZS[is]*inputsPR.AS[ir, is])
     if (inputsEP.SCAN_METHOD == 2)
         inputsEP.FACTOR_MAX = 1.0E3
     end
@@ -496,20 +496,19 @@ function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
     elseif (kym == 1)
         inputTJLF.KY = inputsEP.NTOROIDAL*inputTJLF.Q_LOC/inputTJLF.RMIN_LOC*inputsPR.RHO_STAR[ir]
     elseif (kym == 2)
-        inputTJLF.KY = inputsEP.NTOROIDAL*0.1*inputTJLF.ZS[is]/sqrt(inputTJLF.MASS[is]*inputTJLF.TAUS[is])
+        # inputTJLF.KY = inputsEP.NTOROIDAL*0.1*abs(inputTJLF.ZS[is])/sqrt(inputTJLF.MASS[is]*inputTJLF.TAUS[is])
+        inputTJLF.KY = inputsEP.NTOROIDAL*0.1*(inputTJLF.ZS[is])/sqrt(inputTJLF.MASS[is]*inputTJLF.TAUS[is])
     elseif (kym == 3)
         # This depends on a previous definition in kwscale_scan...
-        inputTJLF.KY = inputsEP.KYHAT_IN*inputTJLF.ZS[is]/sqrt(inputTJLF.MASS[is]*inputTJLF.TAUS[is])
+        # inputTJLF.KY = inputsEP.KYHAT_IN*abs(inputTJLF.ZS[is])/sqrt(inputTJLF.MASS[is]*inputTJLF.TAUS[is])
+        inputTJLF.KY = inputsEP.KYHAT_IN*(inputTJLF.ZS[is])/sqrt(inputTJLF.MASS[is]*inputTJLF.TAUS[is])
     end
 
     # This is one of the only things that is ran to for inputTJLF:
-    # inputsEP.FREQ_AE_UPPER = -abs(inputsPR.omegaGAM[ir])
-    inputsEP.FREQ_AE_UPPER = -abs(TJLFEP.exproConst.omegaGAM[ir])
+    inputsEP.FREQ_AE_UPPER = -abs(inputsPR.omegaGAM[ir])
     if inputsEP.ROTATIONAL_SUPPRESSION_FLAG == 1
-        # inputsEP.GAMMA_THRESH_MAX = abs(inputsPR.gammap[ir]) * 2.0 * (min(1.0 - inputsPR.RMIN[ir], inputsPR.RMIN[ir]) / inputsPR.RMAJ[ir])
-        inputsEP.GAMMA_THRESH_MAX = abs(TJLFEP.exproConst.gammap[ir]) * 2.0 * (min(1.0 - inputsPR.RMIN[ir], inputsPR.RMIN[ir]) / inputsPR.RMAJ[ir])
-        # inputsEP.GAMMA_THRESH = 0.15 * abs(inputsPR.gammaE[ir] / inputsPR.SHEAR[ir])   # Bass PoP 2017 flow-shear suppression of AEs
-        inputsEP.GAMMA_THRESH = 0.15 * abs(TJLFEP.exproConst.gammaE[ir] / inputsPR.SHEAR[ir])   # Bass PoP 2017 flow-shear suppression of AEs
+        inputsEP.GAMMA_THRESH_MAX = abs(inputsPR.gammap[ir]) * 2.0 * (min(1.0 - inputsPR.RMIN[ir], inputsPR.RMIN[ir]) / inputsPR.RMAJ[ir])
+        inputsEP.GAMMA_THRESH = 0.15 * abs(inputsPR.gammaE[ir] / inputsPR.SHEAR[ir])   # Bass PoP 2017 flow-shear suppression of AEs
         inputsEP.GAMMA_THRESH = min(inputsEP.GAMMA_THRESH, inputsEP.GAMMA_THRESH_MAX)
     else
         
@@ -637,11 +636,7 @@ function readEXPRO(filename::String, is_EP::Int64)
             omegaGAM[index] = parse(Float64, String(val))
         end
     end
-    # println("gammaE", gammaE)
-    # println("gammap", gammap)
-    # println("omegaGAM", omegaGAM)
-    # println("cs", cs)
-    # println("rmin", rmin_ex)
+
     # Diverge 4 is_EP values for each quatnity:
 
     if (is_EP == 1)

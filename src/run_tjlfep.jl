@@ -54,9 +54,9 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     # Set up EXPRO constants:
     ni, Ti, dlnnidr, dlntidr, cs, rmin_ex, gammaE, gammap, omegaGAM = TJLFEP.readEXPRO(inputEXPfile, Options.IS_EP)
 
-    # profile.gammaE = gammaE
-    # profile.gamm_p = gammap
-    # profile.omegaGAM = omegaGAM
+    profile.gammaE = gammaE
+    profile.gammap = gammap
+    profile.omegaGAM = omegaGAM
 
     dpdr_EP = fill(NaN, profile.NR)
     if (Options.INPUT_PROFILE_METHOD == 2)
@@ -398,7 +398,14 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     gammap = TJLFEP.exproConst.gammap
     # These should be set from the working directory, but these test cases are good for now:
 
-    input_tglfep, extraEP = TJLFEP.InputTGLFEP(dd, rho)
+    input_tglfep, extraEP = TJLFEP.InputTGLFEP(dd, rho; is_ep=OptionsDict["IS_EP"])
+
+    println("printing species masses")
+    for is = 1:extraEP["NS"]
+        println("mass[", is, "] = ", extraEP["MASS"][is])
+    end
+    ep_slot = extraEP["EP_SLOT"]
+    println("EP mass = ", getfield(input_tglfep[1], Symbol("MASS_$ep_slot")))
 
     prof = TJLFEP.profile{Float64}(extraEP["NR"], extraEP["NS"])
     profile = TJLFEP.populate_tjlfep_profile!(prof, extraEP, input_tglfep, extraEP["NR"], extraEP["NS"])
@@ -430,12 +437,17 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     Options.IR_EXP = fill(0, Options.SCAN_N)
     Options.NMODES = OptionsDict["nmodes"]
 
-    ns = Options.IS_EP
-    # Set up EXPRO constants:
-    ni = extraEP["DENS_$ns"]
-    Ti = extraEP["TEMP_$ns"]
-    dlnnidr = extraEP["DLNNDR_$ns"]
-    dlntidr = extraEP["DLNTDR_$ns"]
+    # IS_EP in Options must be N_ION+1 so that IS_EP+1 = ep_slot and j_ion=2:IS_EP = thermal ions only
+    # Options.IS_EP = extraEP["N_ION"] + 1
+
+    # EP species is always at the last slot (NS = N_ION + 2)
+    # ep_slot = extraEP["NS"]
+    ep_slot = extraEP["EP_SLOT"]
+    Options.IS_EP = ep_slot - 1
+    ni = extraEP["DENS_$ep_slot"]
+    Ti = extraEP["TEMP_$ep_slot"]
+    dlnnidr = extraEP["DLNNDR_$ep_slot"]
+    dlntidr = extraEP["DLNTDR_$ep_slot"]
     cs = extraEP["CS"]
     rmin_ex = extraEP["RMIN"]
     gammaE = extraEP["gammaE"]
@@ -513,36 +525,24 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     for i in 1:n_ir
         #try
             arrTGLFEP[i].IR = arrTGLFEP[i].IR_EXP[i]
-            #println(arrTGLFEP[i].IR)
             ir = arrTGLFEP[i].IR
             str_r = lpad(string(ir), 3, '0')
             arrTGLFEP[i].SUFFIX = "_r"*str_r
-
-            # println("size arrTGLFEP", size(arrTGLFEP))
-            # println("size arrTGLFEP[i].FACTOR", size(arrTGLFEP[i].FACTOR))
-            # println("arrTGLFEP[i].FACTOR", arrTGLFEP[i].FACTOR)
 
             arrTGLFEP[i].FACTOR_IN = arrTGLFEP[i].FACTOR[i]
             input1 = arrTGLFEP[i]
             input2 = arrMTGLF[i]
 
             println("=============================================================")
-            println("pre mainsub prints")
+            println("pre mainsub")
             println("i is ", i, " ir is ", ir)
-            # println("input2 is ", size(input2))
             println("=============================================================")
-
-            # println("input1 = inputEP = Options", input1)
-            # println("input2 RLNS = inputPR", input2.RLNS)
 
             arrgrowth[i], arrTGLFEP[i], arrMTGLF[i] = TJLFEP.mainsub(input1, input2, printout)
         #catch
         #end
     end
 
-    # println("arrgrowth is ", size(arrgrowth), arrgrowth)
-
-    # Print out basic information about the run (that is common to all radii):
     Options = arrTGLFEP[1]
     
     kymark_out::Vector{Float64} = fill(NaN, Options.SCAN_N)

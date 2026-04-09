@@ -31,10 +31,6 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
 
     inputTJLF.USE_TRANSPORT_MODEL = false # single-ky path: bypasses full spectral transport model
     # inputTJLF.USE_TRANSPORT_MODEL = true
-    #println(inputTJLF.USE_TRANSPORT_MODEL)
-    if (inputsEP.PROCESS_IN == 0)
-        # See TGLF-EP if needed.
-    end
     
     inputTJLF.KYGRID_MODEL = 0
 
@@ -48,14 +44,10 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     inputTJLF.WIDTH = inputsEP.WIDTH_IN
     inputTJLF.FIND_WIDTH = false
 
-
-
     # Corrections for TJLF specifically: (see main.jl after mainsub call)
 
     inputTJLF.USE_AVE_ION_GRID = false
     inputTJLF.WIDTH_SPECTRUM .= inputTJLF.WIDTH # see tjlf_read_input.jl from TJLF.jl.
-    #println("WIDTH_SPECTRUM: ", inputTJLF.WIDTH_SPECTRUM)
-    #println("WIDTH: ", inputTJLF.WIDTH)
     inputTJLF.FIND_EIGEN = true # in all inputs for tjlf this is set to true
     inputTJLF.RLNP_CUTOFF = 18.0 # in all inputs for tjlf this is set to 18.0
     inputTJLF.BETA_LOC = 0.0 # This one I am very unsure of. Some 0.0, some 1.0. 
@@ -70,14 +62,11 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
 
     if inputTJLF.SAT_RULE == 2 || inputTJLF.SAT_RULE == 3 # From read_input, which is skipped over in this path of running TJLF
         inputTJLF.UNITS = "CGYRO"
-        ### WTF
         inputTJLF.XNU_MODEL = 3
         inputTJLF.WDIA_TRAPPED = 1.0
     end
 
     inputTJLF.KX0_LOC = 0.0
-    #println("inputTJLF: ")
-    #println(typeof(inputTJLF))
 
     convInput = convert_input(inputTJLF, inputTJLF.NS, inputTJLF.NKY)
     # Seed EIGEN_SPECTRUM from cache so KrylovKit can be used instead of full geev!
@@ -85,50 +74,6 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     if eigen_cache !== nothing && !ismissing(convInput.EIGEN_SPECTRUM) && length(eigen_cache) == length(convInput.EIGEN_SPECTRUM)
         convInput.EIGEN_SPECTRUM .= eigen_cache
     end
-
-    #println("convInput: ")
-    #println(typeof(convInput))
-
-
-    # A few test print statements which most likely aren't needed anymore:
-    #=
-    if (inputsEP.IR == 101)
-        io78 = open("run.out.second", "a")
-        fieldnames_in = fieldnames(typeof(convInput))
-        for field in fieldnames_in
-            println(io78, getfield(convInput, field), ": ", field)
-        end
-        close(io78)
-    end
-    =#
-
-    #=if (inputsEP.IR == 2)
-        println(inputTJLF.KX0_LOC)
-        println(convInput.KX0_LOC)
-        println("====")
-    end
-
-
-    if (inputsEP.IR == 2)
-        io77 = open("run.out.second", "a")
-        println(io77, convInput)
-        println(io77, convInput.BETA_LOC)
-        println(io77, convInput.KX0_LOC)
-        println(io77, convInput.PSI)
-        close(io77)
-    end
-
-    if (inputsEP.IR == 2)
-        println("Second")
-        println(inputTJLF.KX0_LOC)
-        println(convInput.KX0_LOC)
-        println("====")
-    end=#
-
-    #if (inputsEP.IR == 2)
-    #    println(convInput.IBRANCH)
-    #    println(convInput.WIDTH)
-    #end
 
     # Run TJLF and return QLweight and eigenvalues:
     result = TJLF.run(convInput);
@@ -141,19 +86,8 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     eigen_out        = ismissing(convInput.EIGEN_SPECTRUM) ? nothing : copy(convInput.EIGEN_SPECTRUM)  # cache for next call
 
 
-
-
-
-    #println(typeof(field_weight_out))
-    #println(typeof(satParams.y))
-
-
     inputTJLF = revert_input(convInput, convInput.NS, convInput.NKY)
     
-
-
-    # Next is the get_growthrate stuff. I now need to make sure that run_TJLF is giving me all the information I need to continue this.
-
     g = fill(NaN, inputTJLF.NMODES)
     f = fill(NaN, inputTJLF.NMODES)
     for n = 1:inputTJLF.NMODES
@@ -173,20 +107,6 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
         inputsEP.LKEEP[n] = (f[n] < inputsEP.FREQ_AE_UPPER)
         inputsEP.LKEEP[n] = (inputsEP.LKEEP[n] && (g[n] > inputsEP.GAMMA_THRESH))
     end
-
-
-    # if (inputsEP.IR == 101 && printout)
-
-        # println("----------")
-        
-        #println(satParams.y)
-        #println(satParams.theta)
-        #println("----------")
-        #println("nmodes_out: ", nmodes_out)
-        #println("nbasis: ",inputsEP.N_BASIS)
-        #println("==========")
-
-    # end
 
     # This function was translated within TJLF so as to get the wavefunction.
     ms = 128
@@ -227,12 +147,6 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     chi_e = fill(NaN, 4)
     chi_e_cond = fill(NaN, 4)
 
-    #println(wavefunction)
-    #=if (inputsEP.IR == 101)
-        println("===nmodes_out===")
-        println(nmodes_out)
-    end=#
-
     for n = 1:inputsEP.NMODES
         # The use of NMODES here is slightly confusing but needed as the Fortran uses assumed values for modes
         # which did not satisfy the criteria (nmodes_out). This means that the loop must continue for
@@ -249,16 +163,6 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
         # So long as wave_max_loc is between 113 and 177, this isn't rejected for this.
         theta_2_moment[n] =0.0
         ef_phi_norm = 0.0
-
-        # if (inputsEP.IR == 101 && n == 4 && printout)
-        #     println("wave_max: ", wave_max)
-        #     println("wave_max_loc: ", wave_max_loc)
-        #     println("mode: ", n)
-        #     #println("inputsEP.L_MAX_OUTER_PANEL[n]: ", inputsEP.L_MAX_OUTER_PANEL[n])
-        #     println("-----")
-        #     println("wavefunction: ", abs.(wavefunction[n,1,wave_max_loc:wave_max_loc+10]))
-        #     println("=====")
-        # end
 
 
         if (n <= nmodes_out)#used to be nmodes_out
