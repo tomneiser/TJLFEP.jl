@@ -59,6 +59,8 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     profile.gammap = gammap
     profile.omegaGAM = omegaGAM
 
+    println("options ir_exp is ", Options.IR_EXP)
+
     dpdr_EP = fill(NaN, profile.NR)
     if (Options.INPUT_PROFILE_METHOD == 2)
         for i in eachindex(dpdr_EP)
@@ -71,7 +73,7 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
         n_at_max = ni[dpdr_EP_max_loc]
         if (Options.PROCESS_IN != 5)
             for ir = 1:Options.SCAN_N
-                Options.FACTOR = Options.FACTOR*dpdr_EP_max/dpdr_EP_abs[ir_exp[ir]] 
+                Options.FACTOR = Options.FACTOR*dpdr_EP_max/dpdr_EP_abs[Options.IR_EXP[ir]] 
             end
         end
         Options.FACTOR_MAX_PROFILE .= Options.FACTOR
@@ -80,19 +82,6 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     Options.F_REAL .= 1.0
     if (Options.REAL_FREQ == 1) 
         Options.F_REAL .= (cs[:]/(rmin_ex[profile.NR]))/(2*pi*1.0e3)
-    end
-
-    if (Options.INPUT_PROFILE_METHOD == 2)
-        # Allotting Ir_exp not from profile.
-        Options.IR_EXP = fill(0, Options.SCAN_N)
-        for i = 1:Options.SCAN_N
-            if (Options.SCAN_N != 1)
-                jr_exp = profile.IRS + floor((i-1)*(profile.NR-profile.IRS)/(Options.SCAN_N-1))
-            else
-                jr_exp = profile.IRS
-            end
-            Options.IR_EXP[i] = jr_exp
-        end
     end
 
     # deepcopy is required so as to avoid overwriting of data:

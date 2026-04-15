@@ -38,7 +38,12 @@ begin
     FUSE.@checkin :hw_init dd ini act;
     
     println("runTHD")
-    runTHD(dd, rho, OptionsDict; printout = true, saveFiles = true, dir = "ITERfiles")
+    outdir = joinpath(@__DIR__, "structOutputs")
+    mkpath(outdir)
+    cd(outdir) do
+        runTHD(dd, rho, OptionsDict; printout = true, saveFiles = true, dir = joinpath(@__DIR__, "ITERfiles"))
+    end
+    make_crit_grad_plots("STRUCT"; dir=outdir)
     println("runTHD done")
 end
 println("example done")

@@ -8,6 +8,7 @@ using TJLF
 using IMAS
 using TurbulentTransport
 using FUSE
+using Plots
 
 include("tjlfep_modules.jl")
 include("tjlfep_read_inputs.jl")
@@ -24,6 +25,8 @@ include("tjlfep_generate_input.jl")
 include("context.jl")
 include("actor_context.jl")
 
+include("plotCritGrads.jl")
+
 #sgould this line just be the big struct?
 export profile, Options, InputTJLF
 export readMTGLF, readTGLFEP, TJLF_map, readEXPRO, save_TGLFEP, save_MTGLF, save_EXPRO, save_all
@@ -35,5 +38,7 @@ export TJLFEP_generate_input, readline_values
 
 export InputTGLFEP
 export populate_tjlfep_profile!, update_input_tjlfep!
+
+export make_crit_grad_plots
 
 end 

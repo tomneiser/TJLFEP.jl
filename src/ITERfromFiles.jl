@@ -22,6 +22,11 @@ begin
     mtglffilepath = homedirectory*"/ITERfiles/input.MTGLF"
     exprofilepath = homedirectory*"/ITERfiles/input.EXPRO"  
 
-    runTHD(tglfepfilepath, mtglffilepath, exprofilepath, printout = true)
+    outdir = joinpath(homedirectory, "fileOutputs")
+    mkpath(outdir)
+    cd(outdir) do
+        runTHD(tglfepfilepath, mtglffilepath, exprofilepath, printout = true)
+    end
+    make_crit_grad_plots("FILE"; dir=outdir)
 end
 println("runTHD finished")
