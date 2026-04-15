@@ -52,7 +52,8 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     Options = TJLFEP.readTGLFEP(inputEPfile, ir_exp)
 
     # Set up EXPRO constants:
-    ni, Ti, dlnnidr, dlntidr, cs, rmin_ex, gammaE, gammap, omegaGAM = TJLFEP.readEXPRO(inputEXPfile, Options.IS_EP)
+    # EP data is stored at species index ep_slot = IS_EP+1 in EXPRO file
+    ni, Ti, dlnnidr, dlntidr, cs, rmin_ex, gammaE, gammap, omegaGAM = TJLFEP.readEXPRO(inputEXPfile, Options.IS_EP + 1)
 
     profile.gammaE = gammaE
     profile.gammap = gammap
@@ -112,6 +113,10 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
             str_r = lpad(string(ir), 3, '0')
             arrTGLFEP[i].SUFFIX = "_r"*str_r
 
+            println("=============================================================")
+            println("pre mainsub")
+            println("i is ", i, " ir is ", ir)
+            println("=============================================================")
 
             arrTGLFEP[i].FACTOR_IN = arrTGLFEP[i].FACTOR[i]
             input1 = arrTGLFEP[i]
@@ -384,7 +389,7 @@ inputs: tglfepfilepath, mtglffilepath, exprofilepath
 
 inputs are used in the threads version of the TJLFEP code for a single run
 """
-function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any}; printout::Bool=false)
+function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any}; printout::Bool=false, saveFiles::Bool=false, dir::String="ddFiles")
 
     # Default values for EXPRO:
     ni = TJLFEP.exproConst.ni
@@ -496,6 +501,10 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     Options.F_REAL .= 1.0
     if (Options.REAL_FREQ == 1) 
         Options.F_REAL .= (cs[:]/(rmin_ex[profile.NR]))/(2*pi*1.0e3)
+    end
+
+    if (saveFiles)
+        save_all(Options, profile, extraEP, dir)
     end
 
     # if (Options.INPUT_PROFILE_METHOD == 2)

@@ -495,7 +495,7 @@ function InputTGLF_EP(
     ep_species_data = Dict{String, Vector{Float64}}()
     
     # Full radial profiles for thermal electrons
-    Te_full = cp1d.electrons.temperature
+    Te_full = cp1d.electrons.temperature ./ 1000 # eV -> keV
     dlntedr_full = -IMAS.calc_z(rmin, Te_full, :backward)
     
     # ne_full = cp1d.electrons.density_thermal ./ m³_to_cm³
@@ -535,8 +535,12 @@ function InputTGLF_EP(
     # Pressure is in Pa (J/m³); T [eV] = P / (n [m⁻³] × 1.602e-19 J/eV). Note: e = IMAS.cgs.e is CGS, do NOT use here.
     Te_full = (cp1d.electrons.pressure_fast_parallel ./ 3 + 2 * cp1d.electrons.pressure_fast_perpendicular ./ 3) ./ max.(ne_full .* fac, eps(Float64)) ./ 1.602e-19
     Te_full[fast_zero] .= 0.0
+    Te_full = Te_full ./ 1000 # eV -> keV
     dlntedr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(Te_full, eps(Float64)), :backward))
     dlntedr_full[fast_zero] .= 0.0
+
+    println("=========== TEMP CHECK ===========")
+    println(all(ions[1].temperature .== cp1d.electrons.temperature))
 
     if is_ep == 1
         ep_species_data["DENS_$ep_slot"] = ne_full
@@ -576,13 +580,9 @@ function InputTGLF_EP(
             # Pressure is in Pa (J/m³); T [eV] = P / (n [m⁻³] × 1.602e-19 J/eV). Note: e = IMAS.cgs.e is CGS, do NOT use here.
             Ti_full = (ions[iion].pressure_fast_parallel ./ 3 + 2 * ions[iion].pressure_fast_perpendicular ./ 3) ./ max.(ni_full .* fac, eps(Float64)) ./ 1.602e-19
             Ti_full[fast_zero] .= 0.0
+            Ti_full = Ti_full ./ 1000 # eV -> keV
             dlntidr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(Ti_full, eps(Float64)), :backward))
             dlntidr_full[fast_zero] .= 0.0
-
-            println("Ti fast is ", Ti_full)
-            println("ni fast is ", ni_full)
-            println("parallel pressure fast is ", ions[iion].pressure_fast_parallel)
-            println("perpendicular pressure fast is ", ions[iion].pressure_fast_perpendicular)
 
             ep_species_data["DENS_$ep_slot"] = ni_full
             ep_species_data["TEMP_$ep_slot"] = Ti_full
@@ -607,7 +607,7 @@ function InputTGLF_EP(
             setproperty!(input_tglf, Symbol("RLTS_$ep_slot"), a * dlntidr_ep)
         else
             # thermal
-            Ti_full = ions[iion].temperature
+            Ti_full = ions[iion].temperature ./ 1000 # eV -> keV
             dlntidr_full = -IMAS.calc_z(rmin, Ti_full, :backward)
             
             # ni_full = ions[iion].density_thermal ./ m³_to_cm³
@@ -642,6 +642,8 @@ function InputTGLF_EP(
     end
 
     input_tglf.BETAE = 8.0 * pi .* ne .* k .* Te ./ bunit .^ 2
+    println("========== BETAE Check ===========")
+    println(input_tglf.BETAE)
     loglam = 24.0 .- log.(sqrt.(ne) ./ Te)
     input_tglf.XNUE = a ./ c_s * sqrt.(ions[1].element[1].a) .* e^4 .* pi .* ne .* loglam ./ (sqrt.(me) .* (k .* Te) .^ 1.5)
     input_tglf.ZEFF = cp1d.zeff[gridpoint_cp]
@@ -658,19 +660,6 @@ function InputTGLF_EP(
     input_tglf.DZMAJDX_LOC = 0.0
 
     input_tglf.Q_LOC = abs.(q)
-
-    #filling in EPconst
-
-
-    # extraEP.E_OMEGA_TAE = sqrt.(2.0 ./ input_tglf.BETAE) ./ 2.0 ./ q ./ Rmaj
-    # extraEP.E_omegaGAM = (1.0 .÷ Rmaj) .* sqrt.(1.0 .+ input_tglf.TAUS_2) .÷ (1.0 .+ 1.0 .÷ (2.0 .* q))
-    # extra_EP.E_RHO_STAR = rho_s
-    # extraEP.E_CS = c_s
-    # extraEP.E_RMIN = rmin
-    # extraEP.E_gammaE = gamma_e
-    # extraEP.E_gammap = gamma_p
-    # extraEP.E_NS = input_tglf.NS
-
 
     omegaGAM =  (1.0 .÷ input_tglf.RMAJ_LOC) .* sqrt.(1.0 .+ input_tglf.TAUS_2) .÷ (1.0 .+ 1.0 .÷ (2.0 .* q))
     OMEGA_TAE = sqrt.(2.0 ./ input_tglf.BETAE) ./ 2.0 ./ q ./ input_tglf.RMAJ_LOC
@@ -689,23 +678,26 @@ function InputTGLF_EP(
     Te_thermal_full = ep_species_data["TEMP_1"]
 
     # OMEGA_TAE and omegaGAM need full radial betae
-    betae_full = 8.0 * pi .* ne_thermal_full .* k .* Te_thermal_full ./ (IMAS.interp1d(eq1d.rho_tor_norm, GACODE.bunit(eqt) .* T_to_Gauss).(cp1d.grid.rho_tor_norm)) .^ 2
+    # ne_thermal_full is in 10^19/m^3 → need cm^-3 (×1e13); Te_thermal_full is in keV → need eV (×1e3); combined factor 1e16
+    betae_full = 8.0 * pi .* (ne_thermal_full .* 1e13) .* k .* (Te_thermal_full .* 1e3) ./ (IMAS.interp1d(eq1d.rho_tor_norm, GACODE.bunit(eqt) .* T_to_Gauss).(cp1d.grid.rho_tor_norm)) .^ 2
     
     # Full radial rotation profiles for gamma_e and gamma_p
     w0_full = -cp1d.rotation_frequency_tor_sonic
     w0p_full = IMAS.gradient(rmin, w0_full)
     Rmaj_full = IMAS.interp1d(eq1d.rho_tor_norm, m_to_cm * 0.5 * (eq1d.r_outboard .+ eq1d.r_inboard)).(cp1d.grid.rho_tor_norm)
-    q_full = q_profile
-    gamma_e_full = -rmin ./ q_full .* w0p_full
-    gamma_p_full = -Rmaj_full .* w0p_full
+    q_full = abs.(q_profile)  # TGLF/TJLF requires positive safety factor; IMAS may store negative q
+    # gammaE and gammaP must be normalized to c_s/a (dimensionless) for GAMMA_THRESH comparison with TGLF growth rates
+    gamma_e_full = -rmin ./ q_full .* w0p_full .* (a ./ c_s_full)
+    gamma_p_full = -Rmaj_full .* w0p_full .* (a ./ c_s_full)
     
     # Calculate OMEGA_TAE and omegaGAM for full radial grid
     OMEGA_TAE_full = sqrt.(2.0 ./ betae_full) ./ (2.0 .* q_full .* Rmaj_full ./ a)
     
     # For omegaGAM, we need TAUS_2 at all radii
+    # Ti_ion1_full is in eV (IMAS); Te_thermal_full is in keV → divide by 1000 to get same units
     if length(ions) >= 1
         Ti_ion1_full = ions[1].temperature
-        omegaGAM_full = (a ./ Rmaj_full) .* sqrt.(1.0 .+ Ti_ion1_full ./ Te_thermal_full) ./ (1.0 .+ 1.0 ./ (2.0 .* q_full))
+        omegaGAM_full = (a ./ Rmaj_full) .* sqrt.(1.0 .+ Ti_ion1_full ./ (Te_thermal_full .* 1e3)) ./ (1.0 .+ 1.0 ./ (2.0 .* q_full))
     else
         omegaGAM_full = zeros(nr_full)
     end
@@ -777,9 +769,9 @@ function InputTGLF_EP(
     # ===== Compute full-radial geometry for TJLFEP profile struct =====
     bunit_full = IMAS.interp1d(eq1d.rho_tor_norm, GACODE.bunit(eqt) .* T_to_Gauss).(cp1d.grid.rho_tor_norm)
     rmin_safe = max.(rmin, rmin[2])  # avoid division by zero at magnetic axis (rmin[1] ≈ 0)
-    dqdr_full = IMAS.gradient(rmin, q_profile)
-    shear_full = rmin_safe ./ q_profile .* dqdr_full
-    q_prime_full = q_profile .^ 2 .* a .^ 2 ./ rmin_safe .^ 2 .* shear_full
+    dqdr_full = IMAS.gradient(rmin, abs.(q_profile))
+    shear_full = rmin_safe ./ abs.(q_profile) .* dqdr_full
+    q_prime_full = abs.(q_profile) .^ 2 .* a .^ 2 ./ rmin_safe .^ 2 .* shear_full
     dpdr_full = IMAS.gradient(rmin, press .* Pa_to_dyn)
     p_prime_full = abs.(q_profile) ./ (rmin_safe ./ a) .^ 2 .* rmin_safe ./ bunit_full .^ 2 .* dpdr_full
     ir_rep = max(1, nr_full ÷ 2)
@@ -805,7 +797,7 @@ function InputTGLF_EP(
         "SIGN_IT" => Float64(signb * sign(q_profile[ir_rep])),
         "RMAJ" => Rmaj ./ a,
         "SHIFT" => drmaj,
-        "Q" => q_profile,
+        "Q" => abs.(q_profile),
         "SHEAR" => shear_full,
         "Q_PRIME" => q_prime_full,
         "P_PRIME" => p_prime_full,
@@ -817,6 +809,7 @@ function InputTGLF_EP(
         "S_ZETA" => szeta,
         "BETAE" => betae_full,
         "ZEFF" => Float64.(cp1d.zeff),
+        "B_UNIT" => bunit_full,
         "N_ION" => length(ions),
         "EP_SLOT" => ep_slot,
         "ZS" => zs_full,

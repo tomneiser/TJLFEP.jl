@@ -653,3 +653,162 @@ function readEXPRO(filename::String, is_EP::Int64)
     end
 
 end 
+
+"""
+    save_TGLFEP(opts::Options, filename::AbstractString)
+
+Write an Options struct to a file in input.TGLFEP format.
+Format per line: `<value>  <FIELD_NAME>`
+Scalars (Int, Float, Bool) are written; Vector fields and missing values are skipped,
+as TGLFEP input files do not encode WIDTH/FACTOR scan vectors.
+"""
+function save_TGLFEP(opts::Options, filename::AbstractString)
+    mkpath(dirname(abspath(filename)))
+    open(filename, "w") do io
+        for key in fieldnames(typeof(opts))
+            value = getfield(opts, key)
+            if ismissing(value)
+                continue
+            elseif isa(value, Bool)         # Bool before Int — Bool <: Int in Julia
+                val_str = value ? ".true." : ".false."
+                println(io, "$val_str  $(key)")
+            elseif isa(value, Int)
+                println(io, "$(value)  $(key)")
+            elseif isa(value, AbstractFloat)
+                isnan(value) && continue
+                println(io, "$(value)  $(key)")
+            # Vector/Matrix fields are not written to TGLFEP scalar input
+            end
+        end
+    end
+end
+
+"""
+    save_MTGLF(prof::profile, ir_exp::Vector{Int}, filename::AbstractString)
+
+Write a profile struct to a file in input.MTGLF format.
+  - Scalars (Int, Float):          `       FIELD_NAME= <value>`
+  - Per-species vectors (length NS): `       FIELD_  <is>= <value>`
+  - Radial vectors (length NR):    `       FIELD_  <ir>= <value>`
+  - Matrices (NR×NS):              `       FIELD_  <ir>_<is>= <value>`
+  - IR_EXP entries appended at end, one per scan radius.
+"""
+function save_MTGLF(prof::profile, ir_exp::Vector{Int}, filename::AbstractString)
+    nr = ismissing(prof.NR) ? 0 : prof.NR
+    ns = ismissing(prof.NS) ? 0 : prof.NS
+
+    mkpath(dirname(abspath(filename)))
+    open(filename, "w") do io
+        for key in fieldnames(typeof(prof))
+            value = getfield(prof, key)
+            if ismissing(value)
+                continue
+            end
+            kstr = String(key)
+            if isa(value, Int)
+                println(io, @sprintf("%15s=%d", kstr, value))
+            elseif isa(value, AbstractFloat)
+                isnan(value) && continue
+                println(io, @sprintf("%15s=%20.10f", kstr, value))
+            elseif isa(value, Vector) && length(value) == ns
+                all(isnan, value) && continue
+                # Per-species vector
+                for is in 1:ns
+                    println(io, @sprintf("%15s_%3d=%20.10f", kstr, is, Float64(value[is])))
+                end
+            elseif isa(value, Vector) && length(value) == nr
+                all(isnan, value) && continue
+                # Radial vector
+                for ir in 1:nr
+                    println(io, @sprintf("%15s_%3d=%20.10f", kstr, ir, Float64(value[ir])))
+                end
+            elseif kstr == "ZS" && isa(value, Matrix) && size(value) == (nr, ns)
+                all(isnan, value) && continue
+                # file version expects one value for each species- just take first for now (better to average?)
+                for is in 1:ns
+                    println(io, @sprintf("%15s_%3d=%20.10f", kstr, is, Float64(value[1, is])))
+                end
+            elseif isa(value, Matrix) && size(value) == (nr, ns)
+                all(isnan, value) && continue
+                # NR×NS matrix — written as FIELD_<ir>_<is>
+                for is in 1:ns
+                    for ir in 1:nr
+                        println(io, @sprintf("%15s_%3d_%d=%20.10f", kstr, ir, is, Float64(value[ir, is])))
+                    end
+                end
+            end
+            # Any other type (e.g. Bool flags stored as Int elsewhere) is silently skipped
+        end
+        # IR_EXP is not a profile field but is read by readMTGLF; write one entry per scan radius.
+        # Format: IR_EXP_  1_  <i>= <ir_value>  (twoName: speciesIndex = line[3], value appended)
+        for i in eachindex(ir_exp)
+            println(io, @sprintf("%15s_%3d_%3d=%20.10f", "IR_EXP", 1, i, Float64(ir_exp[i])))
+        end
+    end
+end
+
+"""
+    save_EXPRO(extraEP::Dict, filename::AbstractString)
+
+Write the extraEP dictionary to a file in input.EXPRO format.
+
+Two-index (species + radial) fields — ni, Ti, dlnnidr, dlntidr:
+    `      EXPRO_<field>_   <is>_   <ir>= <value>`
+
+Single-index (radial) fields — cs, rmin, gammaE, gammap, omegaGAM:
+    `      EXPRO_<field>_  <ir>= <value>`
+"""
+function save_EXPRO(extraEP::Dict, filename::AbstractString)
+    nr = extraEP["NR"]
+    ns = extraEP["NS"]
+
+    # Fields written with two indices: EXPRO_field_   <is>_   <ir>
+    two_index_fields = ["DENS", "TEMP", "DLNNDR", "DLNTDR"]
+    # Map from extraEP key prefix to EXPRO field name (lowercase in file)
+    two_index_map = Dict("DENS" => "ni", "TEMP" => "Ti", "DLNNDR" => "dlnnidr", "DLNTDR" => "dlntidr")
+
+    # Fields written with one index: EXPRO_field_  <ir>
+    one_index_map = Dict("CS" => "cs", "RMIN" => "rmin", "gammaE" => "gammaE",
+                         "gammap" => "gammap", "omegaGAM" => "omegaGAM")
+
+    mkpath(dirname(abspath(filename)))
+    open(filename, "w") do io
+        # Two-index fields, species outer loop
+        for prefix in two_index_fields
+            expro_name = two_index_map[prefix]
+            for is in 1:ns
+                key = "$(prefix)_$is"
+                if !haskey(extraEP, key)
+                    continue
+                end
+                vec = extraEP[key]
+                for ir in 1:nr
+                    println(io, @sprintf("      EXPRO_%s_%4d_%4d=%20.10f", expro_name, is, ir, vec[ir]))
+                end
+            end
+        end
+
+        # One-index fields
+        for (key, expro_name) in one_index_map
+            if !haskey(extraEP, key)
+                continue
+            end
+            vec = extraEP[key]
+            for ir in 1:nr
+                println(io, @sprintf("EXPRO_%s_%d=%16.10f", expro_name, ir, vec[ir]))
+            end
+        end
+    end
+end
+
+"""
+    save_all(opts::Options, prof::profile, extraEP::Dict, dir::AbstractString)
+
+Write all three input files (input.TGLFEP, input.MTGLF, input.EXPRO) to `dir`.
+"""
+function save_all(opts::Options, prof::profile, extraEP::Dict, dir::AbstractString)
+    mkpath(dir)
+    save_TGLFEP(opts, joinpath(dir, "input.TGLFEP"))
+    save_MTGLF(prof, opts.IR_EXP, joinpath(dir, "input.MTGLF"))
+    save_EXPRO(extraEP, joinpath(dir, "input.EXPRO"))
+end

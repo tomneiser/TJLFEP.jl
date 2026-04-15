@@ -203,14 +203,6 @@ mutable struct InputTJLF{T<:Real}
     VPAR_MODEL::Union{Int,Missing}
     IBRANCH::Union{Int,Missing}
 
-    # ZS::Union{Vector{T},Missing}
-    # MASS::Union{Vector{T},Missing}
-    # RLNS::Union{Vector{T},Missing}
-    # RLTS::Union{Vector{T},Missing}
-    # TAUS::Union{Vector{T},Missing}
-    # AS::Union{Vector{T},Missing}
-    # VPAR::Union{Vector{T},Missing}
-    # VPAR_SHEAR::Union{Vector{T},Missing}
     ZS::Union{Vector{T},Missing}
     MASS::Union{Vector{T},Missing}
     RLNS::Union{Vector{T},Missing}
@@ -314,39 +306,6 @@ mutable struct InputTJLF{T<:Real}
             NaN,NaN,NaN,NaN,NaN,NaN,NaN,1.0e-13,true)
         end
     end
-
-    # function InputTJLF{T}(ns::Int, nky::Int) where {T<:Real}
-    #     InputTJLF{T}(ns, nky, false)
-    # end
-
-    # create InputTJLF struct given a InputTGLF struct
-    # function InputTJLF{T}(inputTGLF::InputTGLF) where {T<:Real}
-
-    #     nky = get_ky_spectrum_size(inputTGLF.NKY,inputTGLF.KYGRID_MODEL)
-    #     inputTJLF = InputTJLF{T}(inputTGLF.NS, nky)
-
-    #     for fieldname in fieldnames(inputTGLF)
-    #         if occursin(r"\d", String(fieldname)) || fieldname == :_Qgb # species parameter
-    #             continue
-    #         end
-    #         setfield!(inputTJLF, fieldname, getfield(inputTGLF, fieldname))
-    #     end
-    #     for i in 1:inputTGLF.NS
-    #         inputTJLF.ZS[i] = getfield(inputTGLF, Symbol("ZS_", i))
-    #         inputTJLF.AS[i] = getfield(inputTGLF, Symbol("AS_", i))
-    #         inputTJLF.MASS[i] = getfield(inputTGLF, Symbol("MASS_", i))
-    #         inputTJLF.RLNS[i] = getfield(inputTGLF, Symbol("RLNS_", i))
-    #         inputTJLF.RLTS[i] = getfield(inputTGLF, Symbol("RLTS_", i))
-    #         inputTJLF.TAUS[i] = getfield(inputTGLF, Symbol("TAUS_", i))
-    #         inputTJLF.VPAR[i] = getfield(inputTGLF, Symbol("VPAR_", i))
-    #         inputTJLF.VPAR_SHEAR[i] = getfield(inputTGLF, Symbol("VPAR_SHEAR_", i))
-    #     end
-    #     inputTJLF.WIDTH_SPECTRUM .= inputTJLF.WIDTH
-
-    #     checkInput(inputTJLF)
-
-    #     return inputTJLF
-    # end
 end
 
 mutable struct Options{T<:Real} # This acts as the interface module of Fortran, essentially. It reads the TGLFEP file
@@ -464,133 +423,6 @@ mutable struct Options{T<:Real} # This acts as the interface module of Fortran, 
         end
     end
 end
-
-# mutable struct profile{T<:Real}
-#     # This struct is an intermediary between the processes in read_inputs
-    
-#     SIGN_BT::Union{T, Missing} #
-#     SIGN_IT::Union{T, Missing} #
-
-#     NR::Union{Int, Missing} #
-#     NS::Union{Int, Missing} #
-#     GEOMETRY_FLAG::Union{Int, Missing} #5   Constant 1 for TJLFEPnotanything else.
-#     ROTATION_FLAG::Union{Int, Missing} #
-
-#     ZS::Union{Vector{T}, Missing} #
-#     MASS::Union{Vector{T}, Missing} #
-
-#     # This next section is especially why the profile struct must exist
-#     AS::Union{Matrix{T}, Missing} #
-#     TAUS::Union{Matrix{T}, Missing} #10
-#     RLNS::Union{Matrix{T}, Missing} #
-#     RLTS::Union{Matrix{T}, Missing} #
-#     VPAR::Union{Matrix{T}, Missing} #
-#     VPAR_SHEAR::Union{Matrix{T}, Missing} #
-
-#     RMIN::Union{Vector{T}, Missing}#15
-#     RMAJ::Union{Vector{T}, Missing}
-#     SHIFT::Union{Vector{T}, Missing}
-#     Q::Union{Vector{T}, Missing}
-#     SHEAR::Union{Vector{T}, Missing}
-#     ALPHA::Union{Vector{T}, Missing}#20
-#     Q_PRIME::Union{Vector{T}, Missing}
-#     P_PRIME::Union{Vector{T}, Missing}
-#     KAPPA::Union{Vector{T}, Missing}
-#     S_KAPPA::Union{Vector{T}, Missing}
-#     DELTA::Union{Vector{T}, Missing}#25
-#     S_DELTA::Union{Vector{T}, Missing}
-#     ZETA::Union{Vector{T}, Missing}
-#     S_ZETA::Union{Vector{T}, Missing}
-#     ZEFF::Union{Vector{T}, Missing}
-#     BETAE::Union{Vector{T}, Missing}#30
-#     RHO_STAR::Union{Vector{T}, Missing}
-#     OMEGA_TAE::Union{Vector{T}, Missing}
-#     omegaGAM::Union{Vector{T}, Missing}
-#     gammaE::Union{Vector{T}, Missing}
-#     gammap::Union{Vector{T}, Missing}#35
-#     B_UNIT::Union{Vector{T}, Missing}
-
-#     IS::Union{Int, Missing}
-#     IRS::Union{Int, Missing}
-
-#     A_QN::Union{T, Missing} # quasineutrality scale factor for non-EP species
-#     N_ION::Union{Int, Missing} #40
-
-#     DENS_1::Union{Vector{T},Missing} 
-#     TEMP_1::Union{Vector{T},Missing}
-#     DLNNDR_1::Union{Vector{T},Missing} 
-#     DLNTDR_1::Union{Vector{T},Missing} #44
-
-#     DENS_2::Union{Vector{T},Missing} 
-#     TEMP_2::Union{Vector{T},Missing} 
-#     DLNNDR_2::Union{Vector{T},Missing} 
-#     DLNTDR_2::Union{Vector{T},Missing} #48
-
-#     DENS_3::Union{Vector{T},Missing} 
-#     TEMP_3::Union{Vector{T},Missing}
-#     DLNNDR_3::Union{Vector{T},Missing}
-#     DLNTDR_3::Union{Vector{T},Missing}  #52
-
-#     DENS_4::Union{Vector{T},Missing} 
-#     TEMP_4::Union{Vector{T},Missing} 
-#     DLNNDR_4::Union{Vector{T},Missing} 
-#     DLNTDR_4::Union{Vector{T},Missing}  #56
-
-#     DENS_5::Union{Vector{T},Missing} 
-#     TEMP_5::Union{Vector{T},Missing} 
-#     DLNNDR_5::Union{Vector{T},Missing} 
-#     DLNTDR_5::Union{Vector{T},Missing}  # 60
-
-#     DENS_6::Union{Vector{T},Missing} 
-#     TEMP_6::Union{Vector{T},Missing} 
-#     DLNNDR_6::Union{Vector{T},Missing} 
-#     DLNTDR_6::Union{Vector{T},Missing}  #64
-
-#     DENS_7::Union{Vector{T},Missing} 
-#     TEMP_7::Union{Vector{T},Missing} 
-#     DLNNDR_7::Union{Vector{T},Missing} 
-#     DLNTDR_7::Union{Vector{T},Missing}  #68
-
-#     DENS_8::Union{Vector{T},Missing} 
-#     TEMP_8::Union{Vector{T},Missing} 
-#     DLNNDR_8::Union{Vector{T},Missing} 
-#     DLNTDR_8::Union{Vector{T},Missing}  #72
-
-#     DENS_9::Union{Vector{T},Missing} 
-#     TEMP_9::Union{Vector{T},Missing} 
-#     DLNNDR_9::Union{Vector{T},Missing} 
-#     DLNTDR_9::Union{Vector{T},Missing}  #76
-
-#     DENS_10::Union{Vector{T},Missing} 
-#     TEMP_10::Union{Vector{T},Missing} 
-#     DLNNDR_10::Union{Vector{T},Missing} 
-#     DLNTDR_10::Union{Vector{T},Missing}  #80
-
-#     CS::Union{Vector{T},Missing}  #81
-
-#     # function profile()
-#     #     return profile{Float64}()
-#     # end
-#     # As of right now, I don't believe there needs to be parameters, but the vectors
-#     # are probably the most of concern there. 
-#     function profile{T}(nr::Int, ns::Int) where (T<:Real)
-#         # new(NaN, NaN, nr, ns, 1, missing, fill(NaN, ns), fill(NaN, ns),
-#         new(NaN, NaN, missing, missing, 1, missing, fill(NaN, (ns)), fill(NaN, (ns)),
-#         fill(NaN, (nr, ns)), fill(NaN, (nr, ns)), fill(NaN, (nr, ns)), fill(NaN, (nr, ns)), 
-#         fill(NaN, (nr, ns)), fill(NaN, (nr, ns)), fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), 
-#         fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), 
-#         fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), 
-#         fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), fill(NaN, nr), fill(1.0E-7, nr), fill(NaN, nr), 
-#         fill(NaN, nr), missing, missing, NaN, missing, fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)),
-#         fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)),
-#         fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)),
-#         fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)),
-#         fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)),
-#         fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)),
-#         fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)), fill(NaN,(ns)),
-#         fill(NaN,(ns)), fill(NaN,(nr)))
-#     end
-# end
 
 mutable struct profile{T<:Real}
     # This struct is an intermediary between the processes in read_inputs

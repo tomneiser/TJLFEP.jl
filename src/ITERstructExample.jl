@@ -15,7 +15,7 @@ begin
 
     SCAN_N = 6
     IS_EP = 4
-    rho = [0.01, 0.21, 0.41, 0.61, 0.81, 1.01]
+    rho = [0.01, 0.21, 0.41, 0.61, 0.81, 0.95]
     println("rho = ", rho)
 
     println("pre dict initialize")
@@ -38,7 +38,7 @@ begin
     FUSE.@checkin :hw_init dd ini act;
     
     println("runTHD")
-    runTHD(dd, rho, OptionsDict; printout = true)
+    runTHD(dd, rho, OptionsDict; printout = true, saveFiles = true, dir = "ITERfiles")
     println("runTHD done")
 end
 println("example done")

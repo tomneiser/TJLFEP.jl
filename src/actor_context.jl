@@ -398,6 +398,7 @@ function populate_tjlfep_profile!(prof::profile, extraEP::Dict, input::InputTGLF
     prof.S_ZETA  = extraEP["S_ZETA"]
     prof.BETAE   = extraEP["BETAE"]
     prof.ZEFF    = extraEP["ZEFF"]
+    prof.B_UNIT  = extraEP["B_UNIT"]
     
     # Extract charge numbers from extraEP, which contains all 4 species (e, D, T, EP)
     # extraEP["ZS"] should have length >= 4

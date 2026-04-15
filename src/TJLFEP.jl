@@ -2,6 +2,7 @@ module TJLFEP
 using Base.Threads
 using LinearAlgebra # Don't really need this for tjlf-ep
 using SparseArrays
+using Printf
 using StaticArrays
 using TJLF
 using IMAS
@@ -24,8 +25,8 @@ include("context.jl")
 include("actor_context.jl")
 
 #sgould this line just be the big struct?
-export profile, Options, InputTJLF, makeStructs
-export readMTGLF, readTGLFEP, TJLF_map, readEXPRO
+export profile, Options, InputTJLF
+export readMTGLF, readTGLFEP, TJLF_map, readEXPRO, save_TGLFEP, save_MTGLF, save_EXPRO, save_all
 export convert_input, revert_input
 export tjlfep_complete_output
 export runTHD, runTHDs
