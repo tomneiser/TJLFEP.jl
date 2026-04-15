@@ -709,31 +709,31 @@ function save_MTGLF(prof::profile, ir_exp::Vector{Int}, filename::AbstractString
                 println(io, @sprintf("%15s=%d", kstr, value))
             elseif isa(value, AbstractFloat)
                 isnan(value) && continue
-                println(io, @sprintf("%15s=%20.10f", kstr, value))
+                println(io, @sprintf("%15s=%#.17g", kstr, value))
             elseif isa(value, Vector) && length(value) == ns
                 all(isnan, value) && continue
                 # Per-species vector
                 for is in 1:ns
-                    println(io, @sprintf("%15s_%3d=%20.10f", kstr, is, Float64(value[is])))
+                    println(io, @sprintf("%15s_%3d=%#.17g", kstr, is, Float64(value[is])))
                 end
             elseif isa(value, Vector) && length(value) == nr
                 all(isnan, value) && continue
                 # Radial vector
                 for ir in 1:nr
-                    println(io, @sprintf("%15s_%3d=%20.10f", kstr, ir, Float64(value[ir])))
+                    println(io, @sprintf("%15s_%3d=%#.17g", kstr, ir, Float64(value[ir])))
                 end
             elseif kstr == "ZS" && isa(value, Matrix) && size(value) == (nr, ns)
                 all(isnan, value) && continue
                 # file version expects one value for each species- just take first for now (better to average?)
                 for is in 1:ns
-                    println(io, @sprintf("%15s_%3d=%20.10f", kstr, is, Float64(value[1, is])))
+                    println(io, @sprintf("%15s_%3d=%#.17g", kstr, is, Float64(value[1, is])))
                 end
             elseif isa(value, Matrix) && size(value) == (nr, ns)
                 all(isnan, value) && continue
                 # NR×NS matrix — written as FIELD_<ir>_<is>
                 for is in 1:ns
                     for ir in 1:nr
-                        println(io, @sprintf("%15s_%3d_%d=%20.10f", kstr, ir, is, Float64(value[ir, is])))
+                        println(io, @sprintf("%15s_%3d_%d=%#.17g", kstr, ir, is, Float64(value[ir, is])))
                     end
                 end
             end
@@ -742,7 +742,7 @@ function save_MTGLF(prof::profile, ir_exp::Vector{Int}, filename::AbstractString
         # IR_EXP is not a profile field but is read by readMTGLF; write one entry per scan radius.
         # Format: IR_EXP_  1_  <i>= <ir_value>  (twoName: speciesIndex = line[3], value appended)
         for i in eachindex(ir_exp)
-            println(io, @sprintf("%15s_%3d_%3d=%20.10f", "IR_EXP", 1, i, Float64(ir_exp[i])))
+            println(io, @sprintf("%15s_%3d_%3d=%#.17g", "IR_EXP", 1, i, Float64(ir_exp[i])))
         end
     end
 end
@@ -783,7 +783,7 @@ function save_EXPRO(extraEP::Dict, filename::AbstractString)
                 end
                 vec = extraEP[key]
                 for ir in 1:nr
-                    println(io, @sprintf("      EXPRO_%s_%4d_%4d=%20.10f", expro_name, is, ir, vec[ir]))
+                    println(io, @sprintf("      EXPRO_%s_%4d_%4d=%#.17g", expro_name, is, ir, vec[ir]))
                 end
             end
         end
@@ -795,7 +795,7 @@ function save_EXPRO(extraEP::Dict, filename::AbstractString)
             end
             vec = extraEP[key]
             for ir in 1:nr
-                println(io, @sprintf("EXPRO_%s_%d=%16.10f", expro_name, ir, vec[ir]))
+                println(io, @sprintf("EXPRO_%s_%d=%#.17g", expro_name, ir, vec[ir]))
             end
         end
     end

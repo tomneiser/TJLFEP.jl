@@ -684,7 +684,7 @@ function InputTGLF_EP(
     # Full radial rotation profiles for gamma_e and gamma_p
     w0_full = -cp1d.rotation_frequency_tor_sonic
     w0p_full = IMAS.gradient(rmin, w0_full)
-    Rmaj_full = IMAS.interp1d(eq1d.rho_tor_norm, m_to_cm * 0.5 * (eq1d.r_outboard .+ eq1d.r_inboard)).(cp1d.grid.rho_tor_norm)
+    Rmaj_full = IMAS.interp1d(eq1d.rho_tor_norm, 0.5 * (eq1d.r_outboard .+ eq1d.r_inboard)).(cp1d.grid.rho_tor_norm)
     q_full = abs.(q_profile)  # TGLF/TJLF requires positive safety factor; IMAS may store negative q
     # gammaE and gammaP must be normalized to c_s/a (dimensionless) for GAMMA_THRESH comparison with TGLF growth rates
     gamma_e_full = -rmin ./ q_full .* w0p_full .* (a ./ c_s_full)
