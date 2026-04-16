@@ -22,22 +22,11 @@ begin
     mtglffilepath = homedirectory*"/../tests/isEP3v6/input.MTGLF"
     exprofilepath = homedirectory*"/../tests/isEP3v6/input.EXPRO"  
 
-    runTHD(tglfepfilepath, mtglffilepath, exprofilepath, printout = true)
+    outdir = joinpath(@__DIR__, "mainOut")
+    mkpath(outdir)
+    cd(outdir) do
+        runTHD(tglfepfilepath, mtglffilepath, exprofilepath, printout = true)
+    end
+    make_crit_grad_plots("main"; dir=outdir)
 end
 println("runTHD finished")
-# I will now run runTHDs on two examples:
-#=
-tglfepfilepath1 = homedirectory*"/outputs/tjlfeptests/isEP3v6/input.TGLFEP"
-tglfepfilepath2 = homedirectory*"/outputs/tjlfeptests/isEP3v7/input.TGLFEP"
-
-mtglffilepath1 = homedirectory*"/outputs/tjlfeptests/isEP3v6/input.MTGLF"
-mtglffilepath2 = homedirectory*"/outputs/tjlfeptests/isEP3v7/input.MTGLF"
-
-exprofilepath1 = homedirectory*"/outputs/tjlfeptests/isEP3v6/input.EXPRO"
-exprofilepath2 = homedirectory*"/outputs/tjlfeptests/isEP3v7/input.EXPRO"
-
-tglfeps = [tglfepfilepath1, tglfepfilepath2]
-mtglfs = [mtglffilepath1, mtglffilepath2]
-expros = [exprofilepath1, exprofilepath2]
-=#
-#widths, kymark_outs, SFmins, dpdr_crit_outs, dndr_crit_outs = runTHDs(tglfeps, mtglfs, expros)

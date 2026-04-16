@@ -10,16 +10,20 @@ end
 
 function make_crit_grad_plots(SorF::String; dir::String="")
     if !(SorF in ["STRUCT", "FILE"])
-        error("Invalid argument for SorF: must be 'STRUCT' or 'FILE'")
+        # error("Invalid argument for SorF: must be 'STRUCT' or 'FILE'")
+        println("Invalid argument for SorF: must be 'STRUCT' or 'FILE'")
     end
     if SorF == "STRUCT"
         dir  = "structOutputs"
         press_name = "STRUCT_alpha_dpdr_crit.png"
         dens_name = "STRUCT_alpha_dndr_crit.png"
-    else
+    elseif SorF == "FILE"
         dir  = "fileOutputs"
         press_name = "FILE_alpha_dpdr_crit.png"
         dens_name = "FILE_alpha_dndr_crit.png"
+    else
+        press_name = "alpha_dpdr_crit.png"
+        dens_name = "alpha_dndr_crit.png"
     end
 
     dpdr_header, dpdr_crit = read_crit_grad(joinpath(dir, "alpha_dpdr_crit.input"))

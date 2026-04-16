@@ -52,14 +52,28 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     Options = TJLFEP.readTGLFEP(inputEPfile, ir_exp)
 
     # Set up EXPRO constants:
-    # EP data is stored at species index ep_slot = IS_EP+1 in EXPRO file
-    ni, Ti, dlnnidr, dlntidr, cs, rmin_ex, gammaE, gammap, omegaGAM = TJLFEP.readEXPRO(inputEXPfile, Options.IS_EP + 1)
+    # IS_EP in input.TGLFEP matches the EXPRO species index for the EP (Fortran convention).
+    ni, Ti, dlnnidr, dlntidr, cs, rmin_ex, gammaE, gammap, omegaGAM = TJLFEP.readEXPRO(inputEXPfile, Options.IS_EP)
 
     profile.gammaE = gammaE
     profile.gammap = gammap
     profile.omegaGAM = omegaGAM
 
     println("options ir_exp is ", Options.IR_EXP)
+
+    # If IR_EXP was not saved in the MTGLF file (e.g. legacy test cases), fall back to linear spacing
+    if isempty(Options.IR_EXP)
+        Options.IR_EXP = fill(0, Options.SCAN_N)
+        for i = 1:Options.SCAN_N
+            if (Options.SCAN_N != 1)
+                jr_exp = profile.IRS + floor((i-1)*(profile.NR-profile.IRS)/(Options.SCAN_N-1))
+            else
+                jr_exp = profile.IRS
+            end
+            Options.IR_EXP[i] = jr_exp
+        end
+        println("IR_EXP not found in file, using linear spacing: ", Options.IR_EXP)
+    end
 
     dpdr_EP = fill(NaN, profile.NR)
     if (Options.INPUT_PROFILE_METHOD == 2)
@@ -73,7 +87,9 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
         n_at_max = ni[dpdr_EP_max_loc]
         if (Options.PROCESS_IN != 5)
             for ir = 1:Options.SCAN_N
-                Options.FACTOR = Options.FACTOR*dpdr_EP_max/dpdr_EP_abs[Options.IR_EXP[ir]] 
+                # Options.FACTOR = Options.FACTOR*dpdr_EP_max/dpdr_EP_abs[Options.IR_EXP[ir]] 
+                # matches fortran
+                Options.FACTOR[ir] = Options.FACTOR[ir]*dpdr_EP_max/dpdr_EP_abs[Options.IR_EXP[ir]] 
             end
         end
         Options.FACTOR_MAX_PROFILE .= Options.FACTOR
@@ -481,7 +497,9 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
         n_at_max = ni[dpdr_EP_max_loc]
         if (Options.PROCESS_IN != 5)
             for ir = 1:Options.SCAN_N
-                Options.FACTOR = Options.FACTOR*dpdr_EP_max/dpdr_EP_abs[ir_exp[ir]] 
+                # Options.FACTOR = Options.FACTOR*dpdr_EP_max/dpdr_EP_abs[ir_exp[ir]] 
+                # matches fortran
+                Options.FACTOR[ir] = Options.FACTOR[ir]*dpdr_EP_max/dpdr_EP_abs[Options.IR_EXP[ir]] 
             end
         end
         Options.FACTOR_MAX_PROFILE .= Options.FACTOR
@@ -493,6 +511,12 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     end
 
     if (saveFiles)
+        # Remap EP data from ep_slot to IS_EP (= ep_slot-1) so the written EXPRO
+        # has EP at index IS_EP, matching the Fortran convention.
+        for prefix in ["DENS", "TEMP", "DLNNDR", "DLNTDR"]
+            extraEP["$(prefix)_$(ep_slot-1)"] = extraEP["$(prefix)_$ep_slot"]
+            delete!(extraEP, "$(prefix)_$ep_slot")
+        end
         save_all(Options, profile, extraEP, dir)
     end
 

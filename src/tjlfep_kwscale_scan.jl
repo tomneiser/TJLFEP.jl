@@ -77,6 +77,7 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
     f_guess = fill(NaN, (nkyhat, nefwid))
     ikyhat_mark::Int64 = 0
     iefwid_mark::Int64 = 0
+    fmark = 1.0E20
     for k = 1:k_max
         # k doesn't use Threads!
         factor .= NaN
@@ -525,7 +526,9 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
                         ikymax = max(ikyhat,ikymax)
                         iefwmin = min(iefwid,iefwmin)
                         iefwmax = max(iefwid,iefwmax)
-                        f_guess_mark = min(f_guess[ikyhat,iefwid],f_guess_mark)
+                        # f_guess_mark = min(f_guess[ikyhat,iefwid],f_guess_mark)
+                        # more similar to fortran implementation
+                        f_guess_mark = min(f_mark_i[ikyhat,iefwid],f_guess_mark)
                             #if (inputsEP.IR == 101)
                                 #println("Marks set: ", iefwid_mark, " : ", ikyhat_mark)
                                 #println("conds: lkeep, gamma_mark_i_1, 0.95*gamma_mark_i_2, f_mark_i, gmark, fmark")
@@ -767,7 +770,10 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
         
     else
         # If, over the scan of k, there's an unstable mode, set each to each marked point.
-        inputsEP.FACTOR_IN = f_guess_mark
+        # inputs.FACTOR_IN = f_guess_mark
+        # Use fmark (= factor[imark], the first kept factor) to match Fortran TGLFEP_scalefactor.
+        # f_guess_mark uses interpolation not present in Fortran and can give negative values.
+        inputsEP.FACTOR_IN = fmark
         inputsEP.WIDTH_IN = efwid[iefwid_mark]
         inputsEP.KYMARK = kyhat[ikyhat_mark]
 

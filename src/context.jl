@@ -467,6 +467,7 @@ function InputTGLF_EP(
     input_tglf.SIGN_BT = signb
     input_tglf.SIGN_IT = signb .* signq
 
+    is_ep = is_ep + 1 # fast EP included in indexing here
     ns = length(ions) + (is_ep == 1 ? 2 : 1)
     ep_slot = (is_ep == 1 ? ns : is_ep)
     # if using electrons as EP, thermal electrons kept, fast electrons appended

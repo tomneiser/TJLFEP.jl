@@ -13,9 +13,10 @@ Pkg.status()
 BLAS.set_num_threads(1)
 begin
 
-    SCAN_N = 6
-    IS_EP = 4
-    rho = [0.01, 0.21, 0.41, 0.61, 0.81, 0.95]
+    SCAN_N = 3
+    IS_EP = 3 # third ion (He) is EP driver
+    # rho = [0.01, 0.21, 0.41, 0.61, 0.81, 0.95]
+    rho = [0.01, 0.41, 0.91]
     println("rho = ", rho)
 
     println("pre dict initialize")
@@ -25,7 +26,6 @@ begin
     "REJECT_TEARING_FLAG" => 1, "ROTATIONAL_SUPPRESSION_FLAG" => 1, "QL_RATIO_THRESH" => 0.001, "THETA_SQ_THRESH" => 100.0, "Q_SCALE" => 1.0,
     "WRITE_WAVEFUNCTION" => 1, "KY_MODEL" => 2, "SCAN_N" => SCAN_N, "IRS" => 2, "FACTOR_IN_PROFILE" => false, "FACTOR_IN" => 1.0,
     "WIDTH_IN_FLAG" => false, "WIDTH_MIN" => 1.0, "WIDTH_MAX" => 2.0, "INPUT_PROFILE_METHOD" => 2, "N_ION" => 3, "IS_EP" => IS_EP, "REAL_FREQ" => 1)
-    # species 4 = He, IS_EP = 4 --> alpha particles
 
     println("pre case params")
     ini, act = FUSE.case_parameters(:ITER; init_from=:ods);
