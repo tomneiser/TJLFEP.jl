@@ -527,23 +527,22 @@ function InputTGLF_EP(
     setproperty!(input_tglf, Symbol("RLNS_1"), a * dlnnedr)
     setproperty!(input_tglf, Symbol("RLTS_1"), a * dlntedr)
 
-    # Full radial profiles for fast electrons
-    # ne_full = cp1d.electrons.density_fast ./ m³_to_cm³
-    ne_full = cp1d.electrons.density_fast ./ fac
-    fast_zero = ne_full .== 0
-    dlnnedr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(ne_full, eps(Float64)), :backward))
-
-    # Pressure is in Pa (J/m³); T [eV] = P / (n [m⁻³] × 1.602e-19 J/eV). Note: e = IMAS.cgs.e is CGS, do NOT use here.
-    Te_full = (cp1d.electrons.pressure_fast_parallel ./ 3 + 2 * cp1d.electrons.pressure_fast_perpendicular ./ 3) ./ max.(ne_full .* fac, eps(Float64)) ./ 1.602e-19
-    Te_full[fast_zero] .= 0.0
-    Te_full = Te_full ./ 1000 # eV -> keV
-    dlntedr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(Te_full, eps(Float64)), :backward))
-    dlntedr_full[fast_zero] .= 0.0
-
     println("=========== TEMP CHECK ===========")
     println(all(ions[1].temperature .== cp1d.electrons.temperature))
 
     if is_ep == 1
+        # Full radial profiles for fast electrons
+        # ne_full = cp1d.electrons.density_fast ./ m³_to_cm³
+        ne_full = cp1d.electrons.density_fast ./ fac
+        fast_zero = ne_full .== 0
+        dlnnedr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(ne_full, eps(Float64)), :backward))
+
+        # Pressure is in Pa (J/m³); T [eV] = P / (n [m⁻³] × 1.602e-19 J/eV). Note: e = IMAS.cgs.e is CGS, do NOT use here.
+        Te_full = (cp1d.electrons.pressure_fast_parallel ./ 3 + 2 * cp1d.electrons.pressure_fast_perpendicular ./ 3) ./ max.(ne_full .* fac, eps(Float64)) ./ 1.602e-19
+        Te_full[fast_zero] .= 0.0
+        Te_full = Te_full ./ 1000 # eV -> keV
+        dlntedr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(Te_full, eps(Float64)), :backward))
+        dlntedr_full[fast_zero] .= 0.0
         ep_species_data["DENS_$ep_slot"] = ne_full
         ep_species_data["TEMP_$ep_slot"] = Te_full
         ep_species_data["DLNNDR_$ep_slot"] = dlnnedr_full
