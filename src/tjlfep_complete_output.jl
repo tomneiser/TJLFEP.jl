@@ -8,11 +8,11 @@ outputs: profile_in, profile_out, ir_min, ir_max, l_accept_profile
 tjlfep_complete_output performs the interpolation of a specified profile given a set of radial locations tested.
 profile_in takes a vector of total ir values and outputs a 201 long vector with this information.
 """
-function tjlfep_complete_output(profile_in::Vector{T}, inputsEP::Options{Float64}, inputsPR::profile{Float64}) where (T<:Real)
+function tjlfep_complete_output(profile_in::Vector{T}, inputsEP::Options{S}, inputsPR::profile{S}) where {T<:Real, S<:Real}
 
     # Default accept all scans and allocate profile_out and ir_out:
     l_accept_profile = fill(true, inputsEP.SCAN_N)
-    profile_out = fill(0.0, inputsPR.NR)
+    profile_out = fill(zero(T), inputsPR.NR)
 
     ir_out = fill(0, inputsEP.SCAN_N)
 

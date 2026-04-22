@@ -11,6 +11,7 @@ using FUSE
 using Plots
 
 include("tjlfep_modules.jl")
+include("ep_tjlf_ad_extensions.jl")
 include("tjlfep_read_inputs.jl")
 include("EXPROconst.jl")
 include("tjlfep_ky.jl")

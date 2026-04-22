@@ -4,9 +4,9 @@
 #using .TJLFEP: convert_input
 #using MPI
 
-function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_wf_file::String, l_wavefunction_out::Int, printout::Bool = true;
-                   eigen_cache::Union{Vector{ComplexF64}, Nothing} = nothing) #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
-# function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_wf_file::String, l_wavefunction_out::Int, printout::Bool = true) #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
+function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int, printout::Bool = true;
+                   eigen_cache::Union{Vector{<:Complex}, Nothing} = nothing) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
+# function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int, printout::Bool = true) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
     # Temp Defs:
     
     #color = 0
@@ -76,7 +76,11 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     end
 
     # Run TJLF and return QLweight and eigenvalues:
-    result = TJLF.run(convInput);
+    # TJLF.run hardcodes zeros(Float64,...) for result arrays, which fails for Dual.
+    # _tjlf_run_dual is identical but uses zeros(T,...). T===Float64 is a compile-time
+    # check so Julia eliminates the unused branch for each specialization.
+    # result = TJLF.run(convInput) # old
+    result = T === Float64 ? TJLF.run(convInput) : _tjlf_run_dual(convInput, T);
     gamma_out        = result.eigenvalue[:, 1, 1]   # [nmodes], ky=1
     freq_out         = result.eigenvalue[:, 1, 2]   # [nmodes], ky=1
     particle_QL_out  = result.QL_weights[:, :, :, 1, 1]  # [fields, species, nmodes], ky=1
@@ -88,8 +92,8 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
 
     inputTJLF = revert_input(convInput, convInput.NS, convInput.NKY)
     
-    g = fill(NaN, inputTJLF.NMODES)
-    f = fill(NaN, inputTJLF.NMODES)
+    g = fill(T(NaN), inputTJLF.NMODES)
+    f = fill(T(NaN), inputTJLF.NMODES)
     for n = 1:inputTJLF.NMODES
         g[n] = gamma_out[n]
         f[n] = freq_out[n]
@@ -111,7 +115,17 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     # This function was translated within TJLF so as to get the wavefunction.
     ms = 128
     max_plot = Int(18*ms/8+1)
-    wavefunction, angle, nplot, nmodes_out = TJLF.get_wavefunction(convInput, satParams, field_weight_out)
+    # get_wavefunction requires ComplexF64 for field_weight_out and has Float64-typed
+    # geometry arrays internally (xp, hp, plot_field_out). For Dual runs we strip
+    # partials from all three args — wavefunction shape is independent of AD parameters.
+    if T === Float64
+        wavefunction, angle, nplot, nmodes_out = TJLF.get_wavefunction(convInput, satParams, field_weight_out)
+    else
+        ci_f64 = _to_float64_input(convInput)
+        sp_f64 = TJLF.get_sat_params(ci_f64)
+        fw_f64 = map(x -> ComplexF64(ForwardDiff.value(real(x)), ForwardDiff.value(imag(x))), field_weight_out)
+        wavefunction, angle, nplot, nmodes_out = TJLF.get_wavefunction(ci_f64, sp_f64, fw_f64)
+    end
 
 
     inputsEP.LTEARING .= false
@@ -120,7 +134,7 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     inputsEP.L_TH_PINCH .= false
     inputsEP.L_QL_RATIO .= false
     # inputsEP.L_MAX_OUTER_PANEL .= false
-    x_tear_test::Vector{Float64} = fill(0.0, 4)
+    x_tear_test = fill(zero(T), 4)
     abswavefunction = abs.(wavefunction)
 
     
@@ -134,18 +148,18 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
     max_plot = Int(18*ms/8+1) # 289 length vector
     maxmodes = inputTJLF.NMODES
 
-    i_QL_cond_flux = fill(0.0, 4)
-    e_QL_cond_flux = fill(0.0, 4)
-    QL_flux_ratio = fill(0.0, 4)
-    EP_conv_frac = fill(0.0, 4)
-    theta_2_moment = fill(0.0, 4)
+    i_QL_cond_flux = fill(zero(T), 4)
+    e_QL_cond_flux = fill(zero(T), 4)
+    QL_flux_ratio = fill(zero(T), 4)
+    EP_conv_frac = fill(zero(T), 4)
+    theta_2_moment = fill(zero(T), 4)
     # TGLFEP hard-codes nmodes = 4, so that is why these are all defined like this.
-    DEP = fill(NaN, 4)
-    chi_th = fill(NaN, 4)
-    chi_i = fill(NaN, 4)
-    chi_i_cond = fill(NaN, 4)
-    chi_e = fill(NaN, 4)
-    chi_e_cond = fill(NaN, 4)
+    DEP = fill(T(NaN), 4)
+    chi_th = fill(T(NaN), 4)
+    chi_i = fill(T(NaN), 4)
+    chi_i_cond = fill(T(NaN), 4)
+    chi_e = fill(T(NaN), 4)
+    chi_e_cond = fill(T(NaN), 4)
 
     for n = 1:inputsEP.NMODES
         # The use of NMODES here is slightly confusing but needed as the Fortran uses assumed values for modes
@@ -167,7 +181,7 @@ function TJLFEP_ky(inputsEP::Options{Float64}, inputsPR::profile{Float64}, str_w
 
         if (n <= nmodes_out)#used to be nmodes_out
             for i = 1:max_plot # Finding the maximum value of this abs value of difference div wave_max
-                absdiffwavefunction::Float64 = abs.(wavefunction[n,1,i]-wavefunction[n,1,max_plot+1-i])
+                absdiffwavefunction = abs(wavefunction[n,1,i]-wavefunction[n,1,max_plot+1-i])
                 x_tear_test[n] = max(x_tear_test[n], absdiffwavefunction/wave_max)
                 ef_phi_norm += abs(wavefunction[n,1,i])
                 theta_2_moment[n] += (9 * π * (-1.0 + (2.0 * (i - 1)) / (max_plot - 1)))^2 * abs(wavefunction[n, 1, i])

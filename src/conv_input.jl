@@ -14,9 +14,9 @@ inputs: TJLFEP.InputTJLF{Float64} struct
 
 outputs: Main.TJLF.InputTJLF{Float64} struct of the same values
 """
-function convert_input(input::TJLFEP.InputTJLF{Float64}, ns::Int64, nky::Int64)
-    # Extract relevant fields from InputTJLF{Float64} and construct Main.TJLF.InputTJLF{Float64}
-    new_input = Main.TJLFEP.TJLF.InputTJLF{Float64}(ns, nky)
+function convert_input(input::TJLFEP.InputTJLF{T}, ns::Int64, nky::Int64) where {T<:Real}
+    # Extract relevant fields from InputTJLF{T} and construct Main.TJLF.InputTJLF{T}
+    new_input = Main.TJLFEP.TJLF.InputTJLF{T}(ns, nky)
     new_input.UNITS = input.UNITS
     new_input.USE_BPER = input.USE_BPER
     new_input.USE_BPAR = input.USE_BPAR
@@ -105,8 +105,8 @@ function convert_input(input::TJLFEP.InputTJLF{Float64}, ns::Int64, nky::Int64)
     return new_input
 end
 
-function revert_input(input::TJLFEP.TJLF.InputTJLF{Float64}, ns::Int64, nky::Int64)
-    new_input = Main.TJLFEP.InputTJLF{Float64}(ns, nky, false)
+function revert_input(input::TJLFEP.TJLF.InputTJLF{T}, ns::Int64, nky::Int64) where {T<:Real}
+    new_input = Main.TJLFEP.InputTJLF{T}(ns, nky, false)
     new_input.UNITS = input.UNITS
     new_input.USE_BPER = input.USE_BPER
     new_input.USE_BPAR = input.USE_BPAR
@@ -140,7 +140,8 @@ function revert_input(input::TJLFEP.TJLF.InputTJLF{Float64}, ns::Int64, nky::Int
     new_input.VPAR_SHEAR = input.VPAR_SHEAR
     new_input.WIDTH_SPECTRUM = input.WIDTH_SPECTRUM
     new_input.KY_SPECTRUM = input.KY_SPECTRUM
-    new_input.EIGEN_SPECTRUM = input.EIGEN_SPECTRUM
+    # EIGEN_SPECTRUM: Vector{Complex{T}} in TJLF, hardcoded ComplexF64 in TJLFEP — skip copy (callers extract eigen_out before revert_input)
+    # new_input.EIGEN_SPECTRUM = input.EIGEN_SPECTRUM
     new_input.FIND_EIGEN = input.FIND_EIGEN
     new_input.SIGN_BT = input.SIGN_BT
     new_input.SIGN_IT = input.SIGN_IT

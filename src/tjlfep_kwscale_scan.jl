@@ -1,4 +1,4 @@
-function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, printout::Bool = true)
+function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool = true) where {T<:Real}
     # These are for testing purposes:
     #baseDirectory = "/Users/benagnew/TJLF.jl/outputs/tglfep_tests/input.MTGLF"
     #inputsPR = readMTGLF(baseDirectory)
@@ -33,11 +33,11 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
     # iefwmin =0
     # iefwmax =0
 
-    growthrate = zeros(Float64, nkyhat, nefwid, nfactor, inputsEP.NMODES)
-    growthrate_out = zeros(Float64, nkyhat, nefwid, nfactor, inputsEP.NMODES)
+    growthrate = zeros(T, nkyhat, nefwid, nfactor, inputsEP.NMODES)
+    growthrate_out = zeros(T, nkyhat, nefwid, nfactor, inputsEP.NMODES)
 
-    frequency = zeros(Float64, nkyhat, nefwid, nfactor, inputsEP.NMODES)
-    frequency_out = zeros(Float64, nkyhat, nefwid, nfactor, inputsEP.NMODES)
+    frequency = zeros(T, nkyhat, nefwid, nfactor, inputsEP.NMODES)
+    frequency_out = zeros(T, nkyhat, nefwid, nfactor, inputsEP.NMODES)
     
     lkeep_i = fill(true, (nkyhat, nefwid, nfactor, inputsEP.NMODES))
     ltearing_i = fill(false, (nkyhat, nefwid, nfactor, inputsEP.NMODES))
@@ -53,36 +53,36 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
     l_QL_ratio_i_out = fill(false, (nkyhat, nefwid, nfactor, inputsEP.NMODES))
     l_QL_ratio_i_ = fill(false, (nkyhat, nefwid, nfactor, inputsEP.NMODES))
 
-    f0 = 0.0
+    f0 = zero(T)
     f1 = inputsEP.FACTOR_IN # 1 for first round
     w0 = inputsEP.WIDTH_MIN
     w1 = inputsEP.WIDTH_MAX
-    kyhat_min = 0.0
-    kyhat_max = 1.0
+    kyhat_min = zero(T)
+    kyhat_max = one(T)
     kyhat0 = kyhat_min
     kyhat1 = kyhat_max
-    factor = fill(NaN, nfactor)
-    efwid = fill(NaN, nefwid)
-    kyhat = fill(NaN, nkyhat)
+    factor = fill(T(NaN), nfactor)
+    efwid = fill(T(NaN), nefwid)
+    kyhat = fill(T(NaN), nkyhat)
 
     ikyhat_write = floor(Int, nkyhat/2) # 2
     # println(ikyhat_write)
     iefwid_write = floor(Int, nefwid/2) # 5
     ifactor_write = nfactor # 10
-    f_guess_mark = 1.0E20
+    f_guess_mark = T(1.0E20)
     lkeep_ref = fill(false, (nkyhat, nefwid))
     # for scope purposes:
-    inputTJLF = TJLFEP.InputTJLF{Float64}(inputsPR.NS, 12, true)
+    inputTJLF = TJLFEP.InputTJLF{T}(inputsPR.NS, 12, true)
     imark_min = 0
-    f_guess = fill(NaN, (nkyhat, nefwid))
+    f_guess = fill(T(NaN), (nkyhat, nefwid))
     ikyhat_mark::Int64 = 0
     iefwid_mark::Int64 = 0
-    fmark = 1.0E20
+    fmark = T(1.0E20)
     for k = 1:k_max
         # k doesn't use Threads!
-        factor .= NaN
-        efwid .= NaN
-        kyhat .= NaN
+        fill!(factor, T(NaN))
+        fill!(efwid, T(NaN))
+        fill!(kyhat, T(NaN))
         for i = 1:nfactor
             factor[i] = ((f1-f0)/nfactor)*i+f0
             # k = 1: FACTOR_IN = 1.0
@@ -123,10 +123,12 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
             sleep(0.5)
             println("factor, efwid, kyhat: ", factor, efwid, kyhat)
         end=#
-        # Threads:
-        #=Threads.@threads=#
-        eigen_cache = nothing  # reset each round; seeded from previous ky call within round
-        for i = 1:nkwf
+        # eigen_cache is a sequential-seeding optimization incompatible with parallel execution;
+        # each thread gets its own local cache initialised to nothing.
+        Threads.@threads for i = 1:nkwf
+            local_inputsEP = deepcopy(inputsEP)  # thread-local copy; avoids races on FACTOR_IN/KYHAT_IN/WIDTH_IN/LKEEP/etc.
+            local_eigen_cache = nothing           # thread-local; no cross-iteration seeding in parallel
+
             l_wavefunction_out = 0
 
             # The following 3 statments define each combination of ikyhat, iefwid, and ifactor.
@@ -138,9 +140,9 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
                 #println(efwid, " : ", iefwid, " : ", efwid[iefwid])
             end
             # println(kyhat)
-            inputsEP.FACTOR_IN = factor[ifactor] # Just used in mapping
-            inputsEP.KYHAT_IN = kyhat[ikyhat] # Set equal to ky_in
-            inputsEP.WIDTH_IN = efwid[iefwid]
+            local_inputsEP.FACTOR_IN = factor[ifactor] # Just used in mapping
+            local_inputsEP.KYHAT_IN = kyhat[ikyhat] # Set equal to ky_in
+            local_inputsEP.WIDTH_IN = efwid[iefwid]
             #kyIndex = ikyhat
             #println("WIDTH_IN at pass ", i, ": ", inputsEP.WIDTH_IN)
             #println("np: ", np)
@@ -174,13 +176,13 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
                 end=#
 
 
-            str_sf = string(Char(mod(floor(Int, inputsEP.FACTOR_IN/100.0), 10) + UInt32('0'))) *
-                     string(Char(mod(floor(Int, inputsEP.FACTOR_IN/10.0), 10) + UInt32('0')))  *
-                     string(Char(mod(floor(Int, inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
+            str_sf = string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/100.0), 10) + UInt32('0'))) *
+                     string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/10.0), 10) + UInt32('0')))  *
+                     string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
                      "." *
-                     string(Char(mod(floor(Int, 10*inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
-                     string(Char(mod(floor(Int, 100*inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
-                     string(Char(mod(floor(Int, 1000*inputsEP.FACTOR_IN), 10) + UInt32('0')))
+                     string(Char(mod(floor(Int, 10*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
+                     string(Char(mod(floor(Int, 100*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
+                     string(Char(mod(floor(Int, 1000*local_inputsEP.FACTOR_IN), 10) + UInt32('0')))
             #=if (k == 2 && id == 0 && inputsEP.IR == 201 && i <= 5)
                 #println("id = 0 str_sf: ")
                 #println(str_sf)
@@ -194,11 +196,11 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
                 println("Input: ", inputsEP)
                 println("iteration: ", i)
             end=#
-            str_wf_file = "out.wavefunction"*inputsEP.SUFFIX*"_sf"*str_sf
-            #=if (inputsEP.IR == 201 && k == 1)
+            str_wf_file = "out.wavefunction"*coalesce(local_inputsEP.SUFFIX, "")*"_sf"*str_sf
+            #=if (local_inputsEP.IR == 201 && k == 1)
                 println("ikyhat_write for id in ir = 201: ", id, " ", ikyhat_write)
             end=#
-            if ((inputsEP.WRITE_WAVEFUNCTION == 1) &&
+            if ((local_inputsEP.WRITE_WAVEFUNCTION == 1) &&
                 (ikyhat == ikyhat_write) &&
                 (iefwid == iefwid_write) &&
                 (ifactor == ifactor_write) &&
@@ -207,37 +209,37 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
                 #println(str_sf, " for round ", k, ", id & ir: ", id, " ", inputsEP.IR)
             end
             
-            if (inputsEP.IR == 3 && k == 1 && false)
+            if (local_inputsEP.IR == 3 && k == 1 && false)
                 println("================= Iter: ", i, " ================")
-                println(inputsEP.PROCESS_IN)
-                println(inputsEP.THRESHOLD_FLAG)
-                println(inputsEP.SCAN_METHOD)
-                println(inputsEP.QL_RATIO_THRESH)
-                println(inputsEP.Q_SCALE)
-                println(inputsEP.KY_MODEL)
-                println(inputsEP.FACTOR_IN)
-                println(inputsEP.WIDTH_IN)
-                println(inputsEP.KYHAT_IN)
-                println(inputsEP.WIDTH_MIN)
-                println(inputsEP.WIDTH_MAX)
-                println(inputsEP.IS_EP)
-                println(inputsEP.IR)
-                println(inputsEP.JTSCALE)
-                println(inputsEP.NN)
-                println(inputsEP.FREQ_AE_UPPER)
+                println(local_inputsEP.PROCESS_IN)
+                println(local_inputsEP.THRESHOLD_FLAG)
+                println(local_inputsEP.SCAN_METHOD)
+                println(local_inputsEP.QL_RATIO_THRESH)
+                println(local_inputsEP.Q_SCALE)
+                println(local_inputsEP.KY_MODEL)
+                println(local_inputsEP.FACTOR_IN)
+                println(local_inputsEP.WIDTH_IN)
+                println(local_inputsEP.KYHAT_IN)
+                println(local_inputsEP.WIDTH_MIN)
+                println(local_inputsEP.WIDTH_MAX)
+                println(local_inputsEP.IS_EP)
+                println(local_inputsEP.IR)
+                println(local_inputsEP.JTSCALE)
+                println(local_inputsEP.NN)
+                println(local_inputsEP.FREQ_AE_UPPER)
             end
 
             #testid = false
-            #if (inputsEP.IR == 101)
+            #if (local_inputsEP.IR == 101)
             #    testid = true
             #end
 
-            if (inputsEP.IR == 101)
+            if (local_inputsEP.IR == 101)
                 #println("============== Iter: ", i)
             end
 
-            gamma_out, freq_out, inputTJLF, eigen_cache = TJLFEP_ky(inputsEP, inputsPR, str_wf_file, l_wavefunction_out, printout; eigen_cache)
-            # gamma_out, freq_out, inputTJLF = TJLFEP_ky(inputsEP, inputsPR, str_wf_file, l_wavefunction_out, printout)
+            gamma_out, freq_out, inputTJLF, local_eigen_cache = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out, printout; eigen_cache=local_eigen_cache)
+            # gamma_out, freq_out, inputTJLF = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out, printout)
 
             #=if (id == 0 && inputsEP.IR == 201 && k == 1)
                 println("After ky: ", inputsEP.L_TH_PINCH, " : ", i, " : ", k, " : ", id)
@@ -277,19 +279,19 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
                 #println(inputsEP.L_MAX_OUTER_PANEL)
             #end
 
-            for n = 1:inputsEP.NMODES
+            for n = 1:local_inputsEP.NMODES
                 growthrate[ikyhat,iefwid,ifactor,n] = gamma_out[n]
                 frequency[ikyhat,iefwid,ifactor,n]  = freq_out[n]
-                lkeep_i[ikyhat,iefwid,ifactor,n] = inputsEP.LKEEP[n]
-                ltearing_i[ikyhat,iefwid,ifactor,n] = inputsEP.LTEARING[n]
-                l_th_pinch_i[ikyhat,iefwid,ifactor,n] = inputsEP.L_TH_PINCH[n]
-                l_i_pinch_i[ikyhat,iefwid,ifactor,n] = inputsEP.L_I_PINCH[n]
-                l_e_pinch_i[ikyhat,iefwid,ifactor,n] = inputsEP.L_E_PINCH[n]
-                l_EP_pinch_i[ikyhat,iefwid,ifactor,n] = inputsEP.L_EP_PINCH[n]
+                lkeep_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.LKEEP[n]
+                ltearing_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.LTEARING[n]
+                l_th_pinch_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_TH_PINCH[n]
+                l_i_pinch_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_I_PINCH[n]
+                l_e_pinch_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_E_PINCH[n]
+                l_EP_pinch_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_EP_PINCH[n]
 
-                l_theta_sq_i[ikyhat,iefwid,ifactor,n] = inputsEP.L_THETA_SQ[n]
-                #l_max_outer_panel_i[ikyhat,iefwid,ifactor,n] = inputsEP.L_MAX_OUTER_PANEL[n]
-                l_QL_ratio_i[ikyhat,iefwid,ifactor,n] = inputsEP.L_QL_RATIO[n]
+                l_theta_sq_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_THETA_SQ[n]
+                #l_max_outer_panel_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_MAX_OUTER_PANEL[n]
+                l_QL_ratio_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_QL_RATIO[n]
             end
             
             #println("Iteration ", i, ", id ", id)
@@ -407,12 +409,12 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
         # f_mark_i - 
         # lkeep_ref - 
         
-        fmark = 1.0E20
-        gmark = 0.0
-        f_guess_mark = 1.0E20
-        gamma_mark_i_1 = fill(NaN, (nkyhat, nefwid))
-        gamma_mark_i_2 = fill(NaN, (nkyhat, nefwid))
-        f_mark_i = fill(NaN, (nkyhat, nefwid))
+        fmark = T(1.0E20)
+        gmark = zero(T)
+        f_guess_mark = T(1.0E20)
+        gamma_mark_i_1 = fill(T(NaN), (nkyhat, nefwid))
+        gamma_mark_i_2 = fill(T(NaN), (nkyhat, nefwid))
+        f_mark_i = fill(T(NaN), (nkyhat, nefwid))
         
 
         
@@ -457,8 +459,8 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
 
                     # This is the portion that is NOT consistent with the Fortran and is
                     # causing problems due to default values:
-                    gamma_g1 = 0.0 #-2.0
-                    gamma_g2 = 100.0 #-1.0
+                    gamma_g1 = zero(T) #-2.0
+                    gamma_g2 = T(100.0) #-1.0
                     
                     # For all modes, set gamma_g1 to the maximum growthrate of kept modes at this point of ikyhat, iefwid, and imark_ref
                     # This also sets gamma_g2 to the maximum neighboring factor value of growthrate (imark_ref+1).
@@ -518,7 +520,7 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
                             ikymax = 1
                             iefwmin = nefwid
                             iefwmax = 1
-                            f_guess_mark = 1.0E20
+                            f_guess_mark = T(1.0E20)
                             ikyhat_mark = ikyhat
                             iefwid_mark = iefwid
                         end
@@ -570,8 +572,8 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
 
         # Next is the writing of the out.scalefactor files.
 
-        g = fill(NaN, inputsEP.NMODES)
-        f = fill(NaN, inputsEP.NMODES)
+        g = fill(T(NaN), inputsEP.NMODES)
+        f = fill(T(NaN), inputsEP.NMODES)
         keep_label = fill("", inputsEP.NMODES)
         # These will be produced whenever I run from a specified directory, say
         # via a batch file or some execution command for TJLF-EP. Running by REPL
@@ -579,7 +581,7 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
         # which isn't where I will want to store them in the end.
         # println("printout, l_write_out",printout, l_write_out)
         if (l_write_out && printout)
-            filename = "out.scalefactor"*inputsEP.SUFFIX
+            filename = "out.scalefactor"*coalesce(inputsEP.SUFFIX, "")
             iexist = isfile(filename)
             if (iexist)
                 io = open(filename, "a")
@@ -681,7 +683,7 @@ function kwscale_scan(inputsEP::Options{Float64}, inputsPR::profile{Float64}, pr
         #     # some more specific things to hone in each round (including in kyhat and width)
         if fmark < 1.0E10  # accepted mode with all constraints
             f1 = 2.0 * fmark
-            f0 = 0.0
+            f0 = zero(T)
             delw = (w1 - w0) / (nefwid - 1)
         
             w1 = efwid[iefwmax] + delw

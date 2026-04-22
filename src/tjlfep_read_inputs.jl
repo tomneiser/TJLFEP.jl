@@ -276,7 +276,7 @@ Outputs: InputTJLF struct ready for usage in running TJLF.
 #include("../tjlf-ep/TJLFEP.jl")
 #using .TJLFEP
 
-function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
+function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
     # Access the fields like this:
     # inputsOptions = inputsEP.Options
     # profile = inputsEP.profile   
@@ -299,7 +299,7 @@ function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
     inputsEP.KY_MODEL = 3
 
     # Okay finally I can do this lol:
-    inputTJLF = InputTJLF{Float64}(inputsPR.NS, 12, true) # It is being set to the default...
+    inputTJLF = InputTJLF{T}(inputsPR.NS, 12, true) # It is being set to the default...
     if (inputsEP.IR < 1 || inputsEP.IR > inputsPR.NR)
         println("ir isn't within range")
         return 1
@@ -316,7 +316,7 @@ function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
     inputTJLF.NS = inputsPR.NS
     ns = inputsPR.NS
     is = inputsEP.IS_EP + 1
-    inputsPR.IS = is
+    inputsPR.IS = is  # needed: profile.IS is read in runTHD after mainsub returns; all inner threads write the same value (IS_EP is a fixed input), so no actual race
     ir = inputsEP.IR
 
     #TJLF deletes GEOMETRY_FLAG so this is redundant:
@@ -373,32 +373,15 @@ function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
             sum0 = sum0 + inputTJLF.ZS[i]*inputTJLF.AS[i]
         end
     end
-    if (inputsEP.IR == 2 && false)
-        # println("======")
-        # println(inputsPR.A_QN)
-        # println(inputTJLF.ZS)
-    end
-    inputsPR.A_QN = (1.0 - inputTJLF.ZS[is]*inputTJLF.AS[is]) / sum0
 
-    if (inputsEP.IR == 2 && false)
-        # println(sum0)
-        # println(inputsPR.A_QN)
-        # println(inputTJLF.AS)
-        # println("======")
-    end
+    A_QN = (1.0 - inputTJLF.ZS[is]*inputTJLF.AS[is]) / sum0  # local variable; avoids race on shared inputsPR.A_QN in parallel nkwf loop
+    inputsPR.A_QN = A_QN  # keep field updated for callers that read it outside TJLF_map (e.g. diagnostics)
+
     for i = 2:ns
         if (i != is)
-            inputTJLF.AS[i] = inputsPR.A_QN*inputTJLF.AS[i]
+            inputTJLF.AS[i] = A_QN*inputTJLF.AS[i]  # reads local A_QN, not shared inputsPR.A_QN
         end
     end
-    # if (inputsEP.IR == 2 && false)
-    #     println(inputTJLF.AS)
-    
-    #println("is, FACTOR_MAX, FACTOR_IN, sum0, AS:")
-    #println(is, " ", inputsEP.FACTOR_MAX, " ", inputsEP.FACTOR_IN, " ", sum0, " ", inputTJLF.AS)
-
-    # println("PR RLNS: ", inputsPR.RLNS)
-    # println("PR RLTS: ", inputsPR.RLTS)
 
     if (inputsEP.MODE_IN == 2) # EP drive only
         for i = 1:ns
@@ -516,19 +499,14 @@ function TJLF_map(inputsEP::Options{Float64}, inputsPR::profile{Float64})
         inputsEP.GAMMA_THRESH_MAX = 1.0e-7
     end
 
-    # println("gammaE", inputsPR.gammaE)
-    # println("Gamma Thresh MAX", inputsEP.GAMMA_THRESH_MAX)
     for field in fieldnames(typeof(inputsEP))
         value = getfield(inputsEP, field)
-        #println("$field: $value")
-        # println(fieldnames(inputTJLF))
-        # println(fieldnames(InputTJLF))
         # if value[1] ==NaN
         #     value = 0
         # elseif value[1]  ==missing
         #     value[1] == coalesce(input.TJLF, false)
     end
-# Create an instance of your struct (replace with your actual struct's name)
+    # Create an instance of your struct (replace with your actual struct's name)
 
     # for field in fieldnames(typeof(inputTJLF))
 
