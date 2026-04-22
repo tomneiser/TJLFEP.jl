@@ -445,7 +445,27 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
         for i = 1:ns
             sum1 = sum1 + inputsPR.AS[ir, i]*inputsPR.TAUS[ir, i]*(inputsPR.RLNS[ir, i]+inputsPR.RLTS[ir, i])
         end
-        inputTJLF.P_PRIME_LOC = inputsPR.P_PRIME[ir]*sum0/sum1
+        # sum2: EP species uses scaled TGLF values; all other species use original profile values
+        # (pprime_method added 10-9-2024, EMB)
+        sum2 = 0
+        for i = 1:ns
+            if i == is
+                sum2 = sum2 + inputTJLF.AS[i]*inputTJLF.TAUS[i]*(inputTJLF.RLNS[i]+inputTJLF.RLTS[i])
+            else
+                sum2 = sum2 + inputsPR.AS[ir, i]*inputsPR.TAUS[ir, i]*(inputsPR.RLNS[ir, i]+inputsPR.RLTS[ir, i])
+            end
+        end
+        pprime_method = coalesce(inputsEP.PPRIME_METHOD, 2)
+        if pprime_method == 1
+            inputTJLF.P_PRIME_LOC = inputsPR.P_PRIME[ir]                    # Fixed beta_* stabilization
+        elseif pprime_method == 2
+            inputTJLF.P_PRIME_LOC = inputsPR.P_PRIME[ir]*sum0/sum1          # beta_* stabilization matches kinetic drives
+        elseif pprime_method == 3
+            inputTJLF.P_PRIME_LOC = inputsPR.P_PRIME[ir]*sum2/sum1          # beta_* stabilization preserves thermal piece, varies with EP
+        else
+            println("Invalid PPRIME_METHOD, reverting to fixed p_prime")
+            inputTJLF.P_PRIME_LOC = inputsPR.P_PRIME[ir]
+        end
         
     end
 

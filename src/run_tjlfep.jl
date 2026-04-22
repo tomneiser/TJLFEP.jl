@@ -108,28 +108,40 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
         Ts[i] = deepcopy(Ts[i-1])
     end
     arrTGLFEP = Ts
-    arrMTGLF = fill(profile, n_ir)
+    arrMTGLF = Vector{typeof(profile)}(undef, n_ir)
+    arrMTGLF[1] = deepcopy(profile)
+    for i in 2:n_ir
+        arrMTGLF[i] = deepcopy(arrMTGLF[i-1])
+    end
     arrgrowth = fill(fill(NaN,(5, 10, 10, Options.NMODES)), n_ir)
 
-    for i in 1:n_ir
+    stdout_lock = ReentrantLock()
+    Threads.@threads for i in 1:n_ir
         #try
             arrTGLFEP[i].IR = arrTGLFEP[i].IR_EXP[i]
             ir = arrTGLFEP[i].IR
             str_r = lpad(string(ir), 3, '0')
             arrTGLFEP[i].SUFFIX = "_r"*str_r
 
-            println("=============================================================")
-            println("pre mainsub")
-            println("i is ", i, " ir is ", ir)
-            println("=============================================================")
-
             arrTGLFEP[i].FACTOR_IN = arrTGLFEP[i].FACTOR[i]
             input1 = arrTGLFEP[i]
             input2 = arrMTGLF[i]
+
+            lock(stdout_lock) do
+                println("=============================================================")
+                println("pre mainsub")
+                println("i is ", i, " ir is ", ir)
+                println("=============================================================")
+            end
+
             arrgrowth[i], arrTGLFEP[i], arrMTGLF[i] = TJLFEP.mainsub(input1, input2, printout)
         #catch
         #end
     end
+
+    # IS was set on each arrMTGLF[i] deepcopy by TJLF_map; copy it back to the
+    # original profile which is used below for indexing (e.g. profile.AS[..., profile.IS])
+    profile.IS = arrMTGLF[1].IS
 
     Options = arrTGLFEP[1]
     

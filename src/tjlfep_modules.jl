@@ -319,6 +319,7 @@ mutable struct Options{T<:Real} # This acts as the interface module of Fortran, 
     REJECT_EP_PINCH_FLAG::Union{Int, Missing}
     REJECT_TEARING_FLAG::Union{Int, Missing}
     ROTATIONAL_SUPPRESSION_FLAG::Union{Int, Missing} # 10
+    PPRIME_METHOD::Union{Int, Missing} # pprime_method added 10-9-2024, EMB
     QL_RATIO_THRESH::Union{T, Missing}
     THETA_SQ_THRESH::Union{T, Missing}
     Q_SCALE::Union{T, Missing}
@@ -402,6 +403,7 @@ mutable struct Options{T<:Real} # This acts as the interface module of Fortran, 
     function Options{T}(nscan_in::Int64, widthin::Bool, nn::Int64, nr::Int64, jtscale_max::Int64, nmodes::Int64) where {T<:Real}
         if(widthin)
             new(missing, missing, missing, missing, missing, missing, missing, missing, missing, missing,
+            missing,
             NaN, NaN, NaN, missing, missing, nscan_in, missing, missing, NaN, widthin, NaN,
             NaN, NaN, missing, missing, NaN, NaN, NaN, NaN, missing, nmodes, missing, fill(NaN, nscan_in),
             NaN, NaN, NaN, NaN, fill(NaN, nr), fill(NaN, nr), fill(NaN, (jtscale_max, nr)), NaN, fill(NaN, nr), fill(NaN, nr),
@@ -412,6 +414,7 @@ mutable struct Options{T<:Real} # This acts as the interface module of Fortran, 
             fill(NaN, nscan_in), missing, fill(NaN, nr), 0, fill(NaN, nscan_in))
         else
             new(missing, missing, missing, missing, missing, missing, missing, missing, missing, missing,
+            missing,
             NaN, NaN, NaN, missing, missing, nscan_in, missing, missing, NaN, widthin, 0.0,
             NaN, NaN, missing, missing, NaN, NaN, NaN, NaN, missing, nmodes, missing, fill(NaN, nscan_in),
             NaN, NaN, NaN, NaN, fill(NaN, nr), fill(NaN, nr), fill(NaN, (jtscale_max, nr)), NaN, fill(NaN, nr), fill(NaN, nr),
