@@ -5,7 +5,14 @@ inputs: tglfepfilepath, mtglffilepath, exprofilepath
 
 inputs are used in the threads version of the TJLFEP code for a single run
 """
-function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::String; printout::Bool=false)
+function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::String; printout::Bool=false, use_gpu::Bool=false)
+
+    # Auto-detect device via TJLF.pick_device(:auto); shadows the use_gpu parameter.
+    # Thread safety: Threads.@threads runs each iteration in a separate Julia task.
+    # CUDA.jl v5 assigns per-task streams, so concurrent GPU calls are stream-isolated.
+    # use_gpu = TJLF.pick_device(:auto) === :gpu
+    # processor = use_gpu ? "GPU" : "CPU"
+    # println("TJLFEP runTHD: using $processor")
 
     # Default values for EXPRO:
     ni = TJLFEP.exproConst.ni
@@ -134,7 +141,7 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
                 println("=============================================================")
             end
 
-            arrgrowth[i], arrTGLFEP[i], arrMTGLF[i] = TJLFEP.mainsub(input1, input2, printout)
+            arrgrowth[i], arrTGLFEP[i], arrMTGLF[i] = TJLFEP.mainsub(input1, input2, printout; use_gpu=use_gpu)
         #catch
         #end
     end
@@ -406,7 +413,14 @@ inputs: tglfepfilepath, mtglffilepath, exprofilepath
 
 inputs are used in the threads version of the TJLFEP code for a single run
 """
-function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any}; printout::Bool=false, saveFiles::Bool=false, dir::String="ddFiles")
+function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any}; printout::Bool=false, saveFiles::Bool=false, dir::String="ddFiles", use_gpu::Bool=false)
+
+    # Auto-detect device via TJLF.pick_device(:auto); shadows the use_gpu parameter.
+    # Thread safety: Threads.@threads runs each iteration in a separate Julia task.
+    # CUDA.jl v5 assigns per-task streams, so concurrent GPU calls are stream-isolated.
+    # use_gpu = TJLF.pick_device(:auto) === :gpu
+    # processor = use_gpu ? "GPU" : "CPU"
+    # println("TJLFEP runTHD: using $processor")
 
     # Default values for EXPRO:
     ni = TJLFEP.exproConst.ni
@@ -579,7 +593,7 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
                 println("=============================================================")
             end
 
-            arrgrowth[i], arrTGLFEP[i], arrMTGLF[i] = TJLFEP.mainsub(input1, input2, printout)
+            arrgrowth[i], arrTGLFEP[i], arrMTGLF[i] = TJLFEP.mainsub(input1, input2, printout; use_gpu=use_gpu)
         #catch
         #end
     end

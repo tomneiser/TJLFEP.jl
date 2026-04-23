@@ -9,9 +9,10 @@ using IMAS
 using TurbulentTransport
 using FUSE
 using Plots
+using CUDA
 
 include("tjlfep_modules.jl")
-include("ad_extensions.jl")
+include("tjlfep_ad_extensions.jl")
 include("tjlfep_read_inputs.jl")
 include("EXPROconst.jl")
 include("tjlfep_ky.jl")

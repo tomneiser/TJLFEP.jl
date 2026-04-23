@@ -40,10 +40,15 @@ begin
     println("runTHD")
     outdir = joinpath(@__DIR__, "structOutputs")
     mkpath(outdir)
+
+    use_gpu   = (TJLF.pick_device(:auto) === :gpu)
+    println("Using device: ", use_gpu ? "GPU" : "CPU")
+
+    t1 = time()
     cd(outdir) do
         runTHD(dd, rho, OptionsDict; printout = true, saveFiles = true, dir = joinpath(@__DIR__, "ITERfiles"))
     end
+    t2 = time()
     make_crit_grad_plots("STRUCT"; dir=outdir)
-    println("runTHD done")
+    println("runTHD done in $(t2 - t1) s")
 end
-println("example done")

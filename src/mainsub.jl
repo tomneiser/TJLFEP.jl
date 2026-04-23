@@ -1,4 +1,4 @@
-function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true)
+function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; use_gpu::Bool = false)
     x = inputsEP.PROCESS_IN
     if (x == 1)
         msg = "No"
@@ -21,7 +21,7 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true)
             #println(inputsEP.MODE_IN)
         end
 
-        growthrate, inputsEP, inputsPR = kwscale_scan(inputsEP, inputsPR, printout)
+        growthrate, inputsEP, inputsPR = kwscale_scan(inputsEP, inputsPR, printout; use_gpu=use_gpu)
         return growthrate, inputsEP, inputsPR
     elseif (x == 6)
         msg = "No"

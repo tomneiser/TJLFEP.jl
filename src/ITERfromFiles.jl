@@ -24,8 +24,12 @@ begin
 
     outdir = joinpath(homedirectory, "fileOutputs")
     mkpath(outdir)
+
+    use_gpu   = (TJLF.pick_device(:auto) === :gpu)
+    println("Using device: ", use_gpu ? "GPU" : "CPU")
+
     cd(outdir) do
-        runTHD(tglfepfilepath, mtglffilepath, exprofilepath, printout = true)
+        runTHD(tglfepfilepath, mtglffilepath, exprofilepath; printout = true, use_gpu = use_gpu)
     end
     make_crit_grad_plots("FILE"; dir=outdir)
 end

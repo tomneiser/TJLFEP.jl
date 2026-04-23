@@ -5,7 +5,8 @@
 #using MPI
 
 function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int, printout::Bool = true;
-                   eigen_cache::Union{Vector{<:Complex}, Nothing} = nothing) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
+                   eigen_cache::Union{Vector{<:Complex}, Nothing} = nothing,
+                   use_gpu::Bool = false) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
 # function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int, printout::Bool = true) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
     # Temp Defs:
     
@@ -80,7 +81,11 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     # _tjlf_run_dual is identical but uses zeros(T,...). T===Float64 is a compile-time
     # check so Julia eliminates the unused branch for each specialization.
     # result = TJLF.run(convInput) # old
-    result = T === Float64 ? TJLF.run(convInput) : _tjlf_run_dual(convInput, T);
+    if T === Float64
+        result = TJLF.run(convInput; use_gpu=use_gpu)
+    else
+        result = _tjlf_run_dual(convInput, T; use_gpu=use_gpu)
+    end
     gamma_out        = result.eigenvalue[:, 1, 1]   # [nmodes], ky=1
     freq_out         = result.eigenvalue[:, 1, 2]   # [nmodes], ky=1
     particle_QL_out  = result.QL_weights[:, :, :, 1, 1]  # [fields, species, nmodes], ky=1

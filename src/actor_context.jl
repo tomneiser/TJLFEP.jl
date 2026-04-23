@@ -139,6 +139,8 @@ function _step(actor::ActorTGLF)
     elseif par.model == :TJLFEP
         # TJLFEP.runTHD expects Vector{InputTJLF}, Options, and profile
         # It runs once for all radii, not per radius
+        use_gpu = TJLF.pick_device(:auto) === :gpu
+        println("ActorTGLF (:TJLFEP): using ", use_gpu ? "GPU" : "CPU")
         converted_input_tglfs = map(convert_to_TJLFEP, actor.input_tglfs)
         TJLFEPoutput = TJLFEP.runTHD(converted_input_tglfs, actor.tjlfep_options, actor.tjlfep_profile, false)
         
@@ -147,7 +149,9 @@ function _step(actor::ActorTGLF)
         @warn "TJLFEP flux extraction not yet implemented. TJLFEPoutput structure: $(typeof(TJLFEPoutput))"
         
     elseif par.model == :TJLF
-        QL_fluxes_out = TJLF.run_tjlf(actor.input_tglfs)
+        use_gpu = TJLF.pick_device(:auto) === :gpu
+        println("ActorTGLF (:TJLF): using ", use_gpu ? "GPU" : "CPU")
+        QL_fluxes_out = TJLF.run_tjlf(actor.input_tglfs; use_gpu=use_gpu)
         actor.flux_solutions =
             [GACODE.FluxSolution{D}(TJLF.Qe(QL_flux_out), TJLF.Qi(QL_flux_out), TJLF.Γe(QL_flux_out), TJLF.Γi(QL_flux_out), TJLF.Πi(QL_flux_out)) for QL_flux_out in QL_fluxes_out]
     end

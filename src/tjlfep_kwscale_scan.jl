@@ -1,4 +1,4 @@
-function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool = true) where {T<:Real}
+function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool = true; use_gpu::Bool = false) where {T<:Real}
     # These are for testing purposes:
     #baseDirectory = "/Users/benagnew/TJLF.jl/outputs/tglfep_tests/input.MTGLF"
     #inputsPR = readMTGLF(baseDirectory)
@@ -6,9 +6,9 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
     
     
 
-    nfactor = 10
-    nefwid = 10
-    nkyhat = 5
+    nfactor = 8
+    nefwid = 8
+    nkyhat = 4
     nkwf = nfactor*nefwid*nkyhat
     k_max = 4
     l_write_out = true
@@ -238,7 +238,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 #println("============== Iter: ", i)
             end
 
-            gamma_out, freq_out, inputTJLF, local_eigen_cache = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out, printout; eigen_cache=local_eigen_cache)
+            gamma_out, freq_out, inputTJLF, local_eigen_cache = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out, printout; eigen_cache=local_eigen_cache, use_gpu=use_gpu)
             # gamma_out, freq_out, inputTJLF = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out, printout)
 
             #=if (id == 0 && inputsEP.IR == 201 && k == 1)
