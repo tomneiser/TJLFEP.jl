@@ -527,9 +527,6 @@ function InputTGLF_EP(
     setproperty!(input_tglf, Symbol("RLNS_1"), a * dlnnedr)
     setproperty!(input_tglf, Symbol("RLTS_1"), a * dlntedr)
 
-    println("=========== TEMP CHECK ===========")
-    println(all(ions[1].temperature .== cp1d.electrons.temperature))
-
     if is_ep == 1
         # Full radial profiles for fast electrons
         # ne_full = cp1d.electrons.density_fast ./ m³_to_cm³
@@ -642,8 +639,6 @@ function InputTGLF_EP(
     end
 
     input_tglf.BETAE = 8.0 * pi .* ne .* k .* Te ./ bunit .^ 2
-    println("========== BETAE Check ===========")
-    println(input_tglf.BETAE)
     loglam = 24.0 .- log.(sqrt.(ne) ./ Te)
     input_tglf.XNUE = a ./ c_s * sqrt.(ions[1].element[1].a) .* e^4 .* pi .* ne .* loglam ./ (sqrt.(me) .* (k .* Te) .^ 1.5)
     input_tglf.ZEFF = cp1d.zeff[gridpoint_cp]

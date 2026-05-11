@@ -78,6 +78,8 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
     ikyhat_mark::Int64 = 0
     iefwid_mark::Int64 = 0
     fmark = T(1.0E20)
+    scalefactor_buffer = nothing
+    wavebuffer_all = []
     for k = 1:k_max
         # k doesn't use Threads!
         fill!(factor, T(NaN))
@@ -100,31 +102,9 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
             end
             #kyhat[i] = ((kyhat1-kyhat0)/nkyhat)*i+kyhat0
         end
-        #MPI.Barrier(TJLFEP_COMM)
-        #println(np_local)
-        #=if (k == 2 && id == 0 && inputsEP.IR == 201 && false)
-            println("id = 0 inputs before 2nd round:")
-            println(inputsEP)
-            #println(inputsPR)
-        end
-        #MPI.Barrier(TJLFEP_COMM)
-        if (k == 2 && id == 1 && inputsEP.IR == 201 && false)
-            println("id = 1 inputs before 2nd round:")
-            println(inputsEP)
-            #println(inputsPR)
-        end
-        if (inputsEP.IR == 201 && id == 0 && false)
-            println("Round: ", k)
-            println("(f0, f1), (id, ir): (", f0, ", ", f1, "), (", id, ", ", inputsEP.IR, ")")
-            sleep(0.5)
-            println("(w0, w1), (id, ir): (", w0, ", ", w1, "), (", id, ", ", inputsEP.IR, ")")
-            sleep(0.5)
-            println("(k0, k1), (id, ir): (", kyhat0, ", ", kyhat1, "), (", id, ", ", inputsEP.IR, ")")
-            sleep(0.5)
-            println("factor, efwid, kyhat: ", factor, efwid, kyhat)
-        end=#
         # eigen_cache is a sequential-seeding optimization incompatible with parallel execution;
         # each thread gets its own local cache initialised to nothing.
+        wavebuffer_all = []
         Threads.@threads for i = 1:nkwf
             local_inputsEP = deepcopy(inputsEP)  # thread-local copy; avoids races on FACTOR_IN/KYHAT_IN/WIDTH_IN/LKEEP/etc.
             local_eigen_cache = nothing           # thread-local; no cross-iteration seeding in parallel
@@ -146,34 +126,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
             #kyIndex = ikyhat
             #println("WIDTH_IN at pass ", i, ": ", inputsEP.WIDTH_IN)
             #println("np: ", np)
-
-            #println(kyhat_in)
-            #println(typeof(kyhat_in))
-
-            #=if (id == 0 && inputsEP.IR == 201 && k == 1)
-                println(np_local)
-            end=#
-            #MPI.Barrier(TJLFEP_COMM)
-            #=if (id == 1 && inputsEP.IR == 201 && k == 1)
-                println("WIDTH_IN for id = 1 in ir = 201: ", inputsEP.WIDTH_IN)
-            end=#
-            #=if (id == 0 && inputsEP.IR == 201 && k == 1)
-                println("Before ky: ", inputsEP.L_TH_PINCH, " : ", i, " : ", k, " : ", id)
-            end
-            MPI.Barrier(TJLFEP_COMM)=#
-            #=if (id == 1 && inputsEP.IR == 201 && k == 1 && i == 1)
-                println("Before ky: ", inputsEP.L_TH_PINCH, " : ", i, " : ", k, " : ", id)
-            end
-
-                if ((id == 0 || id == 1) && inputsEP.IR == 201 && k == 2 && i == 1)
-                    println("Before ky: ", inputsEP.L_TH_PINCH, " : ", i, " : ", k, " : ", id)
-                    println(inputsEP)
-                end=#
-                #=MPI.Barrier(TJLFEP_COMM)
-                if (id == 1 && inputsEP.IR == 201 && k == 1 && i == 1)
-                    println(inputsEP.L_TH_PINCH, " : ", i, " : ", k)
-                    println(inputsEP)
-                end=#
 
 
             str_sf = string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/100.0), 10) + UInt32('0'))) *
@@ -208,76 +160,15 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 l_wavefunction_out = 1
                 #println(str_sf, " for round ", k, ", id & ir: ", id, " ", inputsEP.IR)
             end
-            
-            if (local_inputsEP.IR == 3 && k == 1 && false)
-                println("================= Iter: ", i, " ================")
-                println(local_inputsEP.PROCESS_IN)
-                println(local_inputsEP.THRESHOLD_FLAG)
-                println(local_inputsEP.SCAN_METHOD)
-                println(local_inputsEP.QL_RATIO_THRESH)
-                println(local_inputsEP.Q_SCALE)
-                println(local_inputsEP.KY_MODEL)
-                println(local_inputsEP.FACTOR_IN)
-                println(local_inputsEP.WIDTH_IN)
-                println(local_inputsEP.KYHAT_IN)
-                println(local_inputsEP.WIDTH_MIN)
-                println(local_inputsEP.WIDTH_MAX)
-                println(local_inputsEP.IS_EP)
-                println(local_inputsEP.IR)
-                println(local_inputsEP.JTSCALE)
-                println(local_inputsEP.NN)
-                println(local_inputsEP.FREQ_AE_UPPER)
-            end
-
-            #testid = false
-            #if (local_inputsEP.IR == 101)
-            #    testid = true
-            #end
 
             if (local_inputsEP.IR == 101)
                 #println("============== Iter: ", i)
             end
 
-            gamma_out, freq_out, inputTJLF, local_eigen_cache = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out, printout; eigen_cache=local_eigen_cache, use_gpu=use_gpu)
-            # gamma_out, freq_out, inputTJLF = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out, printout)
-
-            #=if (id == 0 && inputsEP.IR == 201 && k == 1)
-                println("After ky: ", inputsEP.L_TH_PINCH, " : ", i, " : ", k, " : ", id)
+            gamma_out, freq_out, inputTJLF, local_eigen_cache, wavefunction_buffer = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out; eigen_cache=local_eigen_cache, use_gpu=use_gpu)
+            if wavefunction_buffer !== nothing
+                push!(wavebuffer_all, (str_wf_file, wavefunction_buffer))
             end
-            MPI.Barrier(TJLFEP_COMM)=#
-                #=if (id == 1 && inputsEP.IR == 201 && k == 1 && i == 1)
-                    println("After ky: ", inputsEP.L_TH_PINCH, " : ", i, " : ", k, " : ", id)
-                end
-
-                if ((id == 0 || id == 1) && inputsEP.IR == 201 && k == 2 && i == 1)
-                    println("After ky: ", inputsEP.L_TH_PINCH, " : ", i, " : ", k, " : ", id)
-                    println(inputsEP)
-                end=#
-            #if (inputsEP.IR == 2 && k == 1)
-                #println("gamma_out for iter on run 1: ", gamma_out, " ", i)
-            #end
-
-            # it is performing the entire operation over all ky. I don't want to run this a bunch of times since it gets rid of the purposes
-            # of using MPI. 
-            #=if (l_wavefunction_out == 1)
-                io10 = open("testoutput_"*str_wf_file, "w")
-                println(io10, gamma_out)
-                println(io10, freq_out)
-                close(io10)
-            end=#
-            #=if (id == 0 && inputsEP.IR == 201 && k == 3)
-                println("id 0 l_th_pinch at iter: ", inputsEP.L_TH_PINCH, ", ", i)
-            end
-            MPI.Barrier(TJLFEP_COMM)
-            if (id == 1 && inputsEP.IR == 201 && k == 3)
-                println("id 1 l_th_pinch at iter: ", inputsEP.L_TH_PINCH, ", ", i)
-            end=#
-            #Following this is the run of getting:
-            #if (inputsEP.IR == 101)
-                #println("===========")
-                #println("Before L_MAX_OUTER_PANEL: ")
-                #println(inputsEP.L_MAX_OUTER_PANEL)
-            #end
 
             for n = 1:local_inputsEP.NMODES
                 growthrate[ikyhat,iefwid,ifactor,n] = gamma_out[n]
@@ -294,60 +185,8 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 l_QL_ratio_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_QL_RATIO[n]
             end
             
-            #println("Iteration ", i, ", id ", id)
+        end # end Threads.@threads loop
 
-            # if (inputsEP.IR == 101 && printout)
-                # println("============== Iter: ", i)
-                #println("growthrate, l_max_outer_panel_i at: [", ikyhat, ", ", iefwid, ", ", ifactor, "]")
-                #println(growthrate[ikyhat, iefwid, ifactor, :])
-                #println("-----After----")
-                # println(lkeep_i[ikyhat,iefwid,ifactor, :])
-            # end
-            #sds = -1
-            #@assert sds != -1 "End"
-        end # end of MPI process collection
-        
-        # Ending here are this point for testing purposes:
-        #if (id == 0 && inputsEP.IR == 201 && k == 1)
-        #    println("GRate and ir = 201: ")
-        #    println(growthrate)
-        #end
-        #MPI.Barrier(TJLFEP_COMM)
-        #if (id == 0 && inputsEP.IR == 2 && k == 1)
-        #    println("GRate and ir = 2: ")
-        #    println(growthrate)
-        #end
-        # Allreduce performs the operation (2nd parameter) between each of the processes in a specified color Group
-        # determined by TJLFEP_COMM, then distributes in back to each of the processes individually.
-        #if (id == 0)
-        #    println(growthrate[:, 1, 1, 1])
-        #end
-        #MPI.Barrier(TJLFEP_COMM)
-        #MPI.Allreduce!(growthrate, MPI.SUM, TJLFEP_COMM)
-        #MPI.Allreduce!(frequency, MPI.SUM, TJLFEP_COMM)
-        #MPI.Allreduce!(lkeep_i, MPI.LAND, TJLFEP_COMM)
-        #MPI.Allreduce!(ltearing_i, MPI.LOR, TJLFEP_COMM)
-        #MPI.Allreduce!(l_th_pinch_i, MPI.LOR, TJLFEP_COMM)
-        #MPI.Allreduce!(l_i_pinch_i, MPI.LOR, TJLFEP_COMM)
-        #MPI.Allreduce!(l_e_pinch_i, MPI.LOR, TJLFEP_COMM)
-
-        #MPI.Allreduce!(l_QL_ratio_i, l_QL_ratio_i_out)
-        #MPI.Allreduce!(l_theta_sq_i, l_theta_sq_i_out)
-        ##MPI.Allreduce!(l_max_outer_panel_i, MPI.LOR, TJLFEP_COMM)
-
-        #MPI.Allreduce!(l_QL_ratio_i, MPI.LOR, TJLFEP_COMM)
-        #if (id == 0)
-        #    println("growthrate for id = 0 and ir = ", inputsEP.IR, growthrate[1, 1, :, :])
-        #end 
-        #=if (id == 0 && inputsEP.IR == 201 && k == 1)
-            println("lkeep_i for id 1: ")
-            println(lkeep_i)
-        end
-        MPI.Barrier(TJLFEP_COMM)
-        if (id == 1 && inputsEP.IR == 201 && k == 1)
-            println("lkeep_i for id 0: ")
-            println(lkeep_i)
-        end=#
         # This loop creates a 5x10 matrix full of 11. It then runs
         # through all dimensions of lkeep_i, which is a reference matrix
         # telling you where each 
@@ -396,18 +235,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 imark_min = min(imark[ikyhat, iefwid], imark_min)
             end
         end
-        #if (id == 0)
-        #    println(imark_min, " imark_min at id ", id)
-        #end
 
-        # Next we are going to set:
-        # fmark - 
-        # gmark - 
-        # f_guess_mark -
-        # gamma_mark_i_1 -
-        # gamma_mark_i_2 -
-        # f_mark_i - 
-        # lkeep_ref - 
         
         fmark = T(1.0E20)
         gmark = zero(T)
@@ -415,8 +243,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         gamma_mark_i_1 = fill(T(NaN), (nkyhat, nefwid))
         gamma_mark_i_2 = fill(T(NaN), (nkyhat, nefwid))
         f_mark_i = fill(T(NaN), (nkyhat, nefwid))
-        
-
         
         # if there are any unstable modes:
         if (imark_min <= nfactor)
@@ -531,12 +357,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                         # f_guess_mark = min(f_guess[ikyhat,iefwid],f_guess_mark)
                         # more similar to fortran implementation
                         f_guess_mark = min(f_mark_i[ikyhat,iefwid],f_guess_mark)
-                            #if (inputsEP.IR == 101)
-                                #println("Marks set: ", iefwid_mark, " : ", ikyhat_mark)
-                                #println("conds: lkeep, gamma_mark_i_1, 0.95*gamma_mark_i_2, f_mark_i, gmark, fmark")
-                                #println(lkeep_ref[ikyhat,iefwid], " ", gamma_mark_i_1[ikyhat, iefwid], " ", 0.95*gamma_mark_i_2[ikyhat,iefwid])
-                                #println(f_mark_i[ikyhat,iefwid], " ", gmark, " ", fmark)
-                            
 
                             # then set new maximums (fmark and gmark)
                             # and set f_guess_mark which corresponds to a maximized growthrate and
@@ -545,11 +365,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                             
 
                             # This loops over all combos of kyhat and width to find a single guess for "f"
-                            
-                            # if (inputsEP.IR == 101)
-                            #     #println("update: ", gmark, " : ", fmark, " : ", f_guess_mark)
-                            #     #println("===========")
-                            # end
+                        
 
                             #=if (id == 0)
                                 println("Statements set! for id & ir and k: ", id, " ", inputsEP.IR, " ", k)
@@ -580,39 +396,28 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         # does create these files, but it places them in the TJLF.JL directory,
         # which isn't where I will want to store them in the end.
         # println("printout, l_write_out",printout, l_write_out)
+        scalefactor_buffer = nothing
         if (l_write_out && printout)
+            scalefactor_buffer = String[]
             filename = "out.scalefactor"*coalesce(inputsEP.SUFFIX, "")
-            iexist = isfile(filename)
-            if (iexist)
-                io = open(filename, "a")
-            else
-                io = open(filename, "w")
-                println(io, "factor, (gamma(n), freq(n), flag, n=1, nmodes_in)")
-                println(io, "flag key:  'K' mode is kept")
-                if (inputsEP.REJECT_TEARING_FLAG == 1) println(io, "           'T' rejected for tearing parity")  end
-                if (inputsEP.REJECT_I_PINCH_FLAG == 1) println(io, "           'Pi' rejected for ion pinch") end
-                if (inputsEP.REJECT_E_PINCH_FLAG == 1) println(io, "           'Pe' rejected for electron pinch") end
-                if (inputsEP.REJECT_TH_PINCH_FLAG == 1) println(io, "           'Pth' rejected for thermal pinch") end
-                # if (inputsEP.REJECT_EP_PINCH_FLAG == 1) println(io, "           'PEP' rejected for EP pinch") end
-                println(io, "           'QLR' rejected for QL ratio EP/|chi_i| < ", inputsEP.QL_RATIO_THRESH)
-                println(io, "           'F' rejected for non-AE frequency > ", inputsEP.F_REAL[inputsEP.IR]*inputsEP.FREQ_AE_UPPER, " kHz")
-                # Corresponding print statements
-                println(io, "           'TH2' rejected for <theta^2>  > ", inputsEP.THETA_SQ_THRESH)
-                println(io, "           'F'   rejected for non-AE frequency > ", inputsEP.F_REAL[inputsEP.IR] * inputsEP.FREQ_AE_UPPER, " kHz")
-                println(io, "           'BT'  mode growth rate is below threshold GAMMA_THRESH = ", inputsEP.F_REAL[inputsEP.IR] * inputsEP.GAMMA_THRESH, " kHz")
-                println(io, "omega_TAE = ", inputsEP.F_REAL[inputsEP.IR] * inputsPR.OMEGA_TAE[inputsEP.IR], " ;  omegaGAM = ", -inputsEP.F_REAL[inputsEP.IR] * inputsPR.omegaGAM[inputsEP.IR])
+            # Header
+            push!(scalefactor_buffer, "factor, (gamma(n), freq(n), flag, n=1, nmodes_in)")
+            push!(scalefactor_buffer, "flag key:  'K' mode is kept")
+            if (inputsEP.REJECT_TEARING_FLAG == 1) push!(scalefactor_buffer, "           'T' rejected for tearing parity") end
+            if (inputsEP.REJECT_I_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'Pi' rejected for ion pinch") end
+            if (inputsEP.REJECT_E_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'Pe' rejected for electron pinch") end
+            if (inputsEP.REJECT_TH_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'Pth' rejected for thermal pinch") end
+            # if (inputsEP.REJECT_EP_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'PEP' rejected for EP pinch") end
+            push!(scalefactor_buffer, "           'QLR' rejected for QL ratio EP/|chi_i| < $(inputsEP.QL_RATIO_THRESH)")
+            push!(scalefactor_buffer, "           'F' rejected for non-AE frequency > $(inputsEP.F_REAL[inputsEP.IR]*inputsEP.FREQ_AE_UPPER) kHz")
+            push!(scalefactor_buffer, "           'TH2' rejected for <theta^2>  > $(inputsEP.THETA_SQ_THRESH)")
+            push!(scalefactor_buffer, "           'F'   rejected for non-AE frequency > $(inputsEP.F_REAL[inputsEP.IR] * inputsEP.FREQ_AE_UPPER) kHz")
+            push!(scalefactor_buffer, "           'BT'  mode growth rate is below threshold GAMMA_THRESH = $(inputsEP.F_REAL[inputsEP.IR] * inputsEP.GAMMA_THRESH) kHz")
+            push!(scalefactor_buffer, "omega_TAE = $(inputsEP.F_REAL[inputsEP.IR] * inputsPR.OMEGA_TAE[inputsEP.IR]) ;  omegaGAM = $(-inputsEP.F_REAL[inputsEP.IR] * inputsPR.omegaGAM[inputsEP.IR])")
 
-                # Check if the condition is true
-                # if l_real_units == 1
-                #     println(io, "Frequencies in real units, plasma frame [kHz] ; (c_s/a)/(2*pi) = ", f_real[ir], " kHz")
-                # end
-            end
-            
             ky_write = kyhat[ikyhat_write]*inputTJLF.ZS[inputsEP.IS_EP+1]/sqrt(inputTJLF.MASS[inputsEP.IS_EP+1]*inputTJLF.TAUS[inputsEP.IS_EP+1])
 
-            println(io, "--------------- ky*rho_EP= ", kyhat[ikyhat_write], "  (ky*rho_s=", ky_write, ")", 
-            "   width= ", efwid[iefwid_write], 
-            "   scalefactor= ", fmark, " -------------------")
+            push!(scalefactor_buffer, "--------------- ky*rho_EP= $(kyhat[ikyhat_write])  (ky*rho_s=$(ky_write))   width= $(efwid[iefwid_write])   scalefactor= $(fmark) -------------------")
 
             for ifactor = 1:nfactor
                 ikyhat = ikyhat_write
@@ -663,17 +468,16 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 end
                 if (inputsEP.REAL_FREQ == 0)
                     for n = 1:inputsEP.NMODES
-                        println(io, factor[ifactor], " ", g[n], " ", f[n], keep_label[n])
-                        println(io, tlabelvec[n])
+                        push!(scalefactor_buffer, string(factor[ifactor], " ", g[n], " ", f[n], " ", keep_label[n]))
+                        push!(scalefactor_buffer, tlabelvec[n])
                     end
                 else
                     for n = 1:inputsEP.NMODES
-                        println(io, factor[ifactor], " ", g[n], " ", f[n], keep_label[n])
-                        println(io, tlabelvec[n])
+                        push!(scalefactor_buffer, string(factor[ifactor], " ", g[n], " ", f[n], " ", keep_label[n]))
+                        push!(scalefactor_buffer, tlabelvec[n])
                     end
                 end
             end # ifactor
-            close(io)
         end 
 
         # After printing the info just calculated, if fmark is already significantly small, adjust 
@@ -705,49 +509,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 kyhat0 = kyhat_min
             end
         
-            # if (k == 1)
-        #         f1 = fmark
-        #         f0 = 0.0
-        #         #println("fmark > 1e10 : Pass ", k)
-        #     else
-        #         delf = (f1-f0)/3
-        #         #=if (id == 0 && inputsEP.IR == 201)
-        #             println("delf, f1, f0 for id = 0: ", delf, ", ", f1, ", ", f0)
-        #         end
-        #         MPI.Barrier(TJLFEP_COMM)
-        #         if (id == 1 && inputsEP.IR == 201)
-        #             println("delf, f1, f0 for id = 1: ", delf, ", ", f1, ", ", f0)
-        #         end=#
-        #         f1 = fmark + delf
-        #         f0 = fmark - delf
-        #         if (f0 < 0.0) 
-        #             f0 = 0.0 
-        #         end
-        #         delw = (w1-w0)/4.0
-        #         w1 = efwid[iefwid_mark] + delw
-        #         w0 = efwid[iefwid_mark] - delw
-        #         if (w1 > inputsEP.WIDTH_MAX)
-        #             w0 = w0 - (w1-inputsEP.WIDTH_MAX)
-        #             w1 = inputsEP.WIDTH_MAX
-        #         elseif (w0 < inputsEP.WIDTH_MIN)
-        #             w1 = w1 + (inputsEP.WIDTH_MIN-w0)
-        #             w0 = inputsEP.WIDTH_MIN
-        #         end
-        #         #println(iefwid_mark, " iefwid_mark")
-        #         #println(efwid, " efwid")
-        #         #println("out: (w1, w0) : delw = (", w1, ", ", w0, ") : ", delw)
-        #         #println("fmark > 1e10 : Pass ", k)
-        #         delky = (kyhat1-kyhat0)/4
-        #         kyhat1 = kyhat[ikyhat_mark] + delky
-        #         kyhat0 = kyhat[ikyhat_mark] - delky
-        #         if (kyhat1 > kyhat_max)
-        #             kyhat0 = kyhat0 - (kyhat1-kyhat_max)
-        #             kyhat1 = kyhat_max
-        #         elseif (kyhat0 < kyhat_min)
-        #             kyhat1 = kyhat1 + (kyhat_min-kyhat0)
-        #             kyhat0 = kyhat_min
-        #         end
-        #     end # k > 1
         else
             f0 = f1
             f1 = 10.0*f1
@@ -767,9 +528,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         inputsEP.WIDTH_IN = efwid[1]
         inputsEP.KYMARK = kyhat[1]
     
-        # if (printout)
-        #     println("imark_min > nfactor ", inputsEP.FACTOR_IN, " ", inputsEP.WIDTH_IN, " ", inputsEP.KYMARK)
-        
     else
         # If, over the scan of k, there's an unstable mode, set each to each marked point.
         # inputs.FACTOR_IN = f_guess_mark
@@ -778,18 +536,10 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         inputsEP.FACTOR_IN = fmark
         inputsEP.WIDTH_IN = efwid[iefwid_mark]
         inputsEP.KYMARK = kyhat[ikyhat_mark]
-
-        # if (printout)
-        #     println("imark_min <= nfactor ", inputsEP.FACTOR_IN, " ", inputsEP.WIDTH_IN, " ", inputsEP.KYMARK)
-        # end
     end
 
-    # if (printout)
-    #     println("ir: ", inputsEP.IR, " iefwid_mark: ", iefwid_mark, " ikyhat_mark: ", ikyhat_mark)
-    # end
-
     # Return to the driver these values and the final growthrate values of the last scan.
-    return growthrate, inputsEP, inputsPR
+    return growthrate, inputsEP, inputsPR, scalefactor_buffer, wavebuffer_all
 
     # This function will be done for however many radii you are testing. These values do not interact in the driver. 
 end

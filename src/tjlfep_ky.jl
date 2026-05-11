@@ -4,10 +4,10 @@
 #using .TJLFEP: convert_input
 #using MPI
 
-function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int, printout::Bool = true;
+function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int;
                    eigen_cache::Union{Vector{<:Complex}, Nothing} = nothing,
                    use_gpu::Bool = false) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
-# function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int, printout::Bool = true) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
+# function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
     # Temp Defs:
     
     #color = 0
@@ -283,27 +283,26 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
 
     # println("absdiffwavefunction",absdiffwavefunction)
     
-
-
     # Next is writing the wavefunction files themselves:
+    wavefunction_buffer = nothing
     if (l_wavefunction_out == 1) # nplot = max_plot_out; nfields = 1 by def.
-        io6 = open(str_wf_file, "w")
-        println(io6, "nmodes=", nmodes_out, "TGLF INPUT NMODES = ",inputsEP.NMODES, " nfields=", " max_plot=", nplot)
-        println(io6, "ky=", inputTJLF.KY, " width=", inputTJLF.WIDTH)
-        println(io6, "theta     ", "((Re(field_i), Im(field_i),i=(1,nfields)),j=1,nmodes)")
-        println(io6, "Tearing metric: ", x_tear_test)
-        println(io6, "DEP: ", DEP)
-        println(io6, "chi_th: ", chi_th)
-        println(io6, "chi_i: ", chi_i)
-        println(io6, "chi_i_cond: ", chi_i_cond)
-        println(io6, "chi_e: ", chi_e)
-        println(io6, "chi_e_cond: ", chi_e_cond)
-        println(io6, "i_QL_cond_flux: ", i_QL_cond_flux)
-        println(io6, "e_QL_cond_flux: ", e_QL_cond_flux)
-        println(io6, "QL_ratio: ", QL_flux_ratio)
-        println(io6, "EP QL convection fracton: ", EP_conv_frac)
-        println(io6, "<theta^2>: ", theta_2_moment)
-        println(io6, "lkeep: ", inputsEP.LKEEP)
+        wavefunction_buffer = String[]
+        push!(wavefunction_buffer, "nmodes=$(nmodes_out)TGLF INPUT NMODES = $(inputsEP.NMODES) nfields= max_plot=$(nplot)")
+        push!(wavefunction_buffer, "ky=$(inputTJLF.KY) width=$(inputTJLF.WIDTH)")
+        push!(wavefunction_buffer, "theta     ((Re(field_i), Im(field_i),i=(1,nfields)),j=1,nmodes)")
+        push!(wavefunction_buffer, "Tearing metric: $(x_tear_test)")
+        push!(wavefunction_buffer, "DEP: $(DEP)")
+        push!(wavefunction_buffer, "chi_th: $(chi_th)")
+        push!(wavefunction_buffer, "chi_i: $(chi_i)")
+        push!(wavefunction_buffer, "chi_i_cond: $(chi_i_cond)")
+        push!(wavefunction_buffer, "chi_e: $(chi_e)")
+        push!(wavefunction_buffer, "chi_e_cond: $(chi_e_cond)")
+        push!(wavefunction_buffer, "i_QL_cond_flux: $(i_QL_cond_flux)")
+        push!(wavefunction_buffer, "e_QL_cond_flux: $(e_QL_cond_flux)")
+        push!(wavefunction_buffer, "QL_ratio: $(QL_flux_ratio)")
+        push!(wavefunction_buffer, "EP QL convection fracton: $(EP_conv_frac)")
+        push!(wavefunction_buffer, "<theta^2>: $(theta_2_moment)")
+        push!(wavefunction_buffer, "lkeep: $(inputsEP.LKEEP)")
         # Renormalize and adjust phases:
         n_out = 0
         for n = 1:inputsEP.NMODES
@@ -323,27 +322,15 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
         #println("n_out = " ,n_out)
         if n_out == 0
             n_out = 1
-            println(io6, "No kept modes at nominal write parameters. Showing leading mode.")
+            push!(wavefunction_buffer, "No kept modes at nominal write parameters. Showing leading mode.")
         end
-        #Write renormalized, re-phased eigenfunctions out to str_wf_file.
+        #Write renormalized, re-phased eigenfunctions out to buffer
         for i = 1:max_plot
-            #This doesn't do anything in TGLFEP (???)
-            #kcomp = 0
-            #wave_write = fill(0.0, 20)
-            #for n = 1:nmodes_out
-            #    for jfields = 1:3
-            #        kcomp += 1
-            #        wave_write[kcomp] = real(wavefunction[n,jfields,i])
-            #        kcomp += 1
-            #        wave_write[kcomp] = imag(wavefunction[n,jfields,i])
-            #    end
-            #end
-            println(io6, angle[i], " ", real(wavefunction[n_out,1,i]), " ", imag(wavefunction[n_out,1,i]), " ",
-                    real(wavefunction[n_out,2,i]), " ", imag(wavefunction[n_out,2,i]))
+            push!(wavefunction_buffer, string(angle[i], " ", real(wavefunction[n_out,1,i]), " ", imag(wavefunction[n_out,1,i]), " ",
+                    real(wavefunction[n_out,2,i]), " ", imag(wavefunction[n_out,2,i])))
         end
-        close(io6)
     end      
     # This is the end of ky.jl. Returning values will likely need to be changed later.
-    return gamma_out, freq_out, inputTJLF, eigen_out
+    return gamma_out, freq_out, inputTJLF, eigen_out, wavefunction_buffer
     # return gamma_out, freq_out, inputTJLF
 end
