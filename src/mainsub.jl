@@ -14,7 +14,7 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
         return msg
     elseif (x == 5)
         inputsEP.WIDTH_IN_FLAG = false
-        # inputsEP.MODE_IN = 2
+        inputsEP.MODE_IN = 2
         inputsEP.KY_MODEL = 3
 
         growthrate, inputsEP, inputsPR, scalefactor_buffer, wavebuffer_all = kwscale_scan(inputsEP, inputsPR, printout; use_gpu=use_gpu)

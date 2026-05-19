@@ -462,17 +462,19 @@ function InputTGLF_EP(
     bunit = IMAS.interp1d(eq1d.rho_tor_norm, GACODE.bunit(eqt) .* T_to_Gauss).(cp1d.grid.rho_tor_norm)[gridpoint_cp]
     input_tglf = InputTGLFs([TurbulentTransport.InputTGLF() for k in eachindex(gridpoint_cp)])  # Use local InputTGLFs struct
 
-    signb = sign(Bt)
-    signq = sign.(q)
-    input_tglf.SIGN_BT = signb
-    input_tglf.SIGN_IT = signb .* signq
+    # signb = sign(Bt)  # original: IMAS convention (bcentr may be stored as magnitude+positive)
+    # signq = sign.(q)  # original: signed q from IMAS
+    # Fortran: EXPRO_ctrl_signb = -1.0 flips B sign; EXPRO_ctrl_signq = 1.0 forces q positive
+    # → sign_bt = -1, sign_it = sign_bt * 1 = -1 for D3D (negative BT, negative IP)
+    signb = -sign(Bt)
+    signq = sign.(abs.(q))  # EXPRO_ctrl_signq = 1 → q treated as positive
+    # input_tglf.SIGN_BT = signb
+    input_tglf.SIGN_BT = -1.0
+    # input_tglf.SIGN_IT = signb .* signq
+    input_tglf.SIGN_IT = -1.0
 
     is_ep = is_ep + 1 # fast EP included in indexing here
-    ns = length(ions) + (is_ep == 1 ? 2 : 1)
-    ep_slot = (is_ep == 1 ? ns : is_ep)
-    # if using electrons as EP, thermal electrons kept, fast electrons appended
-    # if using fast ion, thermal ion not included, fast ion appended
-    # done so that thermal He not included like in file-based runTHD, but this seems like an odd thing to do
+    ns = length(ions) + 2  # electrons + all thermal ions + fast EP appended at last slot
     input_tglf.NS = ns
 
     c_s = GACODE.c_s(cp1d)[gridpoint_cp]
@@ -527,6 +529,48 @@ function InputTGLF_EP(
     setproperty!(input_tglf, Symbol("RLNS_1"), a * dlnnedr)
     setproperty!(input_tglf, Symbol("RLTS_1"), a * dlntedr)
 
+    # Ion species (2 through NS) - full radial profiles
+    for iion in eachindex(ions)
+        species = iion + 1
+
+        z_n = ions[iion].element[1].z_n
+
+        # thermal
+        Ti_full = ions[iion].temperature ./ 1000 # eV -> keV
+        dlntidr_full = -IMAS.calc_z(rmin, Ti_full, :backward)
+        
+        # ni_full = ions[iion].density_thermal ./ m³_to_cm³
+        ni_full = ions[iion].density_thermal ./ fac
+        dlnnidr_full = -IMAS.calc_z(rmin, ni_full, :backward)
+        
+        # Store full radial data for TJLFEP
+        ep_species_data["DENS_$species"] = ni_full
+        ep_species_data["TEMP_$species"] = Ti_full
+        ep_species_data["DLNNDR_$species"] = dlnnidr_full
+        ep_species_data["DLNTDR_$species"] = dlntidr_full
+        ep_species_data["ZS_$species"] = IMAS.avgZ(Float64(z_n), Ti_full)
+
+        # Extract values at selected grid points for TGLF
+        Ti = Ti_full[gridpoint_cp]
+        dlntidr = dlntidr_full[gridpoint_cp]
+        ni = ni_full[gridpoint_cp]
+        dlnnidr = dlnnidr_full[gridpoint_cp]
+
+        Zi = IMAS.avgZ(Float64(ions[iion].element[1].z_n), Ti)
+
+        setproperty!(input_tglf, Symbol("ZS_$species"), Zi)
+        setproperty!(input_tglf, Symbol("MASS_$species"), (ions[iion].element[1].a)[1] * mp / md)
+        setproperty!(input_tglf, Symbol("TAUS_$species"), Ti ./ Te)
+        setproperty!(input_tglf, Symbol("AS_$species"), ni ./ ne)
+        setproperty!(input_tglf, Symbol("VPAR_$species"), input_tglf.VPAR_1)
+        setproperty!(input_tglf, Symbol("VPAR_SHEAR_$species"), input_tglf.VPAR_SHEAR_1)
+        setproperty!(input_tglf, Symbol("RLNS_$species"), a * dlnnidr)
+        setproperty!(input_tglf, Symbol("RLTS_$species"), a * dlntidr)
+
+    end
+
+    ep_slot = ns  # EP is always the last slot (length(ions) + 2)
+
     if is_ep == 1
         # Full radial profiles for fast electrons
         # ne_full = cp1d.electrons.density_fast ./ m³_to_cm³
@@ -559,83 +603,56 @@ function InputTGLF_EP(
         setproperty!(input_tglf, Symbol("VPAR_SHEAR_$ep_slot"), input_tglf.VPAR_SHEAR_1)
         setproperty!(input_tglf, Symbol("RLNS_$ep_slot"), a * dlnnedr_fast)
         setproperty!(input_tglf, Symbol("RLTS_$ep_slot"), a * dlntedr_fast)
-    end
+    else
+        ep_ion = ions[is_ep - 1]
 
-    # Ion species (2 through NS) - full radial profiles
-    for iion in eachindex(ions)
-        species = iion + 1
+        ni_full = ep_ion.density_fast ./ fac
+        fast_zero = ni_full .== 0
+        dlnnidr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(ni_full, eps(Float64)), :backward))
 
-        z_n = ions[iion].element[1].z_n
+        Ti_full = (ep_ion.pressure_fast_parallel .+ 2 .* ep_ion.pressure_fast_perpendicular) ./ max.(ni_full .* fac, eps(Float64)) ./ 1.602e-19
+        Ti_full[fast_zero] .= 0.0
+        Ti_full = Ti_full ./ 1000 # eV -> keV
 
-        if species == is_ep
-            # Fast ion data for this species (is_ep=iion+1 selects this species)
-            # ni_full = ions[iion].density_fast ./ m³_to_cm³
-            ni_full = ions[iion].density_fast ./ fac
-            fast_zero = ni_full .== 0
-            dlnnidr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(ni_full, eps(Float64)), :backward))
+        # Mirror GACODE's own low-density fix (inputgacode.jl:487): replace Ti where density
+        # is negligibly small (< 1e-6 × mean) with the mean Ti over valid points, so calc_z
+        # sees a smooth profile instead of P/(~0·e) blow-up.
+        ni_full_m3 = ep_ion.density_fast  # m⁻³
+        navg = sum(ni_full_m3) / length(ni_full_m3)
+        low_dens = ni_full_m3 .< 1e-6 .* navg
+        valid = .!low_dens .& .!fast_zero
+        Ti_full[low_dens] .= sum(Ti_full[valid]) / max(1, count(valid))
 
-            # Pressure is in Pa (J/m³); T [eV] = P / (n [m⁻³] × 1.602e-19 J/eV). Note: e = IMAS.cgs.e is CGS, do NOT use here.
-            Ti_full = (ions[iion].pressure_fast_parallel ./ 3 + 2 * ions[iion].pressure_fast_perpendicular ./ 3) ./ max.(ni_full .* fac, eps(Float64)) ./ 1.602e-19
-            Ti_full[fast_zero] .= 0.0
-            Ti_full = Ti_full ./ 1000 # eV -> keV
-            dlntidr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(Ti_full, eps(Float64)), :backward))
-            dlntidr_full[fast_zero] .= 0.0
+        dlntidr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(Ti_full, eps(Float64)), :backward))
+        dlntidr_full[fast_zero] .= 0.0
+        dlntidr_full[low_dens] .= 0.0  # gradient unreliable in mean-filled region
 
-            ep_species_data["DENS_$ep_slot"] = ni_full
-            ep_species_data["TEMP_$ep_slot"] = Ti_full
-            ep_species_data["DLNNDR_$ep_slot"] = dlnnidr_full
-            ep_species_data["DLNTDR_$ep_slot"] = dlntidr_full
-            ep_species_data["ZS_$ep_slot"] = max.(IMAS.avgZ(Float64(z_n), Ti_full), 1.0)
+        # Match Fortran floor on EP density gradient (TGLFEP_read_EXPRO.f90: max(...,1.0)).
+        # Fortran floors EXPRO_dlnnidr at 1.0 m⁻¹, giving RLNS floor = a_meters ≈ 0.6-0.7.
+        # Using 1.0 here (not 1.0/a) replicates that: RLNS = a * 1.0 = a.
+        dlnnidr_full .= max.(dlnnidr_full, 1.0)
 
-            Ti_ep = Ti_full[gridpoint_cp]
-            dlntidr_ep = dlntidr_full[gridpoint_cp]
-            ni_ep = ni_full[gridpoint_cp]
-            dlnnidr_ep = dlnnidr_full[gridpoint_cp]
+        ep_species_data["DENS_$ep_slot"] = ni_full
+        ep_species_data["TEMP_$ep_slot"] = Ti_full
+        ep_species_data["DLNNDR_$ep_slot"] = dlnnidr_full
+        ep_species_data["DLNTDR_$ep_slot"] = dlntidr_full
+        ep_species_data["ZS_$ep_slot"] = max.(IMAS.avgZ(Float64(ep_ion.element[1].z_n), Ti_full), 1.0)
 
-            Zi_ep = max.(IMAS.avgZ(Float64(ions[iion].element[1].z_n), Ti_ep), 1.0)
+        Ti_ep = Ti_full[gridpoint_cp]
+        dlntidr_ep = dlntidr_full[gridpoint_cp]
+        ni_ep = ni_full[gridpoint_cp]
+        dlnnidr_ep = dlnnidr_full[gridpoint_cp]
 
-            setproperty!(input_tglf, Symbol("ZS_$ep_slot"), Zi_ep)
-            setproperty!(input_tglf, Symbol("MASS_$ep_slot"), (ions[iion].element[1].a)[1] * mp / md)
-            setproperty!(input_tglf, Symbol("TAUS_$ep_slot"), Ti_ep ./ Te)
-            setproperty!(input_tglf, Symbol("AS_$ep_slot"), ni_ep ./ ne)
-            setproperty!(input_tglf, Symbol("VPAR_$ep_slot"), input_tglf.VPAR_1)
-            setproperty!(input_tglf, Symbol("VPAR_SHEAR_$ep_slot"), input_tglf.VPAR_SHEAR_1)
-            setproperty!(input_tglf, Symbol("RLNS_$ep_slot"), a * dlnnidr_ep)
-            setproperty!(input_tglf, Symbol("RLTS_$ep_slot"), a * dlntidr_ep)
-        else
-            # thermal
-            Ti_full = ions[iion].temperature ./ 1000 # eV -> keV
-            dlntidr_full = -IMAS.calc_z(rmin, Ti_full, :backward)
-            
-            # ni_full = ions[iion].density_thermal ./ m³_to_cm³
-            ni_full = ions[iion].density_thermal ./ fac
-            dlnnidr_full = -IMAS.calc_z(rmin, ni_full, :backward)
-            
-            # Store full radial data for TJLFEP
-            ep_species_data["DENS_$species"] = ni_full
-            ep_species_data["TEMP_$species"] = Ti_full
-            ep_species_data["DLNNDR_$species"] = dlnnidr_full
-            ep_species_data["DLNTDR_$species"] = dlntidr_full
-            ep_species_data["ZS_$species"] = IMAS.avgZ(Float64(z_n), Ti_full)
+        Zi_ep = max.(IMAS.avgZ(Float64(ep_ion.element[1].z_n), Ti_ep), 1.0)
 
-            # Extract values at selected grid points for TGLF
-            Ti = Ti_full[gridpoint_cp]
-            dlntidr = dlntidr_full[gridpoint_cp]
-            ni = ni_full[gridpoint_cp]
-            dlnnidr = dlnnidr_full[gridpoint_cp]
-
-            Zi = IMAS.avgZ(Float64(ions[iion].element[1].z_n), Ti)
-
-            setproperty!(input_tglf, Symbol("ZS_$species"), Zi)
-            setproperty!(input_tglf, Symbol("MASS_$species"), (ions[iion].element[1].a)[1] * mp / md)
-            setproperty!(input_tglf, Symbol("TAUS_$species"), Ti ./ Te)
-            setproperty!(input_tglf, Symbol("AS_$species"), ni ./ ne)
-            setproperty!(input_tglf, Symbol("VPAR_$species"), input_tglf.VPAR_1)
-            setproperty!(input_tglf, Symbol("VPAR_SHEAR_$species"), input_tglf.VPAR_SHEAR_1)
-            setproperty!(input_tglf, Symbol("RLNS_$species"), a * dlnnidr)
-            setproperty!(input_tglf, Symbol("RLTS_$species"), a * dlntidr)
-        end
-
+        setproperty!(input_tglf, Symbol("ZS_$ep_slot"), Zi_ep)
+        setproperty!(input_tglf, Symbol("MASS_$ep_slot"), (ep_ion.element[1].a)[1] * mp / md)
+        setproperty!(input_tglf, Symbol("TAUS_$ep_slot"), Ti_ep ./ Te)
+        setproperty!(input_tglf, Symbol("AS_$ep_slot"), ni_ep ./ ne)
+        setproperty!(input_tglf, Symbol("VPAR_$ep_slot"), input_tglf.VPAR_1)
+        setproperty!(input_tglf, Symbol("VPAR_SHEAR_$ep_slot"), input_tglf.VPAR_SHEAR_1)
+        setproperty!(input_tglf, Symbol("RLNS_$ep_slot"), a * dlnnidr_ep)
+        setproperty!(input_tglf, Symbol("RLTS_$ep_slot"), a * dlntidr_ep)
     end
 
     input_tglf.BETAE = 8.0 * pi .* ne .* k .* Te ./ bunit .^ 2
@@ -656,8 +673,8 @@ function InputTGLF_EP(
 
     input_tglf.Q_LOC = abs.(q)
 
-    omegaGAM =  (1.0 .÷ input_tglf.RMAJ_LOC) .* sqrt.(1.0 .+ input_tglf.TAUS_2) .÷ (1.0 .+ 1.0 .÷ (2.0 .* q))
-    OMEGA_TAE = sqrt.(2.0 ./ input_tglf.BETAE) ./ 2.0 ./ q ./ input_tglf.RMAJ_LOC
+    # omegaGAM = (1.0 ./ input_tglf.RMAJ_LOC) .* sqrt.(1.0 .+ input_tglf.TAUS_2) ./ (1.0 .+ 1.0 ./ (2.0 .* q))
+    # OMEGA_TAE = sqrt.(2.0 ./ input_tglf.BETAE) ./ 2.0 ./ q ./ input_tglf.RMAJ_LOC
     RHO_STAR = rho_s
     CS = c_s
     RMIN = rmin
@@ -692,6 +709,8 @@ function InputTGLF_EP(
     # Ti_ion1_full is in eV (IMAS); Te_thermal_full is in keV → divide by 1000 to get same units
     if length(ions) >= 1
         Ti_ion1_full = ions[1].temperature
+        # Fortran uses EXPRO_ctrl_signq=1 → q > 0 always → denominator 1+1/(2q) > 1.
+        # Use abs(q) (= q_full) to match that convention.
         omegaGAM_full = (a ./ Rmaj_full) .* sqrt.(1.0 .+ Ti_ion1_full ./ (Te_thermal_full .* 1e3)) ./ (1.0 .+ 1.0 ./ (2.0 .* q_full))
     else
         omegaGAM_full = zeros(nr_full)
@@ -709,7 +728,9 @@ function InputTGLF_EP(
     input_tglf.ZETA_LOC = zeta[gridpoint_cp]
     input_tglf.S_ZETA_LOC = szeta[gridpoint_cp]
 
-    press = cp1d.pressure_thermal
+    # press = cp1d.pressure_thermal  # original: thermal pressure only
+    # Fortran: EXPRO_ptot includes fast-ion pressure; use total pressure to match
+    press = cp1d.pressure
     Pa_to_dyn = 10.0
 
     dpdr = IMAS.gradient(rmin, press .* Pa_to_dyn)[gridpoint_cp]
@@ -783,13 +804,17 @@ function InputTGLF_EP(
         "gammap" => gamma_p_full,
         "omegaGAM" => omegaGAM_full,
         "OMEGA_TAE" => OMEGA_TAE_full,
-        "RHO_STAR" => rho_s_full,
+        "RHO_STAR" => rho_s_full ./ (a .* m_to_cm),  # rho_s_full in cm, a in m → rho_s_cm/a_cm (dimensionless ρ_s/a), matching Fortran: rho_star = EXPRO_rhos/a_cm
         "CS" => c_s_full,
         "RMIN" => rmin,
         "NR" => nr_full,
         "NS" => ns_full,
-        "SIGN_BT" => Float64(signb),
-        "SIGN_IT" => Float64(signb * sign(q_profile[ir_rep])),
+        # "SIGN_BT" => Float64(signb),
+        "SIGN_BT" => -1.0,
+        # "SIGN_IT" => Float64(signb * sign(q_profile[ir_rep])),  # original: uses signed q
+        # Fortran: EXPRO_ctrl_signq = 1 forces q positive → SIGN_IT = SIGN_BT
+        # "SIGN_IT" => Float64(signb),
+        "SIGN_IT" => -1.0,
         "RMAJ" => Rmaj ./ a,
         "SHIFT" => drmaj,
         "Q" => abs.(q_profile),

@@ -1,0 +1,104 @@
+Basic instructions for getting going with TGLF-EP+Alpha
+
+ENVIRONMENT SETUP
+-------------------
+
+Set environment variables in your login script for TGLFEP and Alpha directories.
+There are two "public" Perlmutter installs:
+
+For AToM legacy team members:
+
+/global/common/software/atom/gacode_add_TGLFEP
+
+For DIII-D collaborators:
+
+/global/cfs/cdirs/m3739/gacode_add_d3d
+
+Choose the appropriate root directory for yourself above, referred to below as "$ROOT".
+Both should be current with all updates.
+
+for c-shell:
+
+ setenv TGLFEP_DIR $ROOT/TGLF-EP
+ setenv ALPHA_DIR $ROOT/Alpha
+
+for bash
+
+ export $TGLFEP_DIR='$ROOT/TGLF-EP'
+ export $ALPHA_DIR='$ROOT/Alpha'
+
+PREPARING RUN DIRECTORY
+---------------------------------------------
+
+Copy all template files to run directory.
+
+Add the input.gacode for your case to your run directory.
+ * The EP species (whetehr one or two) and kinetically-treated species MUST have continuous
+   indices in input.gacode, with non-kinetic impurities following. Please reorder input.gacode to
+   meet this condition.
+ * Input files here assume thermal deuterium at index 1 and deuterium beam at index 2.
+ * For other configurations (e.g. running carbon kinetically), adjust the following variables appropriately:
+   - In input.TGLFEP:
+     * N_ION (total kinetic ions including EP(s))
+     * IS_EP (index for EP species on this TGLFEP run)
+   - In Alpha_input, lines with following labels:
+     * # First species index in input.gacode
+     * # Main ion mass in AMU
+     * # Main ion charge in e
+     * # Secondary thermal ion mass in AMU
+     * # Secondary thermal charge in e
+     * # Fraction of primary thermal ion
+     * Note: Only two main thermal ions are allowed currently in Alpha.
+             The above paramters MUST be set manually; 
+               consistancy with input.gacode is not yet automatic
+Other parameters a typical user might want to adjust in input.TGLFEP
+* SCAN_N: Controls how many radial domain points are sampled.
+* ROTATIONAL_SUPPRESSION_FLAG: 0 no ExB quech of AEs
+                               1 ExB quench from Bass and Waltz, PoP 2017
+
+SETTING UP RUN
+-----------------------------------------------
+
+The number of cores per radial gridpoint must divide evenly in 256 (up to 256).
+Set values in batch_TGLFEP.sl appropriately (Alpha is uniprocess, so need to touch batch_Alpha.sl):
+#SBATCH --nodes=10        (number of need nodes = cores/128)
+#SBATCH --time=3:00:00    (run time requested, 3 hrs should be plenty for 2 kinetic species)
+#SBATCH -J adaptive       (name of run on slurm queue)
+
+srun -n 1280 $TGLFEP_DIR/TGLFEP_driver
+       |____|
+         |_________ Number of cores
+
+EXECUTE THE RUN
+-----------------------------------------------
+
+At command line just submit each batch file
+
+TGLFEP:
+
+sbatch batch_TGLFEP.sl
+
+Outputs:
+
+out.scalefactor.*   (summary of TGLFEP searching algorithm)
+out.wavefunction.*  (wavefunctions)
+alpha_dndr_crit.input    (critical gradient in density units)
+alpha_dpdr_crit.input    (critical gradient in pressure units)
+run.err.TGLFEP           (standard error)
+run.out.TGLFEP           (standard output)
+
+If you have critical gradients from TGLFEP, you can run Alpha (uniprocess):
+
+sbatch batch_Alpha.sl
+
+Outputs (1 EP species):
+
+Alpha_dndr_crit_composite.out
+Alpha_dpdr_crit_composite.out
+Alpha.out      (basic run summary)
+Alpha_transport.out    (all the important transport files)
+D_alpha_ITER.out      (EP diffusion coefficient profile in ITER-standard units for TRANSP/NUBEAM)
+D_alpha.out           (EP diffusion coefficient profile in usual units)
+out.Alpha.sigma_v_vs_rho  (DT fusion cross section vs radius, meaningless for non DT plasma)
+run.err.Alpha       (standard error)
+run.out.Alpha       (standard output)

@@ -1,23 +1,31 @@
+using Pkg
+Pkg.activate("../..")
 using Distributed
+using SlurmClusterManager
 
 SCAN_N = 20
+# SCAN_N = 1
 IS_EP = 1 # fast D is EP driver
 rho = [0.01, 0.06, 0.11, 0.16, 0.21, 0.27, 0.32, 0.37, 0.42, 0.47,
         0.53, 0.58, 0.63, 0.68, 0.73, 0.79, 0.84, 0.89, 0.94, 1.0]
 # rho = [0.01, 0.06, 0.11, 0.16, 0.21, 0.27, 0.32, 0.37]
 # rho = [0.01]
-N_BASIS = 8
-tot = 400
-nthreads = max(1, div(tot-2, SCAN_N + 1))
+N_BASIS = 32
+customTag = ""  # patched by submit_sweep.sh
+use_gpu = true
+if use_gpu
+    nthreads = 16 # CPU cores per GPU
+else
+    tot = 1280 # 10 CPU nodes, 128 cores each
+    nthreads = min(256, max(1, div(tot-2, SCAN_N))) # 256 = number inner iters per scan
+end
 
 sysimage_path = expanduser("~/.julia/dev/EP_TJLF/build/noTJLF_TJLFEP_sysimage.so")
 project_path = expanduser("../../")
-addprocs(SCAN_N, exeflags=`--project=$project_path --sysimage=$sysimage_path --threads=$nthreads`)
+addprocs(SlurmManager(); exeflags=`--project=$project_path --sysimage=$sysimage_path --threads=$nthreads`)
 @everywhere println("worker $(myid()) on $(gethostname())")
 
-@everywhere using Pkg
-@everywhere Pkg.activate("../../")
-@everywhere @time using CUDA
+# @everywhere @time using CUDA
 @everywhere using TJLFEP
 @everywhere using TJLFEP: TJLF
 @everywhere using LinearAlgebra
@@ -61,7 +69,8 @@ begin
         println("cuda solve loaded: ", !isnothing(TJLF._CUDA_SOLVE[])) 
     end
 
-    inputFile = joinpath(dir, "input.gacode_202017C42_500ms")
+    # inputFile = joinpath(dir, "input.gacode_202017C42_500ms")
+    inputFile = joinpath(dir, "202017C42_500ms_v3.1/input.gacode")
     println("rho = ", rho)
 
     OptionsDict = Dict{String, Any}("nn" => 5, "nr" => 101, "jtscale_max" => 1, "nmodes" => 4,
@@ -74,7 +83,8 @@ begin
     @time dd = IMAS.dd(inputGACODE)
 
     job_id = get(ENV, "SLURM_JOB_ID", "local")
-    outdir = joinpath(@__DIR__, "$(use_gpu ? "GPU" : "CPU")_n$(N_BASIS)_$(SCAN_N)_$(job_id)")
+    tag_part = isempty(customTag) || customTag == "none" ? "" : "_$(customTag)"
+    outdir = joinpath(@__DIR__, "$(use_gpu ? "GPU" : "CPU")_n$(N_BASIS)$(tag_part)_$(SCAN_N)_$(job_id)")
     mkpath(outdir)
 
     if use_gpu

@@ -524,8 +524,9 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     end
 
     Options.F_REAL .= 1.0
-    if (Options.REAL_FREQ == 1) 
-        Options.F_REAL .= (cs[:]/(rmin_ex[profile.NR]))/(2*pi*1.0e3)
+    if (Options.REAL_FREQ == 1)
+        # cs is in CGS (cm/s); rmin_ex is in metres — multiply by 100 to get cm so c_s/a has units s⁻¹
+        Options.F_REAL .= (cs[:] / (rmin_ex[profile.NR] * 100.0)) / (2*pi*1.0e3)
     end
 
     if (saveFiles)

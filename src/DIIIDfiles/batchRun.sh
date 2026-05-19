@@ -2,9 +2,9 @@
 #SBATCH -A m4909
 #SBATCH -q debug
 #SBATCH -N 1
-#SBATCH -n 2
-#SBATCH -t 00:30:00
-#SBATCH -C gpu
+#SBATCH -n 4
+#SBATCH -t 00:05:00
+#SBATCH -C cpu
 #SBATCH -J TJLFEP
 
 module load julia
@@ -27,7 +27,8 @@ MONITOR_LOG="monitor_${SLURM_JOB_ID}.log"
     while true; do
         echo "=== $(date '+%H:%M:%S') ===" >> "$MONITOR_LOG"
         # GPU query via srun so each node runs it within the job's cgroup
-        srun --ntasks-per-node=1 bash -c \
+        # --overlap allows this step to run concurrently with the worker srun
+        srun --overlap --ntasks-per-node=1 bash -c \
             'nvidia-smi --query-gpu=index,memory.used,utilization.gpu,temperature.gpu \
              --format=csv,noheader,nounits 2>/dev/null \
              | awk -F", " -v h=$(hostname -s) \

@@ -3,27 +3,12 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
     #baseDirectory = "/Users/benagnew/TJLF.jl/outputs/tglfep_tests/input.MTGLF"
     #inputsPR = readMTGLF(baseDirectory)
 
-    
-    
-
     nfactor = 8
     nefwid = 8
     nkyhat = 4
     nkwf = nfactor*nefwid*nkyhat
     k_max = 4
     l_write_out = true
-
-    #TJLFEP_COMM = COMM_IN
-    #np = np_in
-    # Here, I deal with the issue of np needing to be local in kwscale_scan:
-    #np_local = MPI.Comm_size(TJLFEP_COMM)
-    #id = id_in
-    #println(np_local, " np_local at id & ir", id, " ", inputsEP.IR)
-
-    # So in kwscale_scan, this should happen for each color/ir.
-    # the k loop needs to happen sequentially, but the 1:500 inner one doesn't.
-    # That one will be using a thread.
-
 
     kyhat_min = 0.0
     kyhat_max = 1.0
@@ -78,7 +63,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
     ikyhat_mark::Int64 = 0
     iefwid_mark::Int64 = 0
     fmark = T(1.0E20)
-    scalefactor_buffer = nothing
+    scalefactor_buffer = l_write_out && printout ? String[] : nothing
     wavebuffer_all = []
     for k = 1:k_max
         # k doesn't use Threads!
@@ -115,18 +100,10 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
             ikyhat = Int(floor((i-1)/(nefwid*nfactor))+1) # 2
             iefwid = Int(floor(1.0*mod(i-1, nefwid*nfactor)/nfactor)+1) # 5
             ifactor = mod(i-1, nfactor)+1 # 10
-            if (k == 3 && i == 1)
-                #println("=== efwid : iefwid : efwid[iefwid] ===")
-                #println(efwid, " : ", iefwid, " : ", efwid[iefwid])
-            end
-            # println(kyhat)
+
             local_inputsEP.FACTOR_IN = factor[ifactor] # Just used in mapping
             local_inputsEP.KYHAT_IN = kyhat[ikyhat] # Set equal to ky_in
             local_inputsEP.WIDTH_IN = efwid[iefwid]
-            #kyIndex = ikyhat
-            #println("WIDTH_IN at pass ", i, ": ", inputsEP.WIDTH_IN)
-            #println("np: ", np)
-
 
             str_sf = string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/100.0), 10) + UInt32('0'))) *
                      string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/10.0), 10) + UInt32('0')))  *
@@ -135,34 +112,15 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                      string(Char(mod(floor(Int, 10*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
                      string(Char(mod(floor(Int, 100*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
                      string(Char(mod(floor(Int, 1000*local_inputsEP.FACTOR_IN), 10) + UInt32('0')))
-            #=if (k == 2 && id == 0 && inputsEP.IR == 201 && i <= 5)
-                #println("id = 0 str_sf: ")
-                #println(str_sf)
-                println("Input: ", inputsEP)
-                println("iteration: ", i)
-            end
-            MPI.Barrier(TJLFEP_COMM)
-            if (k == 2 && id == 1 && inputsEP.IR == 201 && i <= 5)
-                #println("id = 1 str_sf: ")
-                #println(str_sf)
-                println("Input: ", inputsEP)
-                println("iteration: ", i)
-            end=#
+
             str_wf_file = "out.wavefunction"*coalesce(local_inputsEP.SUFFIX, "")*"_sf"*str_sf
-            #=if (local_inputsEP.IR == 201 && k == 1)
-                println("ikyhat_write for id in ir = 201: ", id, " ", ikyhat_write)
-            end=#
+
             if ((local_inputsEP.WRITE_WAVEFUNCTION == 1) &&
                 (ikyhat == ikyhat_write) &&
                 (iefwid == iefwid_write) &&
                 (ifactor == ifactor_write) &&
                 (k == k_max) && printout)
                 l_wavefunction_out = 1
-                #println(str_sf, " for round ", k, ", id & ir: ", id, " ", inputsEP.IR)
-            end
-
-            if (local_inputsEP.IR == 101)
-                #println("============== Iter: ", i)
             end
 
             gamma_out, freq_out, inputTJLF, local_eigen_cache, wavefunction_buffer = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out; eigen_cache=local_eigen_cache, use_gpu=use_gpu)
@@ -216,19 +174,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 end # ifactor
             end # iefwid
         end #ikyhat
-        #=if (k == 2 && id == 0 && inputsEP.IR == 201)
-            println("imark for second round id = 0: ", imark)
-        end
-        sleep(1)
-        if (k == 2 && id == 1 && inputsEP.IR == 201)
-            println("imark for second round id = 1: ", imark)
-        end
-        #if (id == 0)
-        #    println(imark, " imark at id: ", id)
-        #end =#
-
-        # This loop searches for the lowest value of imark for a specific
-        # round of K.
+        
         imark_min = nfactor + 1
         for ikyhat = 1:nkyhat
             for iefwid = 1:nefwid
@@ -250,11 +196,14 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
             # default the marked values as the last ones
             ikyhat_mark = nkyhat
             iefwid_mark = nefwid
+            # Reset write indices to midpoint defaults each k (matches Fortran)
+            ikyhat_write = floor(Int, nkyhat/2)
+            iefwid_write = floor(Int, nefwid/2)
 
             # loop all combos of kyhat, width in imark:
             for ikyhat = 1:nkyhat
                 for iefwid = 1:nefwid
-                    
+                    lkeep_ref[ikyhat, iefwid] = false  # reset each k iteration (matches Fortran)
                     imark_ref = nfactor-1 # ? What is the point ?
                     #println("pass 1: ", imark_ref)
                     
@@ -276,12 +225,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                     # value of f_guess based on this equation. This equation is not clear yet to me.
                     f_g1 = factor[imark_ref]
                     f_g2 = factor[imark_ref+1]
-                    # Set possible default values (as Fortran accesses it despite not being allotted):
-                    #if (imark_ref+1 < 11)
-                    #    f_g2 = factor[imark_ref+1]
-                    #else
-                    #    f_g2 = 0
-                    #end
 
                     # This is the portion that is NOT consistent with the Fortran and is
                     # causing problems due to default values:
@@ -293,19 +236,12 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                     for n = 1:inputsEP.NMODES
                         if (lkeep_i[ikyhat, iefwid, imark_ref, n])
                             gamma_g1 = max((growthrate[ikyhat, iefwid, imark_ref, n]), gamma_g1)
-                            #println("gamma_g1",gamma_g1)
                         end
-                        if (imark_ref+1 < 11)
-                            if (lkeep_i[ikyhat, iefwid, imark_ref+1, n])
-                                gamma_g2 = max((growthrate[ikyhat, iefwid, imark_ref+1, n]), gamma_g2)
-                                # println("gamma_g2",gamma_g2)
-                            end
+                        # if (imark_ref+1 < nfactor+1)
+                        if (lkeep_i[ikyhat, iefwid, imark_ref+1, n])
+                            gamma_g2 = max((growthrate[ikyhat, iefwid, imark_ref+1, n]), gamma_g2)
                         end
-                        if (imark_ref+1 == 11 && n == 4 && printout)
-                            println("ikyhat, iefwid: ", ikyhat, " ", iefwid)
-                            println("imarkref+1=11 : f_g1 & f_g2: ", f_g1, " ", f_g2)
-                            println("imarkref+1=11 : gamma_g1 & gamma_g2: ", gamma_g1, " ", gamma_g2)
-                        end
+                        # end
                     end
                     f_guess[ikyhat, iefwid] = f_g1 + (inputsEP.GAMMA_THRESH-gamma_g1)*(f_g2-f_g1)/(gamma_g2-gamma_g1)
                     gamma_mark_i_1[ikyhat, iefwid] = gamma_g1
@@ -317,12 +253,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                     end
                 end # iefwid
             end # ikyhat
-            # This next one seems to only happen on the lower of the TWO
-            # ir for just the first round of k ???
-            #println("=== lkeep_ref ===")
-            #println(lkeep_ref)
-            #println("Round: ", k)
-            #println("=================")
 
             # Now we scan across imark again, looking for modes that are:
             # kept; have a max growthrate along the modes that is less than 95% of the neighboring maximum; have a factor value that is 
@@ -354,9 +284,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                         ikymax = max(ikyhat,ikymax)
                         iefwmin = min(iefwid,iefwmin)
                         iefwmax = max(iefwid,iefwmax)
-                        # f_guess_mark = min(f_guess[ikyhat,iefwid],f_guess_mark)
-                        # more similar to fortran implementation
-                        f_guess_mark = min(f_mark_i[ikyhat,iefwid],f_guess_mark)
+                        f_guess_mark = min(f_guess[ikyhat,iefwid],f_guess_mark)
 
                             # then set new maximums (fmark and gmark)
                             # and set f_guess_mark which corresponds to a maximized growthrate and
@@ -391,29 +319,35 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         g = fill(T(NaN), inputsEP.NMODES)
         f = fill(T(NaN), inputsEP.NMODES)
         keep_label = fill("", inputsEP.NMODES)
-        # These will be produced whenever I run from a specified directory, say
-        # via a batch file or some execution command for TJLF-EP. Running by REPL
-        # does create these files, but it places them in the TJLF.JL directory,
-        # which isn't where I will want to store them in the end.
-        # println("printout, l_write_out",printout, l_write_out)
-        scalefactor_buffer = nothing
+        # Set FREQ_AE_UPPER and GAMMA_THRESH on the main inputsEP so that display labels
+        # (BT/F/?) and kHz header lines are computed correctly.  The threaded scan used
+        # deepcopy'd local structs and never wrote these back to the shared struct.
+        inputsEP.FREQ_AE_UPPER = -abs(inputsPR.omegaGAM[inputsEP.IR])
+        if inputsEP.ROTATIONAL_SUPPRESSION_FLAG == 1
+            inputsEP.GAMMA_THRESH_MAX = abs(inputsPR.gammap[inputsEP.IR]) * 2.0 * (min(1.0 - inputsPR.RMIN[inputsEP.IR], inputsPR.RMIN[inputsEP.IR]) / inputsPR.RMAJ[inputsEP.IR])
+            inputsEP.GAMMA_THRESH = 0.15 * abs(inputsPR.gammaE[inputsEP.IR] / inputsPR.SHEAR[inputsEP.IR])
+            inputsEP.GAMMA_THRESH = min(inputsEP.GAMMA_THRESH, inputsEP.GAMMA_THRESH_MAX)
+        else
+            inputsEP.GAMMA_THRESH = 1.0e-7
+            inputsEP.GAMMA_THRESH_MAX = 1.0e-7
+        end
         if (l_write_out && printout)
-            scalefactor_buffer = String[]
             filename = "out.scalefactor"*coalesce(inputsEP.SUFFIX, "")
-            # Header
-            push!(scalefactor_buffer, "factor, (gamma(n), freq(n), flag, n=1, nmodes_in)")
-            push!(scalefactor_buffer, "flag key:  'K' mode is kept")
-            if (inputsEP.REJECT_TEARING_FLAG == 1) push!(scalefactor_buffer, "           'T' rejected for tearing parity") end
-            if (inputsEP.REJECT_I_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'Pi' rejected for ion pinch") end
-            if (inputsEP.REJECT_E_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'Pe' rejected for electron pinch") end
-            if (inputsEP.REJECT_TH_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'Pth' rejected for thermal pinch") end
-            # if (inputsEP.REJECT_EP_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'PEP' rejected for EP pinch") end
-            push!(scalefactor_buffer, "           'QLR' rejected for QL ratio EP/|chi_i| < $(inputsEP.QL_RATIO_THRESH)")
-            push!(scalefactor_buffer, "           'F' rejected for non-AE frequency > $(inputsEP.F_REAL[inputsEP.IR]*inputsEP.FREQ_AE_UPPER) kHz")
-            push!(scalefactor_buffer, "           'TH2' rejected for <theta^2>  > $(inputsEP.THETA_SQ_THRESH)")
-            push!(scalefactor_buffer, "           'F'   rejected for non-AE frequency > $(inputsEP.F_REAL[inputsEP.IR] * inputsEP.FREQ_AE_UPPER) kHz")
-            push!(scalefactor_buffer, "           'BT'  mode growth rate is below threshold GAMMA_THRESH = $(inputsEP.F_REAL[inputsEP.IR] * inputsEP.GAMMA_THRESH) kHz")
-            push!(scalefactor_buffer, "omega_TAE = $(inputsEP.F_REAL[inputsEP.IR] * inputsPR.OMEGA_TAE[inputsEP.IR]) ;  omegaGAM = $(-inputsEP.F_REAL[inputsEP.IR] * inputsPR.omegaGAM[inputsEP.IR])")
+            # Header written only once (first k), matching Fortran's file-create-once behavior
+            if isempty(scalefactor_buffer)
+                push!(scalefactor_buffer, "factor, (gamma(n), freq(n), flag, n=1, nmodes_in)")
+                push!(scalefactor_buffer, "flag key:  'K' mode is kept")
+                if (inputsEP.REJECT_TEARING_FLAG == 1) push!(scalefactor_buffer, "           'T' rejected for tearing parity") end
+                if (inputsEP.REJECT_I_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'Pi' rejected for ion pinch") end
+                if (inputsEP.REJECT_E_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'Pe' rejected for electron pinch") end
+                if (inputsEP.REJECT_TH_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'Pth' rejected for thermal pinch") end
+                if (inputsEP.REJECT_EP_PINCH_FLAG == 1) push!(scalefactor_buffer, "           'PEP' rejected for EP pinch") end
+                push!(scalefactor_buffer, "           'QLR' rejected for QL ratio EP/|chi_i| < $(inputsEP.QL_RATIO_THRESH)")
+                push!(scalefactor_buffer, "           'F' rejected for non-AE frequency > $(inputsEP.F_REAL[inputsEP.IR]*inputsEP.FREQ_AE_UPPER) kHz")
+                push!(scalefactor_buffer, "           'TH2' rejected for <theta^2>  > $(inputsEP.THETA_SQ_THRESH)")
+                push!(scalefactor_buffer, "           'BT'  mode growth rate is below threshold GAMMA_THRESH = $(inputsEP.F_REAL[inputsEP.IR] * inputsEP.GAMMA_THRESH) kHz")
+                push!(scalefactor_buffer, "omega_TAE = $(inputsEP.F_REAL[inputsEP.IR] * inputsPR.OMEGA_TAE[inputsEP.IR]) ;  omegaGAM = $(-inputsEP.F_REAL[inputsEP.IR] * inputsPR.omegaGAM[inputsEP.IR])")
+            end
 
             ky_write = kyhat[ikyhat_write]*inputTJLF.ZS[inputsEP.IS_EP+1]/sqrt(inputTJLF.MASS[inputsEP.IS_EP+1]*inputTJLF.TAUS[inputsEP.IS_EP+1])
 
@@ -454,7 +388,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                     elseif (l_QL_ratio_i[ikyhat,iefwid,ifactor,n])
                         keep_label[n] = " QLR"
                         testlabel = testlabel*" QLR "
-                    elseif l_theta_sq_i_out[ikyhat, iefwid, ifactor, n]
+                    elseif l_theta_sq_i[ikyhat, iefwid, ifactor, n]
                         keep_label[n] = " TH2"
                         testlabel = testlabel*" TH2 "
                     elseif (frequency[ikyhat,iefwid,ifactor,n] > inputsEP.FREQ_AE_UPPER)
@@ -530,10 +464,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
     
     else
         # If, over the scan of k, there's an unstable mode, set each to each marked point.
-        # inputs.FACTOR_IN = f_guess_mark
-        # Use fmark (= factor[imark], the first kept factor) to match Fortran TGLFEP_scalefactor.
-        # f_guess_mark uses interpolation not present in Fortran and can give negative values.
-        inputsEP.FACTOR_IN = fmark
+        inputsEP.FACTOR_IN = f_guess_mark
         inputsEP.WIDTH_IN = efwid[iefwid_mark]
         inputsEP.KYMARK = kyhat[ikyhat_mark]
     end

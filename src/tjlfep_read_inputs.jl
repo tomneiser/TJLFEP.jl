@@ -309,10 +309,6 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
 
     inputTJLF.SAT_RULE = 0
 
-    # println("============================================================================================")
-    # println("TJLF MAP PRINTS")
-    # println("============================================================================================")
-
     inputTJLF.NS = inputsPR.NS
     ns = inputsPR.NS
     is = inputsEP.IS_EP + 1
@@ -320,7 +316,7 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
     ir = inputsEP.IR
 
     #TJLF deletes GEOMETRY_FLAG so this is redundant:
-    #inputTJLF.GEOMETRY_FLAG = inputsEP.GEOMETRY_FLAG
+    # inputTJLF.GEOMETRY_FLAG = inputsEP.GEOMETRY_FLAG
 
     inputTJLF.ZS = inputsPR.ZS[ir, :]
     inputTJLF.MASS = inputsPR.MASS
@@ -334,6 +330,13 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
             inputTJLF.TAUS[i] = 1.0 # species w/ TAUS=0 will have AS=0, so setting to 1 doesn't affect physics
         end
     end
+
+    # println("===== Beginning Check =====")
+    # # check above statement:
+    # AS_zeros = inputTJLF.AS .== 0.0
+    # TAUS_zeros = inputTJLF.TAUS .== 0.0
+    # @assert all(AS_zeros .== TAUS_zeros) "AS and TAUS zeroes entries don't match"
+    # println("===== End Check =====")
 
     inputTJLF.ZS[1] = -1.0
     # Prevent ZS=0 for zero-density fast species: ZS=0 → bb=taus*mass*(ky/0)²=Inf
@@ -423,7 +426,7 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
         
     end
     if (inputsPR.GEOMETRY_FLAG == 1)
-        inputTJLF.RMIN_LOC = inputsPR.RMIN[ir]
+        inputTJLF.RMIN_LOC = inputsPR.RMIN[ir] / inputsPR.RMIN[end]  # normalize to r/a (dimensionless); RMIN stored in m in FUSE path, r/a in file-based path
         inputTJLF.RMAJ_LOC = inputsPR.RMAJ[ir]
         inputTJLF.ZMAJ_LOC = 0.0
         inputTJLF.DRMAJDX_LOC = inputsPR.SHIFT[ir]
@@ -516,30 +519,9 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
     else
         
         inputsEP.GAMMA_THRESH = 1.0e-7
-        inputsEP.GAMMA_THRESH_MAX = 1.0e-7
+        # inputsEP.GAMMA_THRESH_MAX = 1.0e-7
     end
 
-    for field in fieldnames(typeof(inputsEP))
-        value = getfield(inputsEP, field)
-        # if value[1] ==NaN
-        #     value = 0
-        # elseif value[1]  ==missing
-        #     value[1] == coalesce(input.TJLF, false)
-    end
-    # Create an instance of your struct (replace with your actual struct's name)
-
-    # for field in fieldnames(typeof(inputTJLF))
-
-        # if inputTJLF.field[1]== NaN
-        #     inputTJLF.field=tesinput.field
-        
-        # end
-
-    # for field in fieldnames(typeof(inputTJLF))
-    #     value = getfield(inputTJLF, field)
-    #     println("$field: $value")
-        
-    # end
     return inputTJLF
 end
 """

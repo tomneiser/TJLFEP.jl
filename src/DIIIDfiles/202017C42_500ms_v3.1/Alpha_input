@@ -1,0 +1,46 @@
+0      # Zero radial gridpoints triggers input.profiles read
+0.92    # Not relevant for experimental cases
+0.9     # Not relevant for experimental cases
+1.02    # Not relevant for experimental cases
+1.54    # Not relevant for experimental cases
+1.67    # Not relevant for experimental cases
+0.15    # Not relevant for experimental cases
+0.622   # Not relevant for experimental cases
+1.75    # Not relevant for experimental cases
+1.0     # Not relevant for experimental cases
+0.2     # Not relevant for experimental cases
+0.0     # Not relevant for experimental cases
+3.8     # Not relevant for experimental cases
+1.0     # Not relevant for experimental cases
+0.5     # Not relevant for experimental cases
+0.1     # Not relevant for experimental cases
+1.0     # Not relevant for experimental cases
+2.0    # Main ion mass in AMU 
+1.0    # Main ion charge in e
+2.0    # Secondary thermal ion mass in AMU
+1.0    # Secondary thermal ion charge in e
+0.0    # Fraction of primary thermal ion
+2.0    # EP ion mass in AMU
+1.0    # EP ion charge in e 
+0.08   # Effective injection energy in MeV (needed for source calculation)
+3.0     # Not relevant for experimental cases
+1.1     # Not relevant for experimental cases
+1.1     # Not relevant for experimental cases
+0     # Use T equivalent (ignore for experimental cases)
+1     # NBI_method (one or two species)
+0     # Angioni method on/off
+1     # Number of critical gradient files, always set to 1 for TGLFEP process_in=5
+alpha_dndr_crit.input
+2     # First species index in input.gacode
+1.0   # First species density scale factor
+null
+null
+1           # Values from here read for NBI_method=2, 2-species transport
+beam_crit/alpha_dndr_crit.input
+1.0    # Second species injection energy
+2.0    # Second species mass
+1.0    # Second species charge
+3      # Second species index in input.gacode
+1      # 1: coupled transport,  0: self effect only
+1.0    # Second species density scale factor
+null

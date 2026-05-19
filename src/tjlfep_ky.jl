@@ -27,9 +27,6 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
 
     inputTJLF = TJLF_map(inputsEP, inputsPR)
 
-    #println("GradBFactor:")
-    #println(inputTJLF.GRADB_FACTOR)
-
     inputTJLF.USE_TRANSPORT_MODEL = false # single-ky path: bypasses full spectral transport model
     # inputTJLF.USE_TRANSPORT_MODEL = true
     
@@ -84,6 +81,7 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     if T === Float64
         result = TJLF.run(convInput; use_gpu=use_gpu)
     else
+        quit()
         result = _tjlf_run_dual(convInput, T; use_gpu=use_gpu)
     end
     gamma_out        = result.eigenvalue[:, 1, 1]   # [nmodes], ky=1
@@ -126,6 +124,7 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     if T === Float64
         wavefunction, angle, nplot, nmodes_out = TJLF.get_wavefunction(convInput, satParams, field_weight_out)
     else
+        quit()
         ci_f64 = _to_float64_input(convInput)
         sp_f64 = TJLF.get_sat_params(ci_f64)
         fw_f64 = map(x -> ComplexF64(ForwardDiff.value(real(x)), ForwardDiff.value(imag(x))), field_weight_out)
@@ -137,7 +136,9 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     inputsEP.L_I_PINCH .= false
     inputsEP.L_E_PINCH .= false
     inputsEP.L_TH_PINCH .= false
+    inputsEP.L_EP_PINCH .= false
     inputsEP.L_QL_RATIO .= false
+    inputsEP.L_THETA_SQ .= false
     # inputsEP.L_MAX_OUTER_PANEL .= false
     x_tear_test = fill(zero(T), 4)
     abswavefunction = abs.(wavefunction)
@@ -287,7 +288,8 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     wavefunction_buffer = nothing
     if (l_wavefunction_out == 1) # nplot = max_plot_out; nfields = 1 by def.
         wavefunction_buffer = String[]
-        push!(wavefunction_buffer, "nmodes=$(nmodes_out)TGLF INPUT NMODES = $(inputsEP.NMODES) nfields= max_plot=$(nplot)")
+        nfields_out = size(wavefunction, 2)
+        push!(wavefunction_buffer, "nmodes= $(nmodes_out)  nfields= $(nfields_out)  max_plot= $(nplot)")
         push!(wavefunction_buffer, "ky=$(inputTJLF.KY) width=$(inputTJLF.WIDTH)")
         push!(wavefunction_buffer, "theta     ((Re(field_i), Im(field_i),i=(1,nfields)),j=1,nmodes)")
         push!(wavefunction_buffer, "Tearing metric: $(x_tear_test)")

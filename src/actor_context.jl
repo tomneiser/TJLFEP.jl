@@ -422,6 +422,10 @@ function populate_tjlfep_profile!(prof::profile, extraEP::Dict, input::InputTGLF
     
     ne_full = extraEP["DENS_1"]  # Electron density
     Te_full = extraEP["TEMP_1"]  # Electron temperature
+    # Minor radius in metres: extraEP["RMIN"] is stored in m (rmin_cm / 100 in context.jl).
+    # dlnnidr from context.jl is d(ln n)/dr with r in m, so multiply by a [m] to get the
+    # dimensionless TGLF input a/Ln.  Matches Fortran: rlns = a_meters * dlnnidr.
+    a_m = extraEP["RMIN"][end]
     
     for s in 1:ns
         dens_key = "DENS_$s"
@@ -441,8 +445,8 @@ function populate_tjlfep_profile!(prof::profile, extraEP::Dict, input::InputTGLF
                     prof.AS[ir, s] = extraEP[dens_key][ir] / ne_full[ir]
                     prof.TAUS[ir, s] = extraEP[temp_key][ir] / Te_full[ir]
                 end
-                prof.RLNS[ir, s] = extraEP[dlnndr_key][ir]  # Density gradient
-                prof.RLTS[ir, s] = extraEP[dlntdr_key][ir]  # Temperature gradient
+                prof.RLNS[ir, s] = extraEP[dlnndr_key][ir] * a_m  # [1/m] × [m] → a/Ln (dimensionless)
+                prof.RLTS[ir, s] = extraEP[dlntdr_key][ir] * a_m  # [1/m] × [m] → a/LT (dimensionless)
             end
         end
     end

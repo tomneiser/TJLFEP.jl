@@ -31,8 +31,8 @@ function tjlfep_complete_output(profile_in::Vector{T}, inputsEP::Options{S}, inp
         end
 
         # If the value of profile of concern is infinite, not a number, or negative, set it to be excluded in the profile:
-        l_exclude = (profile_in[ir_in] == Inf) # Infinity test (check validity)
-        l_exclude = (l_exclude || (profile_in[ir_in] == NaN)) # NaN test (check validity)
+        l_exclude = isinf(profile_in[ir_in]) # Infinity test (check validity)
+        l_exclude = (l_exclude || isnan(profile_in[ir_in])) # NaN test: x==NaN is always false in Julia; must use isnan()
         l_exclude = (l_exclude || (profile_in[ir_in] < 0.0)) # Negative value test (check validity)
 
         # if we aren't excluding it, set the profile_out at the ir_exp value we're testing to its actual value,
