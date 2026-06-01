@@ -3465,10 +3465,11 @@ uuid = "a60c9cbd-e72f-4185-96b6-b8fc312c4d37"
 version = "1.2.0"
 
 [[deps.TJLF]]
-deps = ["FastGaussQuadrature", "ForwardDiff", "KrylovKit", "LinearAlgebra", "LinearMaps", "SparseArrays", "StaticArrays"]
+deps = ["FastGaussQuadrature", "KrylovKit", "LinearAlgebra", "LinearMaps", "SparseArrays", "StaticArrays"]
 path = "../TJLF"
 uuid = "12ecd31c-256b-4db5-a799-cd5afeb0bd7d"
-version = "1.2.2"
+version = "1.2.3"
+weakdeps = ["ForwardDiff"]
 
     [deps.TJLF.extensions]
     TJLFForwardDiffExt = "ForwardDiff"

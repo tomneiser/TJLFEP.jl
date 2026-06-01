@@ -1,105 +1,16 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# AD-compatible dispatch for the generalized complex eigenvalue problem.
+# TJLFEP AD helpers for ForwardDiff.Dual element types.
 #
-# TJLF's existing tjlf_ad_extensions.jl covers:
-#   - eigen(Symmetric{Dual})          — real symmetric
-#   - eigen(AbstractMatrix{Complex{Dual}})  — standard complex
-#
-# Missing (needed by EP_TJLF): eigen(A, B) where both are Complex{Dual}.
-# This arises in tjlf_eigensolver._generalized_eigenvalues, which calls
-# eigen(A, B) for non-ComplexF64 element types.
-#
-# Generalized problem:  A rᵢ = λᵢ B rᵢ,   lᵢᴴ A = λᵢ lᵢᴴ B
-# B-biorthogonality (after normalisation): lᵢᴴ B rⱼ = δᵢⱼ
-#
-# IFT derivatives:
-#   ∂λᵢ/∂p  =  lᵢᴴ (∂A/∂p − λᵢ ∂B/∂p) rᵢ
-#   Sₖ[j,i] =  [Lᴴ(∂A/∂p − λᵢ ∂B/∂p)R]_{j,i} / (λᵢ − λⱼ)   (j ≠ i)
-#   ∂R/∂p   =  R Sₖ
+# The AD-compatible eigen rules (real-symmetric, complex, and the generalized
+# complex eigenproblem A r = λ B r) now live in TJLF's TJLFForwardDiffExt and are
+# dispatched on TJLF-owned functions (_sym_eigen / _herm_eigen /
+# _generalized_eigenvalues) rather than pirating LinearAlgebra.eigen. TJLFEP no
+# longer defines any eigen methods here; it only provides the Dual-safe run
+# wrapper and a Float64 projection used by the wavefunction path.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import ForwardDiff
-import LinearAlgebra
-import LinearAlgebra.LAPACK.ggev!
 import TJLF
-
-const _GEN_DEGEN_THRESHOLD = 1e-12
-
-function LinearAlgebra.eigen(A::AbstractMatrix{Complex{D}}, B::AbstractMatrix{Complex{D}}; kwargs...) where {D <: ForwardDiff.Dual}
-    np  = ForwardDiff.npartials(D)
-    Tag = ForwardDiff.tagtype(D)
-
-    # Extract Float64 value matrices
-    Af = map(a -> Complex{Float64}(ForwardDiff.value(real(a)), ForwardDiff.value(imag(a))), A)
-    Bf = map(b -> Complex{Float64}(ForwardDiff.value(real(b)), ForwardDiff.value(imag(b))), B)
-
-    # LAPACK ggev! returns left (vl) and right (vr) eigenvectors.
-    # It overwrites its inputs, so pass copies.
-    (alpha, beta, L, R) = ggev!('V', 'V', copy(Af), copy(Bf))
-    λf = alpha ./ beta    # Vector{ComplexF64}
-    n  = length(λf)
-
-    # B-biorthogonal normalisation: rescale L so that lᵢᴴ B rᵢ = 1
-    BfR = Bf * R
-    for i in 1:n
-        s = LinearAlgebra.dot(L[:, i], BfR[:, i])
-        if abs(s) > 1e-30
-            L[:, i] ./= conj(s)
-        end
-    end
-
-    # Precompute derivatives for all partial directions
-    dλ_re = zeros(n, np)
-    dλ_im = zeros(n, np)
-    dR_re = zeros(n, n, np)
-    dR_im = zeros(n, n, np)
-
-    for k in 1:np
-        dAk = map(a -> Complex{Float64}(ForwardDiff.partials(real(a), k),
-                                        ForwardDiff.partials(imag(a), k)), A)
-        dBk = map(b -> Complex{Float64}(ForwardDiff.partials(real(b), k),
-                                        ForwardDiff.partials(imag(b), k)), B)
-
-        # Ck[j,i] = [Lᴴ dAk R - λᵢ Lᴴ dBk R]_{j,i}
-        # λᵢ varies per column → broadcast transpose(λf) across rows
-        LH_dAk_R = L' * (dAk * R)
-        LH_dBk_R = L' * (dBk * R)
-        Ck = LH_dAk_R .- LH_dBk_R .* transpose(λf)
-
-        for i in 1:n
-            dλ_re[i, k] = real(Ck[i, i])
-            dλ_im[i, k] = imag(Ck[i, i])
-        end
-
-        Sk = zeros(ComplexF64, n, n)
-        for i in 1:n, j in 1:n
-            if i != j
-                gap = λf[i] - λf[j]
-                if abs(gap) > _GEN_DEGEN_THRESHOLD
-                    Sk[j, i] = Ck[j, i] / gap
-                end
-            end
-        end
-        dRk = R * Sk
-        dR_re[:, :, k] .= real.(dRk)
-        dR_im[:, :, k] .= imag.(dRk)
-    end
-
-    # Construct Dual eigenvalues
-    λ = map(1:n) do i
-        Complex(ForwardDiff.Dual{Tag}(real(λf[i]), ntuple(k -> dλ_re[i, k], Val(np))...),
-                ForwardDiff.Dual{Tag}(imag(λf[i]), ntuple(k -> dλ_im[i, k], Val(np))...))
-    end
-
-    # Construct Dual right eigenvectors
-    Rd = Matrix{Complex{D}}(undef, n, n)
-    for j in 1:n, i in 1:n
-        Rd[i, j] = Complex(ForwardDiff.Dual{Tag}(real(R[i, j]), ntuple(k -> dR_re[i, j, k], Val(np))...),
-                           ForwardDiff.Dual{Tag}(imag(R[i, j]), ntuple(k -> dR_im[i, j, k], Val(np))...))
-    end
-
-    return (values = λ, vectors = Rd)
-end
 
 # ── AD-safe run for non-Float64 element types (Dual, etc.) ───────────────────
 #
