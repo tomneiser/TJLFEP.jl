@@ -39,7 +39,7 @@ addprocs(SlurmManager(); exeflags=`--project=$project_path --sysimage=$sysimage_
 # Verify per-worker GPU state before any compute
 @everywhere begin
     wid = myid()
-    ext_loaded = !isnothing(Base.get_extension(TJLFEP, :TJLFEPCUDAExt))
+    ext_loaded = !isnothing(Base.get_extension(TJLF, :TJLFCUDAExt))
     cuda_ok    = TJLF._cuda_functional()
     solve_set  = !isnothing(TJLF._CUDA_SOLVE[])
     dev        = TJLF.pick_device(:auto)
@@ -64,8 +64,8 @@ begin
     end
 
     # check CUDA is in use
-    if !isnothing(Base.get_extension(TJLFEP, :TJLFEPCUDAExt))
-        println("extension loaded: ", !isnothing(Base.get_extension(TJLFEP, :TJLFEPCUDAExt)))
+    if !isnothing(Base.get_extension(TJLF, :TJLFCUDAExt))
+        println("extension loaded: ", !isnothing(Base.get_extension(TJLF, :TJLFCUDAExt)))
         println("cuda functional: ", TJLF._cuda_functional())
         println("cuda solve loaded: ", !isnothing(TJLF._CUDA_SOLVE[])) 
     end

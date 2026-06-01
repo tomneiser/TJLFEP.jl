@@ -3469,9 +3469,10 @@ deps = ["FastGaussQuadrature", "KrylovKit", "LinearAlgebra", "LinearMaps", "Spar
 path = "../TJLF"
 uuid = "12ecd31c-256b-4db5-a799-cd5afeb0bd7d"
 version = "1.2.3"
-weakdeps = ["ForwardDiff"]
+weakdeps = ["CUDA", "ForwardDiff"]
 
     [deps.TJLF.extensions]
+    TJLFCUDAExt = "CUDA"
     TJLFForwardDiffExt = "ForwardDiff"
 
 [[deps.TOML]]

@@ -3,7 +3,7 @@
 # Prefer batch_run_gacode_scan20_gpu_5nodes.sh (5 nodes, 20 tasks) for fewer nodes.
 #
 # Strategy: 20 independent tasks (--array=0-19), each with:
-#   - 1 GPU (EV solve via TJLFEPCUDAExt; rest on CPU threads)
+#   - 1 GPU (EV solve via TJLF's TJLFCUDAExt; rest on CPU threads)
 #   - 32 CPU threads for kwscale_scan / TJLF
 #
 # After array completes, merge:
