@@ -10,8 +10,16 @@ using Pkg
 Pkg.activate(normpath(@__DIR__, ".."))
 
 # Load CUDA before TJLFEP so TJLF's TJLFCUDAExt registers GPU eigensolver hooks.
+# REQUIRES CUDA >= 12.6: the GPU eigensolver uses cusolverDnXgeev (via
+# CUDA.CUSOLVER.Xgeev!), which is unavailable on CUDA 12.4. Use cudatoolkit/12.9
+# (the batch scripts load it). Do NOT follow the Lmod hint to load 12.4.
 if get(ENV, "USE_GPU", "") == "1"
     using CUDA
+    let rv = CUDA.runtime_version()
+        rv >= v"12.6" || error("GPU run needs CUDA >= 12.6 for cusolverDnXgeev, but CUDA runtime is $rv. " *
+                                "Load cudatoolkit/12.9 (e.g. `module load cudatoolkit/12.9`); if needed, run " *
+                                "`using CUDA; CUDA.set_runtime_version!(v\"12.9\"; local_toolkit=true)` once to align CUDA.jl.")
+    end
 end
 
 using TJLFEP

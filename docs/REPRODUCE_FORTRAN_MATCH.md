@@ -5,13 +5,13 @@ Validated on Perlmutter CPU (premium QoS). See `FORTRAN_JULIA_COMPARISON.md` for
 ## Repositories
 
 ```bash
-# Sibling checkouts (Project.toml uses path dep ../TJLF)
+# TJLFEP depends on registered TJLF >= 1.2.4 (FuseRegistry) — no TJLF checkout needed.
 git clone git@github.com:ProjectTorreyPines/TJLFEP.jl.git TJLFEP
-cd TJLFEP && git checkout fortran_match
-
-git clone git@github.com:ProjectTorreyPines/TJLF.jl.git ../TJLF
-cd ../TJLF && git checkout gpu_new   # or branch named in your site setup
+cd TJLFEP   # master (fortran_match is merged)
 ```
+
+TJLF >= 1.2.4 provides the `use_gpu` kwarg and the `TJLFCUDAExt` /
+`TJLFForwardDiffExt` extensions; `Pkg.instantiate()` pulls it from the registry.
 
 ## Julia environment
 
@@ -45,6 +45,15 @@ export GACODE_PLATFORM=PERLMUTTER_CPU
 `src/DIIIDfiles/202017C42_500ms_v3.1/` (`dump.profile`, `input.gacode`).
 
 ## SCAN_N=20 on GPU (5 nodes, gacode-only)
+
+> **CUDA >= 12.6 required.** The GPU eigensolver calls `cusolverDnXgeev`
+> (`CUDA.CUSOLVER.Xgeev!`), which does not exist in CUDA 12.4 — a 12.4 runtime
+> fails with *"This operation is not supported by the current CUDA version."*
+> Load `cudatoolkit/12.9` (the batch scripts already do); do **not** follow the
+> Lmod hint to load 12.4. If CUDA.jl was precompiled against a different runtime
+> you may see an "unsupported" warning; align it once with
+> `using CUDA; CUDA.set_runtime_version!(v"12.9"; local_toolkit=true)`.
+> GPU and CPU SFmin agree to machine precision (validated: `0.937306345503666`).
 
 Recommended: **one job on 5 GPU nodes** — `srun -n 20`, **4 tasks/node**, **1 A100 + 32 CPU threads** per radius.
 

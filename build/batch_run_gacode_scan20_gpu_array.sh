@@ -25,6 +25,8 @@
 
 set -euo pipefail
 
+# cudatoolkit MUST be >= 12.6: the GPU eigensolver uses cusolverDnXgeev, which is
+# absent in CUDA 12.4. Keep 12.9 here; do not downgrade to the 12.4 the Lmod hint suggests.
 module load cudatoolkit/12.9
 module load julia/1.11.7
 
