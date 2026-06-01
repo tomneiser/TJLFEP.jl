@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+# Note: TJLFEP hard-depends on the full FUSE stack (FUSE/IMAS/TurbulentTransport/CUDA),
+# so the first cold run instantiates a large dependency graph (slow). julia-actions/cache
+# persists the depot across runs to amortize this. The regression itself runs ONE scan
+# radius on CPU (TJLFEP_FILE_ONLY=1) and takes several minutes.
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - "1.11"
+        os:
+          - ubuntu-latest
+    env:
+      TJLFEP_FILE_ONLY: "1"
+      JULIA_NUM_THREADS: "4"
+
+    steps:
+      # TJLFEP and TJLF as sibling subdirs so the Project.toml `[sources] TJLF = {path="../TJLF"}`
+      # path dependency resolves (registered TJLF lacks the use_gpu kwarg TJLFEP needs).
+      - uses: actions/checkout@v4
+        with:
+          path: TJLFEP
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ProjectTorreyPines/TJLF.jl
+          ref: gpu_new
+          token: ${{ secrets.PTP_READ_TOKEN }}
+          path: TJLF
+
+      - uses: julia-actions/setup-julia@latest
+        with:
+          version: ${{ matrix.version }}
+
+      - uses: julia-actions/cache@v2
+
+      - name: Add FuseRegistry
+        run: |
+          rm -rf ~/.julia/registries/FuseRegistry
+          julia -e 'using Pkg; Pkg.Registry.add(RegistrySpec(url="https://github.com/ProjectTorreyPines/FuseRegistry.jl.git")); Pkg.Registry.add("General"); Pkg.Registry.update()'
+
+      - name: Replace git@github.com with https in Package.toml files
+        run: |
+          find ~/.julia/registries/FuseRegistry -type f -name 'Package.toml' -exec sed -i 's|git@github.com:|https://project-torrey-pines:${{secrets.PTP_READ_TOKEN}}@github.com/|g' {} +
+
+      - name: Instantiate
+        working-directory: TJLFEP
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+
+      - name: Run regression tests
+        working-directory: TJLFEP
+        run: julia --project=. -t ${JULIA_NUM_THREADS} test/runtests.jl

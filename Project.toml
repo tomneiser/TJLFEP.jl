@@ -32,6 +32,12 @@ TurbulentTransport = "9bf5e8f4-5746-4003-bc69-ef83265c10ca"
 [extensions]
 TJLFEPCUDAExt = ["CUDA", "TJLF"]
 
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
+
 [compat]
 CUDA = "5.8.5"
 Distributed = "1.11.0"
