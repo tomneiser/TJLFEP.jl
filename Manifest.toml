@@ -3551,11 +3551,6 @@ version = "0.5.29"
     [deps.TimerOutputs.weakdeps]
     FlameGraphs = "08572546-2f56-4bcf-ba4e-bab62c3a3f89"
 
-[[deps.TokamakEnergyTransport]]
-git-tree-sha1 = "3e34d2a5b14ce9bae4c94f2300c7fb7aa573f62d"
-uuid = "974ab28f-c96e-482d-8977-2c30e3278f36"
-version = "1.0.0"
-
 [[deps.Tracy]]
 deps = ["ExprTools", "LibTracyClient_jll", "Libdl"]
 git-tree-sha1 = "73e3ff50fd3990874c59fef0f35d10644a1487bc"
@@ -3613,10 +3608,16 @@ uuid = "781d530d-4396-4725-bb49-402e4bee1e77"
 version = "1.4.0"
 
 [[deps.TurbulentTransport]]
-deps = ["AdaptiveArrayPools", "BSON", "Dates", "Flux", "GACODE", "IMAS", "IMASutils", "LinearAlgebra", "Measurements", "Memoize", "ONNXNaiveNASflux", "ONNXRunTime", "Serialization", "StatsBase", "TJLF", "TokamakEnergyTransport"]
+deps = ["AdaptiveArrayPools", "BSON", "Dates", "Flux", "GACODE", "IMAS", "IMASutils", "LinearAlgebra", "Measurements", "Memoize", "ONNXNaiveNASflux", "ONNXRunTime", "Serialization", "StatsBase", "TJLF"]
 git-tree-sha1 = "cb491a35c7ce0a9482e4545817ff1fdaad2a3aaa"
 uuid = "9bf5e8f4-5746-4003-bc69-ef83265c10ca"
 version = "1.2.5"
+
+    [deps.TurbulentTransport.extensions]
+    TokamakEnergyTransportExt = "TokamakEnergyTransport"
+
+    [deps.TurbulentTransport.weakdeps]
+    TokamakEnergyTransport = "974ab28f-c96e-482d-8977-2c30e3278f36"
 
 [[deps.URIs]]
 git-tree-sha1 = "bef26fb046d031353ef97a82e3fdb6afe7f21b1a"
