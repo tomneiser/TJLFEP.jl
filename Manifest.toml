@@ -2,7 +2,7 @@
 
 julia_version = "1.11.7"
 manifest_format = "2.0"
-project_hash = "42e80384fb6e5bf18ff91503c49a82b3a01a413d"
+project_hash = "7c5fa3bcc892c16b3d4912194852550f62fbccfe"
 
 [[deps.ADAS]]
 deps = ["AbstractTrees", "Colors", "Downloads", "FileIO", "Interpolations", "JLD2", "LaTeXStrings", "Logging", "MD5", "RecipesBase"]
@@ -3466,9 +3466,9 @@ version = "1.2.0"
 
 [[deps.TJLF]]
 deps = ["FastGaussQuadrature", "KrylovKit", "LinearAlgebra", "LinearMaps", "SparseArrays", "StaticArrays"]
-path = "../TJLF"
+git-tree-sha1 = "1c010c596303048a90c476c7ec7e922cc6256d45"
 uuid = "12ecd31c-256b-4db5-a799-cd5afeb0bd7d"
-version = "1.2.3"
+version = "1.2.4"
 weakdeps = ["CUDA", "ForwardDiff"]
 
     [deps.TJLF.extensions]

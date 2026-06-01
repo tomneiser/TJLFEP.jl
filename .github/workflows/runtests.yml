@@ -26,18 +26,12 @@ jobs:
       JULIA_NUM_THREADS: "4"
 
     steps:
-      # TJLFEP and TJLF as sibling subdirs so the Project.toml `[sources] TJLF = {path="../TJLF"}`
-      # path dependency resolves (registered TJLF lacks the use_gpu kwarg TJLFEP needs).
+      # TJLF >= 1.2.4 (registered in FuseRegistry) provides the use_gpu kwarg and
+      # the TJLFCUDAExt/TJLFForwardDiffExt extensions TJLFEP relies on, so it is
+      # resolved straight from the registry — no sibling path checkout needed.
       - uses: actions/checkout@v4
         with:
           path: TJLFEP
-
-      - uses: actions/checkout@v4
-        with:
-          repository: ProjectTorreyPines/TJLF.jl
-          ref: gpu_new
-          token: ${{ secrets.PTP_READ_TOKEN }}
-          path: TJLF
 
       - uses: julia-actions/setup-julia@latest
         with:
