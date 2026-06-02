@@ -22,5 +22,11 @@ build/debug_nb*/fileInput*/
 build/*.so
 build/*.ji
 
+# Julia resolved environment: not pinned, so it always resolves fresh against
+# the registry + Project.toml [compat]. Reproducibility of published results is
+# guarded by [compat] bounds + the Fortran regression test.
+Manifest.toml
+Manifest-v*.toml
+
 # Julia backup manifests
 Manifest.toml.*.bak
