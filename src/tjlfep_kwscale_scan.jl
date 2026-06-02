@@ -106,6 +106,10 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         # eigen_cache is a sequential-seeding optimization incompatible with parallel execution;
         # each thread gets its own local cache initialised to nothing.
         wavebuffer_all = []
+        # BLAS=1 around the threaded ky/width/factor scan: each task does small
+        # dense LAPACK solves, so multithreaded BLAS oversubscribes cores. Scoped
+        # (restored afterwards); short-circuits if an outer driver already set it.
+        TJLF.with_blas_threads(1) do
         Threads.@threads for i = 1:nkwf
             local_inputsEP = deepcopy(inputsEP)  # thread-local copy; avoids races on FACTOR_IN/KYHAT_IN/WIDTH_IN/LKEEP/etc.
             local_eigen_cache = nothing           # thread-local; no cross-iteration seeding in parallel
@@ -161,6 +165,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
             end
             
         end # end Threads.@threads loop
+        end # with_blas_threads
 
         # This loop creates a 5x10 matrix full of 11. It then runs
         # through all dimensions of lkeep_i, which is a reference matrix

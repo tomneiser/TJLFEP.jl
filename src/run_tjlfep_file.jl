@@ -115,8 +115,12 @@ function _runTHD_core!(
     par = _resolve_runTHD_parallel(parallel)
     if par === :threads
         stdout_lock = ReentrantLock()
+        # set BLAS=1 before spawning radius threads so the nested per-radius
+        # kwscale_scan scope short-circuits (no concurrent set_num_threads)
+        TJLF.with_blas_threads(1) do
         Threads.@threads for i in 1:n_ir
             _runTHD_radius!(i, arrTGLFEP, arrMTGLF, arrgrowth, printout, use_gpu; stdout_lock=stdout_lock)
+        end
         end
     elseif par === :distributed
         pmap_outputs = pmap(i -> begin
