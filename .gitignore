@@ -30,3 +30,40 @@ Manifest-v*.toml
 
 # Julia backup manifests
 Manifest.toml.*.bak
+
+# Experimental MPS / eigensolver benchmark + profiling scratch (one-off, regenerable).
+# Production keepers (mps-pair-wrapper.sh, batch_run_gacode_scan20_mps_10node_2gpu.sh,
+# run_gacode_scan20_mps_task.jl) are tracked explicitly and not matched below.
+build/batch_bench_*.sh
+build/batch_diag_*.sh
+build/batch_probe_*.sh
+build/batch_profile_*.sh
+build/batch_sweep_team_premium.sh
+build/batch_gpu_sweep_premium.sh
+build/batch_validate_mps_radius_premium.sh
+build/batch_within_gpu_debug.sh
+build/batch_cpu_nb32_premium.sh
+build/batch_test_mps_*.sh
+build/batch_run_gacode_scan20_mps.sh
+build/batch_run_gacode_scan20_gpu_10nodes_2gpu.sh
+build/bench_*.jl
+build/microbench_*.jl
+build/diag_*.jl
+build/verify_*.jl
+build/warntype_*.jl
+build/probe_nb6.jl
+build/run_probe_split.jl
+build/mps-gate-wrapper.sh
+build/mps-pin-wrapper.sh
+build/mps-wrapper.sh
+
+# Experimental run outputs / serialized matrices (regenerable)
+build/*.jls
+build/eig_warntype.txt
+build/*_barrier_*/
+build/mpsprof_*/
+build/mpsval_*/
+build/mpssweep_*/
+build/mpsteamdiag_*/
+build/probesplit_*/
+build/tjlf_bench_env/

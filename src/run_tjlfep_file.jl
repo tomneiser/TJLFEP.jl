@@ -16,6 +16,8 @@ function _runTHD_radius!(
     printout::Bool,
     use_gpu::Bool;
     stdout_lock::Union{ReentrantLock,Nothing} = nothing,
+    inner::Symbol = :threads,
+    team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
 )
     arrTGLFEP[i].IR = arrTGLFEP[i].IR_EXP[i]
     ir = arrTGLFEP[i].IR
@@ -30,7 +32,7 @@ function _runTHD_radius!(
         end
     end
     growth, ep, mt = _unpack_mainsub!(
-        TJLFEP.mainsub(arrTGLFEP[i], arrMTGLF[i], printout; use_gpu=use_gpu))
+        TJLFEP.mainsub(arrTGLFEP[i], arrMTGLF[i], printout; use_gpu=use_gpu, inner=inner, team=team))
     arrgrowth[i] = growth
     arrTGLFEP[i] = ep
     arrMTGLF[i] = mt
@@ -95,6 +97,8 @@ function _runTHD_core!(
     printout::Bool=false,
     use_gpu::Bool=false,
     parallel::Symbol=:auto,
+    inner::Symbol=:threads,
+    team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
 )
     ni, Ti, dlnnidr, dlntidr = expro.ni, expro.Ti, expro.dlnnidr, expro.dlntidr
 
@@ -119,7 +123,7 @@ function _runTHD_core!(
         # kwscale_scan scope short-circuits (no concurrent set_num_threads)
         TJLF.with_blas_threads(1) do
         Threads.@threads for i in 1:n_ir
-            _runTHD_radius!(i, arrTGLFEP, arrMTGLF, arrgrowth, printout, use_gpu; stdout_lock=stdout_lock)
+            _runTHD_radius!(i, arrTGLFEP, arrMTGLF, arrgrowth, printout, use_gpu; stdout_lock=stdout_lock, inner=inner, team=team)
         end
         end
     elseif par === :distributed
@@ -387,7 +391,8 @@ function _runTHD_core!(
 end
 
 function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::String;
-                printout::Bool=false, use_gpu::Bool=false, parallel::Symbol=:auto)
+                printout::Bool=false, use_gpu::Bool=false, parallel::Symbol=:auto,
+                inner::Symbol=:threads, team::Union{Nothing,AbstractVector{<:Integer}}=nothing)
 
     # Auto-detect device via TJLF.pick_device(:auto); shadows the use_gpu parameter.
     # Thread safety: Threads.@threads runs each iteration in a separate Julia task.
@@ -414,7 +419,7 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
         gammaE=gammaE, gammap=gammap, omegaGAM=omegaGAM,
     )
     _apply_runthd_expro_setup!(Options, profile, expro)
-    return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel)
+    return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel, inner=inner, team=team)
 end
 
 """
@@ -439,10 +444,12 @@ function runTHD_from_gacode(
     printout::Bool=false,
     use_gpu::Bool=false,
     parallel::Symbol=:auto,
+    inner::Symbol=:threads,
+    team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
 )
     Options, profile, expro = preprocess_gacode_inputs(gacode_file, tglfep_file)
     _apply_runthd_expro_setup!(Options, profile, expro)
-    return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel)
+    return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel, inner=inner, team=team)
 end  # runTHD_from_gacode
 
 """Apply `tjlfep_complete_output` padding on `SFmin`, then write α profiles (matches `_runTHD_core`)."""
@@ -576,6 +583,8 @@ function run_gacode_scan_task(
     out_dir::AbstractString=".",
     use_gpu::Bool=false,
     printout::Bool=false,
+    inner::Symbol=:threads,
+    team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
 )
     mkpath(out_dir)
     Options, profile, expro = preprocess_gacode_inputs(gacode_file, tglfep_file)
@@ -591,9 +600,9 @@ function run_gacode_scan_task(
     ep.FACTOR_IN = ep.FACTOR[scan_index]
 
     logmsg = printout ? println : (_, args...) -> nothing
-    logmsg("scan_index=$scan_index ir=$ir use_gpu=$use_gpu host=$(gethostname())")
+    logmsg("scan_index=$scan_index ir=$ir use_gpu=$use_gpu host=$(gethostname()) inner=$inner team=$(team === nothing ? "—" : length(team))")
 
-    ret = TJLFEP.mainsub(ep, mt, printout; use_gpu=use_gpu)
+    ret = TJLFEP.mainsub(ep, mt, printout; use_gpu=use_gpu, inner=inner, team=team)
     growth, ep_out, mt_out = _unpack_mainsub!(ret)
     sfmin = ep_out.FACTOR_IN
     width = coalesce(ep_out.WIDTH_IN, ep_out.WIDTH, NaN)

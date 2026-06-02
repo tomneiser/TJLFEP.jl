@@ -1,4 +1,5 @@
-function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; use_gpu::Bool = false)
+function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; use_gpu::Bool = false,
+                 inner::Symbol = :threads, team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
     x = inputsEP.PROCESS_IN
     if (x == 1)
         msg = "No"
@@ -19,7 +20,7 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
         dbgmsg("mainsub ir=", inputsEP.IR, " suffix=", inputsEP.SUFFIX,
             " SCAN_N=", inputsEP.SCAN_N, " N_BASIS=", inputsEP.N_BASIS)
 
-        growthrate, inputsEP, inputsPR, scalefactor_buffer, wavebuffer_all = kwscale_scan(inputsEP, inputsPR, printout; use_gpu=use_gpu)
+        growthrate, inputsEP, inputsPR, scalefactor_buffer, wavebuffer_all = kwscale_scan(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
         return (growthrate, inputsEP, inputsPR), (scalefactor_buffer, wavebuffer_all)
     elseif (x == 6)
         msg = "No"

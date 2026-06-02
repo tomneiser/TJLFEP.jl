@@ -14,7 +14,146 @@ function _scalefactor_factor_line(fac::T, g::AbstractVector{T}, f::AbstractVecto
     return join(parts)
 end
 
-function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool = true; use_gpu::Bool = false) where {T<:Real}
+# One ky/width/factor combo of the inner scan. Pure w.r.t. shared state: it deepcopies
+# inputsEP, runs TJLFEP_ky, and returns everything the caller needs to scatter back into
+# the shared result arrays. Kept allocation-light (only NMODES-length vectors + a few
+# scalars) so it is cheap to serialize when distributed across MPS team workers.
+function _kw_combo(i::Int, k::Int, k_max::Int, nfactor::Int, nefwid::Int,
+                   factor::AbstractVector{T}, efwid::AbstractVector{T}, kyhat::AbstractVector{T},
+                   inputsEP::Options{T}, inputsPR::profile{T},
+                   ikyhat_write::Int, iefwid_write::Int, ifactor_write::Int,
+                   printout::Bool; use_gpu::Bool = false) where {T<:Real}
+    local_inputsEP = deepcopy(inputsEP)  # thread/process-local; avoids races on FACTOR_IN/KYHAT_IN/WIDTH_IN/LKEEP/etc.
+
+    l_wavefunction_out = 0
+
+    # The following 3 statements define each combination of ikyhat, iefwid, and ifactor.
+    ikyhat = Int(floor((i-1)/(nefwid*nfactor))+1)
+    iefwid = Int(floor(1.0*mod(i-1, nefwid*nfactor)/nfactor)+1)
+    ifactor = mod(i-1, nfactor)+1
+
+    local_inputsEP.FACTOR_IN = factor[ifactor]
+    local_inputsEP.KYHAT_IN = kyhat[ikyhat]
+    local_inputsEP.WIDTH_IN = efwid[iefwid]
+    debug_dump_kw_combo(local_inputsEP, i)
+
+    str_sf = string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/100.0), 10) + UInt32('0'))) *
+             string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/10.0), 10) + UInt32('0')))  *
+             string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
+             "." *
+             string(Char(mod(floor(Int, 10*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
+             string(Char(mod(floor(Int, 100*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
+             string(Char(mod(floor(Int, 1000*local_inputsEP.FACTOR_IN), 10) + UInt32('0')))
+
+    str_wf_file = "out.wavefunction"*coalesce(local_inputsEP.SUFFIX, "")*"_sf"*str_sf
+
+    if ((local_inputsEP.WRITE_WAVEFUNCTION == 1) &&
+        (ikyhat == ikyhat_write) &&
+        (iefwid == iefwid_write) &&
+        (ifactor == ifactor_write) &&
+        (k == k_max) && printout)
+        l_wavefunction_out = 1
+    end
+
+    # eigen_cache=nothing: the sequential-seeding optimization is incompatible with the
+    # parallel (threaded or distributed) execution here, so each combo starts cold.
+    gamma_out, freq_out, inputTJLF, _, wavefunction_buffer =
+        TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out; eigen_cache=nothing, use_gpu=use_gpu)
+
+    NM = local_inputsEP.NMODES
+    return (
+        ikyhat = ikyhat, iefwid = iefwid, ifactor = ifactor,
+        gamma_out = gamma_out[1:NM], freq_out = freq_out[1:NM],
+        LKEEP      = local_inputsEP.LKEEP[1:NM],
+        LTEARING   = local_inputsEP.LTEARING[1:NM],
+        L_TH_PINCH = local_inputsEP.L_TH_PINCH[1:NM],
+        L_I_PINCH  = local_inputsEP.L_I_PINCH[1:NM],
+        L_E_PINCH  = local_inputsEP.L_E_PINCH[1:NM],
+        L_EP_PINCH = local_inputsEP.L_EP_PINCH[1:NM],
+        L_THETA_SQ = local_inputsEP.L_THETA_SQ[1:NM],
+        L_QL_RATIO = local_inputsEP.L_QL_RATIO[1:NM],
+        str_wf_file = str_wf_file,
+        wavefunction_buffer = wavefunction_buffer,
+        # Species params (constant across combos) needed once for the out.scalefactor header.
+        zs_ep   = inputTJLF.ZS[inputsEP.IS_EP+1],
+        mass_ep = inputTJLF.MASS[inputsEP.IS_EP+1],
+        taus_ep = inputTJLF.TAUS[inputsEP.IS_EP+1],
+    )
+end
+
+# Scatter one _kw_combo result into the shared per-combo arrays. Identical for the
+# threaded and distributed paths, so the reduction below the loop sees the same data.
+function _scatter_combo!(r, growthrate, frequency, lkeep_i, ltearing_i, l_th_pinch_i,
+                         l_i_pinch_i, l_e_pinch_i, l_EP_pinch_i, l_theta_sq_i, l_QL_ratio_i)
+    ik = r.ikyhat; iw = r.iefwid; ifa = r.ifactor
+    for n in eachindex(r.gamma_out)
+        growthrate[ik, iw, ifa, n]   = r.gamma_out[n]
+        frequency[ik, iw, ifa, n]    = r.freq_out[n]
+        lkeep_i[ik, iw, ifa, n]      = r.LKEEP[n]
+        ltearing_i[ik, iw, ifa, n]   = r.LTEARING[n]
+        l_th_pinch_i[ik, iw, ifa, n] = r.L_TH_PINCH[n]
+        l_i_pinch_i[ik, iw, ifa, n]  = r.L_I_PINCH[n]
+        l_e_pinch_i[ik, iw, ifa, n]  = r.L_E_PINCH[n]
+        l_EP_pinch_i[ik, iw, ifa, n] = r.L_EP_PINCH[n]
+        l_theta_sq_i[ik, iw, ifa, n] = r.L_THETA_SQ[n]
+        l_QL_ratio_i[ik, iw, ifa, n] = r.L_QL_RATIO[n]
+    end
+    return nothing
+end
+
+# Distribute f(i) for i in 1:n across the MPS "team" worker processes (their pids),
+# returning results in index order. Each worker is a separate process with its own CUDA
+# context, so the GPU eigensolves overlap on a shared device via MPS Hyper-Q (safe — the
+# Xgeev corruption only affects concurrency *within* one context).
+#
+# Dispatch is CHUNKED, not per-combo: the n combos are split into one contiguous block per
+# worker, and each block is sent in a SINGLE remotecall that runs a tight local `map(f, range)`
+# loop on the worker. This is the key to realizing the GPU concurrency — per-combo pmap pays a
+# coordinator round-trip for every one of the ~1024 combos, which starves the workers' GPU
+# contexts (only ~1.35x). One round-trip per worker per round keeps all contexts saturated
+# (~3x, matching the standalone Xgeev benchmark). The (inputsEP/inputsPR) closure is serialized
+# once per worker per round; factor/efwid/kyhat change each round, so caching across rounds
+# would not help anyway.
+# Run f over the index range on THIS worker, multi-threaded. CPU matrix assembly (the bulk of
+# each combo, ~0.75s vs ~0.32s GPU) parallelizes across the worker's threads; the per-device
+# lock in TJLFCUDAExt serializes only this worker's GPU solves (which overlap ACROSS workers
+# via MPS). BLAS pinned to 1 thread so the dense LAPACK inside each combo doesn't oversubscribe.
+function _team_chunk_map(f, rng)
+    res = Vector{Any}(undef, length(rng))
+    TJLF.with_blas_threads(1) do
+        Threads.@threads for j in eachindex(rng)
+            res[j] = f(rng[j])
+        end
+    end
+    return res
+end
+
+function _inner_team_map(f, team::AbstractVector{<:Integer}, n::Int)
+    ws = collect(team)
+    nw = length(ws)
+    # contiguous, near-equal blocks of 1:n (block j is empty if n < nw)
+    chunks = [(div((j - 1) * n, nw) + 1):(div(j * n, nw)) for j in 1:nw]
+    futs = Vector{Distributed.Future}(undef, nw)
+    for j in 1:nw
+        rng = chunks[j]
+        futs[j] = Distributed.remotecall(_team_chunk_map, ws[j], f, rng)
+    end
+    results = Vector{Any}(undef, n)
+    for j in 1:nw
+        block = fetch(futs[j])
+        if block isa Exception
+            throw(block)
+        end
+        for (m, idx) in enumerate(chunks[j])
+            results[idx] = block[m]
+        end
+    end
+    return results
+end
+
+function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool = true;
+                      use_gpu::Bool = false, inner::Symbol = :threads,
+                      team::Union{Nothing,AbstractVector{<:Integer}} = nothing) where {T<:Real}
     # These are for testing purposes:
     #baseDirectory = "/Users/benagnew/TJLF.jl/outputs/tglfep_tests/input.MTGLF"
     #inputsPR = readMTGLF(baseDirectory)
@@ -72,8 +211,9 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
     ifactor_write = nfactor # 10
     f_guess_mark = T(1.0E20)
     lkeep_ref = fill(false, (nkyhat, nefwid))
-    # for scope purposes:
-    inputTJLF = TJLFEP.InputTJLF{T}(inputsPR.NS, 12, true)
+    # Species params for the out.scalefactor header (set from any combo each k; constant
+    # across combos). Replaces the old per-scan placeholder InputTJLF used only for these.
+    zs_ep = T(NaN); mass_ep = T(NaN); taus_ep = T(NaN)
     imark_min = 0
     f_guess = fill(T(NaN), (nkyhat, nefwid))
     ikyhat_mark::Int64 = 0
@@ -81,6 +221,12 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
     fmark = T(1.0E20)
     scalefactor_buffer = l_write_out && printout ? String[] : nothing
     wavebuffer_all = []
+    # Opt-in probe: wall time of the parallel combo map vs the serial reduction, per k-round.
+    _probe = _probe_on()
+    _probe && _probe_reset!()
+    _map_wall = 0.0
+    _ser_wall = 0.0
+    _t_scan = _probe ? time_ns() : UInt64(0)
     for k = 1:k_max
         # k doesn't use Threads!
         fill!(factor, T(NaN))
@@ -103,69 +249,47 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
             end
             #kyhat[i] = ((kyhat1-kyhat0)/nkyhat)*i+kyhat0
         end
-        # eigen_cache is a sequential-seeding optimization incompatible with parallel execution;
-        # each thread gets its own local cache initialised to nothing.
         wavebuffer_all = []
-        # BLAS=1 around the threaded ky/width/factor scan: each task does small
-        # dense LAPACK solves, so multithreaded BLAS oversubscribes cores. Scoped
-        # (restored afterwards); short-circuits if an outer driver already set it.
-        TJLF.with_blas_threads(1) do
-        Threads.@threads for i = 1:nkwf
-            local_inputsEP = deepcopy(inputsEP)  # thread-local copy; avoids races on FACTOR_IN/KYHAT_IN/WIDTH_IN/LKEEP/etc.
-            local_eigen_cache = nothing           # thread-local; no cross-iteration seeding in parallel
 
-            l_wavefunction_out = 0
-
-            # The following 3 statments define each combination of ikyhat, iefwid, and ifactor.
-            ikyhat = Int(floor((i-1)/(nefwid*nfactor))+1) # 2
-            iefwid = Int(floor(1.0*mod(i-1, nefwid*nfactor)/nfactor)+1) # 5
-            ifactor = mod(i-1, nfactor)+1 # 10
-
-            local_inputsEP.FACTOR_IN = factor[ifactor] # Just used in mapping
-            local_inputsEP.KYHAT_IN = kyhat[ikyhat] # Set equal to ky_in
-            local_inputsEP.WIDTH_IN = efwid[iefwid]
-            debug_dump_kw_combo(local_inputsEP, i)
-
-            str_sf = string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/100.0), 10) + UInt32('0'))) *
-                     string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/10.0), 10) + UInt32('0')))  *
-                     string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
-                     "." *
-                     string(Char(mod(floor(Int, 10*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
-                     string(Char(mod(floor(Int, 100*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
-                     string(Char(mod(floor(Int, 1000*local_inputsEP.FACTOR_IN), 10) + UInt32('0')))
-
-            str_wf_file = "out.wavefunction"*coalesce(local_inputsEP.SUFFIX, "")*"_sf"*str_sf
-
-            if ((local_inputsEP.WRITE_WAVEFUNCTION == 1) &&
-                (ikyhat == ikyhat_write) &&
-                (iefwid == iefwid_write) &&
-                (ifactor == ifactor_write) &&
-                (k == k_max) && printout)
-                l_wavefunction_out = 1
+        # Compute all nkwf combos for this k round. Each combo is independent (cold
+        # eigen_cache), so the scan is order-free; only the dispatch differs:
+        #   :mps_team -> distribute combos across the team's worker processes (each its
+        #                own CUDA context) so their GPU eigensolves overlap on the shared
+        #                device via MPS. Falls back to threads if no team was provided.
+        #   :threads  -> the original in-process Threads.@threads scan. BLAS=1 because
+        #                each task does small dense LAPACK solves that would otherwise
+        #                oversubscribe cores (scoped; short-circuits if already set).
+        local results::Vector{Any}
+        _t_map = _probe ? time_ns() : UInt64(0)
+        if inner === :mps_team && team !== nothing && !isempty(team)
+            results = _inner_team_map(team, nkwf) do i
+                _kw_combo(i, k, k_max, nfactor, nefwid, factor, efwid, kyhat,
+                          inputsEP, inputsPR, ikyhat_write, iefwid_write, ifactor_write,
+                          printout; use_gpu=use_gpu)
             end
-
-            gamma_out, freq_out, inputTJLF, local_eigen_cache, wavefunction_buffer = TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out; eigen_cache=local_eigen_cache, use_gpu=use_gpu)
-            if wavefunction_buffer !== nothing
-                push!(wavebuffer_all, (str_wf_file, wavefunction_buffer))
+        else
+            results = Vector{Any}(undef, nkwf)
+            TJLF.with_blas_threads(1) do
+                Threads.@threads for i = 1:nkwf
+                    results[i] = _kw_combo(i, k, k_max, nfactor, nefwid, factor, efwid, kyhat,
+                                           inputsEP, inputsPR, ikyhat_write, iefwid_write, ifactor_write,
+                                           printout; use_gpu=use_gpu)
+                end
             end
+        end
+        _probe && (_map_wall += (time_ns() - _t_map) / 1e9)
 
-            for n = 1:local_inputsEP.NMODES
-                growthrate[ikyhat,iefwid,ifactor,n] = gamma_out[n]
-                frequency[ikyhat,iefwid,ifactor,n]  = freq_out[n]
-                lkeep_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.LKEEP[n]
-                ltearing_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.LTEARING[n]
-                l_th_pinch_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_TH_PINCH[n]
-                l_i_pinch_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_I_PINCH[n]
-                l_e_pinch_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_E_PINCH[n]
-                l_EP_pinch_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_EP_PINCH[n]
-
-                l_theta_sq_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_THETA_SQ[n]
-                #l_max_outer_panel_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_MAX_OUTER_PANEL[n]
-                l_QL_ratio_i[ikyhat,iefwid,ifactor,n] = local_inputsEP.L_QL_RATIO[n]
+        # Serial scatter + reduction (deterministic, order-independent across combos).
+        _t_ser = _probe ? time_ns() : UInt64(0)
+        for i = 1:nkwf
+            r = results[i]
+            _scatter_combo!(r, growthrate, frequency, lkeep_i, ltearing_i, l_th_pinch_i,
+                            l_i_pinch_i, l_e_pinch_i, l_EP_pinch_i, l_theta_sq_i, l_QL_ratio_i)
+            if r.wavefunction_buffer !== nothing
+                push!(wavebuffer_all, (r.str_wf_file, r.wavefunction_buffer))
             end
-            
-        end # end Threads.@threads loop
-        end # with_blas_threads
+            zs_ep = r.zs_ep; mass_ep = r.mass_ep; taus_ep = r.taus_ep
+        end
 
         # This loop creates a 5x10 matrix full of 11. It then runs
         # through all dimensions of lkeep_i, which is a reference matrix
@@ -375,7 +499,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 end
             end
 
-            ky_write = kyhat[ikyhat_write]*inputTJLF.ZS[inputsEP.IS_EP+1]/sqrt(inputTJLF.MASS[inputsEP.IS_EP+1]*inputTJLF.TAUS[inputsEP.IS_EP+1])
+            ky_write = kyhat[ikyhat_write]*zs_ep/sqrt(mass_ep*taus_ep)
 
             push!(scalefactor_buffer, _scalefactor_section_header(kyhat[ikyhat_write], ky_write, efwid[iefwid_write], fmark))
 
@@ -448,7 +572,23 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
             #println("fmark < 1e10 : Pass ", k)
         end
 
+        _probe && (_ser_wall += (time_ns() - _t_ser) / 1e9)
     end # end of k
+
+    if _probe
+        _tot = (time_ns() - _t_scan) / 1e9
+        _ncombo = _PROBE_N[]
+        @info string("[TJLFEP_PROBE] kwscale_scan radius IR=", inputsEP.IR,
+            " inner=", inner, " team=", team === nothing ? 0 : length(team),
+            " : total=", round(_tot; digits=2), "s",
+            " | combo_map=", round(_map_wall; digits=2), "s",
+            " serial_reduce=", round(_ser_wall; digits=3), "s",
+            " | combos=", _ncombo,
+            " sum(TJLFEP_ky)=", round(_PROBE_KY[]; digits=1), "s",
+            " sum(TJLF.run/eigensolve)=", round(_PROBE_RUN[]; digits=1), "s",
+            " eigensolve_frac=", _PROBE_KY[] > 0 ? round(100 * _PROBE_RUN[] / _PROBE_KY[]; digits=1) : 0.0, "%",
+            " (per-process sums; for :threads this is the whole radius)")
+    end
     #println(imark_min)
     
     # After the fourth round, if no unstable modes have been found, default the scalefactor which will be used In

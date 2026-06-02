@@ -4,9 +4,23 @@
 #using .TJLFEP: convert_input
 #using MPI
 
+# Opt-in latency probe (TJLFEP_PROBE=1). Per-process atomic accumulators: total time inside
+# TJLFEP_ky vs the TJLF.run (eigensolve) sub-call, so kwscale_scan can report the
+# eigensolve-vs-CPU split that bounds the MPS-team speedup (Amdahl).
+# NOTE: read at RUNTIME (not a precompiled const) so it honors the env at run time.
+_probe_on() = get(ENV, "TJLFEP_PROBE", "0") == "1"
+const _PROBE_RUN  = Threads.Atomic{Float64}(0.0)  # seconds in TJLF.run (eigensolve)
+const _PROBE_KY   = Threads.Atomic{Float64}(0.0)  # seconds in the whole TJLFEP_ky
+const _PROBE_N    = Threads.Atomic{Int}(0)
+function _probe_reset!()
+    _PROBE_RUN[] = 0.0; _PROBE_KY[] = 0.0; _PROBE_N[] = 0
+end
+
 function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int;
                    eigen_cache::Union{Vector{<:Complex}, Nothing} = nothing,
                    use_gpu::Bool = false) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
+    _pb = _probe_on()
+    _t_ky = _pb ? time_ns() : UInt64(0)
 # function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
     # Temp Defs:
     
@@ -79,7 +93,13 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     # check so Julia eliminates the unused branch for each specialization.
     # result = TJLF.run(convInput) # old
     if T === Float64
-        result = TJLF.run(convInput; use_gpu=use_gpu)
+        if _pb
+            _tr = time_ns()
+            result = TJLF.run(convInput; use_gpu=use_gpu)
+            Threads.atomic_add!(_PROBE_RUN, (time_ns() - _tr) / 1e9)
+        else
+            result = TJLF.run(convInput; use_gpu=use_gpu)
+        end
     else
         quit()
         result = _tjlf_run_dual(convInput, T; use_gpu=use_gpu)
@@ -327,6 +347,10 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
                     real(wavefunction[n_out,2,i]), " ", imag(wavefunction[n_out,2,i])))
         end
     end      
+    if _pb
+        Threads.atomic_add!(_PROBE_KY, (time_ns() - _t_ky) / 1e9)
+        Threads.atomic_add!(_PROBE_N, 1)
+    end
     # This is the end of ky.jl. Returning values will likely need to be changed later.
     return gamma_out, freq_out, inputTJLF, eigen_out, wavefunction_buffer
     # return gamma_out, freq_out, inputTJLF
