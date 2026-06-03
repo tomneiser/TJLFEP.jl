@@ -36,18 +36,21 @@ that is **~6.8× faster than the Fortran CPU reference** at production basis siz
 
 ## Installation
 
-Requires Julia **1.11.7**. TJLFEP depends on registered `TJLF >= 1.2.4`
-(FuseRegistry); no TJLF checkout is needed.
+Requires Julia **1.11+** (1.11.7 and the default NERSC `juliaup` Julia 1.12+ are
+both fine). TJLFEP depends on registered `TJLF >= 1.2.4` (FuseRegistry); no TJLF
+checkout is needed.
 
 ```bash
-module load julia/1.11.7                 # on Perlmutter
-export JULIA_DEPOT_PATH=$PSCRATCH/.julia  # site-specific; keep the depot off $HOME
 cd TJLFEP
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 ```
 
-The GPU path requires **CUDA >= 12.6** (the eigensolver calls `cusolverDnXgeev`);
-load `cudatoolkit/12.9`.
+The GPU path requires **CUDA >= 12.6** (the eigensolver calls `cusolverDnXgeev`).
+
+On HPC systems Julia and CUDA are typically provided as modules (e.g.
+`module load julia cudatoolkit/12.9` on Perlmutter, or a pinned
+`julia/1.11.7`). If your shared filesystem has a small or slow home directory,
+point `JULIA_DEPOT_PATH` at a larger scratch location before instantiating.
 
 ## Quick start
 
