@@ -433,6 +433,14 @@ function InputTGLF_EP(
     rmin = GACODE.r_min_core_profiles(eqt.profiles_1d, cp1d.grid.rho_tor_norm)
     rmin = rmin / m_to_cm
 
+    # Match the input.gacode preprocessing path (tjlfep_read_inputs.jl / GACODE expro_util.f90):
+    # compute ALL gradients with the GACODE 3-point Lagrange derivative `expro_bound_deriv`
+    # on rmin (with the same axis fix rmin+1e-6 and -log / eps_n conventions) instead of
+    # IMAS.calc_z / IMAS.gradient. This way a dd converted from an input.gacode reproduces the
+    # gacode-file TJLFEP gradients (RLNS/RLTS and geometry s-factors).
+    rmin_work = rmin .+ 1.0e-6
+    eps_n = 1.0e-30
+
     q_profile = IMAS.interp1d(eq1d.rho_tor_norm, eq1d.q).(cp1d.grid.rho_tor_norm)
 
     if !ismissing(eq1d, :elongation)
@@ -479,7 +487,7 @@ function InputTGLF_EP(
 
     c_s = GACODE.c_s(cp1d)[gridpoint_cp]
     w0 = -1 * cp1d.rotation_frequency_tor_sonic
-    w0p = IMAS.gradient(rmin, w0)
+    w0p = expro_bound_deriv(w0, rmin_work)
     gamma_p = -Rmaj[gridpoint_cp] .* w0p[gridpoint_cp]
     gamma_e = -rmin[gridpoint_cp] ./ q .* w0p[gridpoint_cp]
     mach = Rmaj[gridpoint_cp] .* w0[gridpoint_cp] ./ c_s
@@ -499,11 +507,11 @@ function InputTGLF_EP(
     
     # Full radial profiles for thermal electrons
     Te_full = cp1d.electrons.temperature ./ 1000 # eV -> keV
-    dlntedr_full = -IMAS.calc_z(rmin, Te_full, :backward)
+    dlntedr_full = expro_bound_deriv(-log.(max.(Te_full, eps_n)), rmin_work)
     
     # ne_full = cp1d.electrons.density_thermal ./ m³_to_cm³
     ne_full = cp1d.electrons.density_thermal ./ fac
-    dlnnedr_full = -IMAS.calc_z(rmin, ne_full, :backward)
+    dlnnedr_full = expro_bound_deriv(-log.(max.(ne_full, eps_n)), rmin_work)
     
     # Store full radial data for TJLFEP
     ep_species_data["DENS_1"] = ne_full
@@ -537,11 +545,11 @@ function InputTGLF_EP(
 
         # thermal
         Ti_full = ions[iion].temperature ./ 1000 # eV -> keV
-        dlntidr_full = -IMAS.calc_z(rmin, Ti_full, :backward)
+        dlntidr_full = expro_bound_deriv(-log.(max.(Ti_full, eps_n)), rmin_work)
         
         # ni_full = ions[iion].density_thermal ./ m³_to_cm³
         ni_full = ions[iion].density_thermal ./ fac
-        dlnnidr_full = -IMAS.calc_z(rmin, ni_full, :backward)
+        dlnnidr_full = expro_bound_deriv(-log.(max.(ni_full, eps_n)), rmin_work)
         
         # Store full radial data for TJLFEP
         ep_species_data["DENS_$species"] = ni_full
@@ -576,13 +584,13 @@ function InputTGLF_EP(
         # ne_full = cp1d.electrons.density_fast ./ m³_to_cm³
         ne_full = cp1d.electrons.density_fast ./ fac
         fast_zero = ne_full .== 0
-        dlnnedr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(ne_full, eps(Float64)), :backward))
+        dlnnedr_full = ifelse.(fast_zero, 0.0, expro_bound_deriv(-log.(max.(ne_full, eps_n)), rmin_work))
 
         # Pressure is in Pa (J/m³); T [eV] = P / (n [m⁻³] × 1.602e-19 J/eV). Note: e = IMAS.cgs.e is CGS, do NOT use here.
         Te_full = (cp1d.electrons.pressure_fast_parallel ./ 3 + 2 * cp1d.electrons.pressure_fast_perpendicular ./ 3) ./ max.(ne_full .* fac, eps(Float64)) ./ 1.602e-19
         Te_full[fast_zero] .= 0.0
         Te_full = Te_full ./ 1000 # eV -> keV
-        dlntedr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(Te_full, eps(Float64)), :backward))
+        dlntedr_full = ifelse.(fast_zero, 0.0, expro_bound_deriv(-log.(max.(Te_full, eps_n)), rmin_work))
         dlntedr_full[fast_zero] .= 0.0
         ep_species_data["DENS_$ep_slot"] = ne_full
         ep_species_data["TEMP_$ep_slot"] = Te_full
@@ -608,7 +616,7 @@ function InputTGLF_EP(
 
         ni_full = ep_ion.density_fast ./ fac
         fast_zero = ni_full .== 0
-        dlnnidr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(ni_full, eps(Float64)), :backward))
+        dlnnidr_full = ifelse.(fast_zero, 0.0, expro_bound_deriv(-log.(max.(ni_full, eps_n)), rmin_work))
 
         Ti_full = (ep_ion.pressure_fast_parallel .+ 2 .* ep_ion.pressure_fast_perpendicular) ./ max.(ni_full .* fac, eps(Float64)) ./ 1.602e-19
         Ti_full[fast_zero] .= 0.0
@@ -623,7 +631,7 @@ function InputTGLF_EP(
         valid = .!low_dens .& .!fast_zero
         Ti_full[low_dens] .= sum(Ti_full[valid]) / max(1, count(valid))
 
-        dlntidr_full = ifelse.(fast_zero, 0.0, -IMAS.calc_z(rmin, max.(Ti_full, eps(Float64)), :backward))
+        dlntidr_full = ifelse.(fast_zero, 0.0, expro_bound_deriv(-log.(max.(Ti_full, eps_n)), rmin_work))
         dlntidr_full[fast_zero] .= 0.0
         dlntidr_full[low_dens] .= 0.0  # gradient unreliable in mean-filled region
 
@@ -666,7 +674,7 @@ function InputTGLF_EP(
     input_tglf.ZMAJ_LOC = 0
     input_tglf.DRMINDX_LOC = 1.0
 
-    drmaj = IMAS.gradient(rmin, Rmaj)
+    drmaj = expro_bound_deriv(Rmaj, rmin_work)
 
     input_tglf.DRMAJDX_LOC = drmaj[gridpoint_cp]
     input_tglf.DZMAJDX_LOC = 0.0
@@ -682,12 +690,18 @@ function InputTGLF_EP(
     
 
     # ===== Calculate full radial profiles for EP (before extracting selected points) =====
-    c_s_full = GACODE.c_s(cp1d)
-    rho_s_full = GACODE.rho_s(cp1d, eqt)
-    
+    # Sound speed: reproduce the input.gacode path EXACTLY (expro_util.f90 CGS formula, Te in keV).
+    # GACODE.c_s uses the deuterium mass md (→ factor sqrt(2) larger); the gacode-file path
+    # (tjlfep_read_inputs.jl) divides by 2*md and works in m/s. Match the file path so a dd
+    # converted from an input.gacode reproduces its cs / gammaE / gammap.
     # Use thermal electron profiles (not fast electrons, which overwrote ne_full/Te_full above)
     ne_thermal_full = ep_species_data["DENS_1"]
     Te_thermal_full = ep_species_data["TEMP_1"]
+    k_erg = 1.6022e-12
+    mp_g  = 2.0 * 1.6726e-24
+    cs_mps_full = sqrt.(k_erg .* (1e3 .* Te_thermal_full) ./ (2.0 * mp_g)) ./ 1e2   # m/s
+    c_s_full = cs_mps_full .* 100.0                                                 # cm/s (readEXPRO / F_REAL CS convention)
+    rho_s_full = GACODE.rho_s(cp1d, eqt)
 
     # OMEGA_TAE and omegaGAM need full radial betae
     # ne_thermal_full is in 10^19/m^3 → need cm^-3 (×1e13); Te_thermal_full is in keV → need eV (×1e3); combined factor 1e16
@@ -695,12 +709,13 @@ function InputTGLF_EP(
     
     # Full radial rotation profiles for gamma_e and gamma_p
     w0_full = -cp1d.rotation_frequency_tor_sonic
-    w0p_full = IMAS.gradient(rmin, w0_full)
+    w0p_full = expro_bound_deriv(w0_full, rmin_work)
     Rmaj_full = IMAS.interp1d(eq1d.rho_tor_norm, 0.5 * (eq1d.r_outboard .+ eq1d.r_inboard)).(cp1d.grid.rho_tor_norm)
-    q_full = abs.(q_profile)  # TGLF/TJLF requires positive safety factor; IMAS may store negative q
-    # gammaE and gammaP must be normalized to c_s/a (dimensionless) for GAMMA_THRESH comparison with TGLF growth rates
-    gamma_e_full = -rmin ./ q_full .* w0p_full .* (a ./ c_s_full)
-    gamma_p_full = -Rmaj_full .* w0p_full .* (a ./ c_s_full)
+    q_full = abs.(q_profile)  # positive q for shear / OMEGA_TAE / omegaGAM (EXPRO_ctrl_signq=1)
+    # gammaE/gammap normalized to c_s/a (dimensionless). Match the gacode-file path exactly
+    # (tjlfep_read_inputs.jl): gamma_e_phys = -rmin/q·w0p with SIGNED q, then ×(a/cs_mps) in m/(m/s).
+    gamma_e_full = -rmin ./ q_profile .* w0p_full .* (a ./ cs_mps_full)
+    gamma_p_full = -Rmaj_full .* w0p_full .* (a ./ cs_mps_full)
     
     # Calculate OMEGA_TAE and omegaGAM for full radial grid
     OMEGA_TAE_full = sqrt.(2.0 ./ betae_full) ./ (2.0 .* q_full .* Rmaj_full ./ a)
@@ -718,9 +733,9 @@ function InputTGLF_EP(
 
     input_tglf.KAPPA_LOC = kappa[gridpoint_cp]
 
-    skappa = rmin .* IMAS.gradient(rmin, kappa) ./ kappa
-    sdelta = rmin .* IMAS.gradient(rmin, delta)
-    szeta = rmin .* IMAS.gradient(rmin, zeta)
+    skappa = (rmin_work ./ kappa) .* expro_bound_deriv(kappa, rmin_work)
+    sdelta = rmin_work .* expro_bound_deriv(delta, rmin_work)
+    szeta = rmin_work .* expro_bound_deriv(zeta, rmin_work)
 
     input_tglf.S_KAPPA_LOC = skappa[gridpoint_cp]
     input_tglf.DELTA_LOC = delta[gridpoint_cp]
@@ -733,11 +748,12 @@ function InputTGLF_EP(
     press = cp1d.pressure
     Pa_to_dyn = 10.0
 
-    dpdr = IMAS.gradient(rmin, press .* Pa_to_dyn)[gridpoint_cp]
+    dpdr = expro_bound_deriv(press .* Pa_to_dyn, rmin_work)[gridpoint_cp]
     input_tglf.P_PRIME_LOC = abs.(q) ./ (rmin[gridpoint_cp] ./ a) .^ 2 .* rmin[gridpoint_cp] ./ bunit .^ 2 .* dpdr
 
-    dqdr = IMAS.gradient(rmin, q_profile)[gridpoint_cp]
-    s = rmin[gridpoint_cp] ./ q .* dqdr
+    # Magnetic shear as in GACODE expro_util: s = rmin * d(ln|q|)/dr (log form), not (rmin/q)·dq/dr.
+    shear_loc = rmin_work .* expro_bound_deriv(log.(abs.(q_profile)), rmin_work)
+    s = shear_loc[gridpoint_cp]
     input_tglf.Q_PRIME_LOC = q .^ 2 .* a .^ 2 ./ rmin[gridpoint_cp] .^ 2 .* s
 
     # saturation rules
@@ -785,10 +801,9 @@ function InputTGLF_EP(
     # ===== Compute full-radial geometry for TJLFEP profile struct =====
     bunit_full = IMAS.interp1d(eq1d.rho_tor_norm, GACODE.bunit(eqt) .* T_to_Gauss).(cp1d.grid.rho_tor_norm)
     rmin_safe = max.(rmin, rmin[2])  # avoid division by zero at magnetic axis (rmin[1] ≈ 0)
-    dqdr_full = IMAS.gradient(rmin, abs.(q_profile))
-    shear_full = rmin_safe ./ abs.(q_profile) .* dqdr_full
+    shear_full = rmin_work .* expro_bound_deriv(log.(abs.(q_profile)), rmin_work)
     q_prime_full = abs.(q_profile) .^ 2 .* a .^ 2 ./ rmin_safe .^ 2 .* shear_full
-    dpdr_full = IMAS.gradient(rmin, press .* Pa_to_dyn)
+    dpdr_full = expro_bound_deriv(press .* Pa_to_dyn, rmin_work)
     p_prime_full = abs.(q_profile) ./ (rmin_safe ./ a) .^ 2 .* rmin_safe ./ bunit_full .^ 2 .* dpdr_full
     ir_rep = max(1, nr_full ÷ 2)
 
