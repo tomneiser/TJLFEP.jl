@@ -118,6 +118,39 @@ Compare: `build/compare_debug_nb6_scan20.sh` → `build/compare_nb6_scan20_plots
 
 At scan radii (`IR_EXP`): SFmin max rel err ~0.03%; α(dn/dr) ~0.5%; α(dp/dr) ~0.4%. Full reproduction steps: `docs/REPRODUCE_FORTRAN_MATCH.md`.
 
+## 13. N_BASIS=32 SCAN_N=20 GPU vs Fortran head-to-head (2026-06-02)
+
+Full 20-radius production scan on Perlmutter A100 nodes (MPS team, GPU eigenvalue
+**and** eigenvector solve), case `202017C42_500ms_v3.1`, `input_scan20.TGLFEP`.
+
+**Correctness.** All three GPU layouts (20N / 10N / 5N) produced an *identical*
+`SFmin` profile across all 20 radii, matching the Fortran reference `out.TGLFEP`
+to its printed 4-decimal precision (e.g. `0.6249450…→0.6249`, `0.3124850…→0.3125`,
+`1.2497672…→1.2498`). `scan_index=2` golden `SFmin = 0.6249450209778226`.
+
+**Performance** (Fortran CPU reference: **25.8 min on 10 nodes**):
+
+| Run | nodes | GPU/radius | team | wall | speedup | node-min |
+|-----|-------|-----------|------|------|---------|----------|
+| Fortran CPU            | 10 | – | –       | 25.8 min | 1.0× | 258 |
+| Julia GPU **10N** (fair footprint) | 10 | 2 | 16w×2t | 5.3 min  | 4.8× | 53 |
+| Julia GPU **5N** (best efficiency) |  5 | 1 | 8w×2t  | 4.9 min  | 5.3× | 25 |
+| Julia GPU 20N         | 20 | 4 | 16w×4t | 4.8 min  | 5.4× | 161 |
+
+On the same 10-node footprint the GPU port is **4.8× faster**; the most
+efficient layout (**5N**) is **5.3× faster on half the nodes** (~10× fewer
+node-hours). Each task spawns a fresh MPS worker team, so per-radius cost is
+currently **JIT-compilation-bound** (~110 s/team; warm compute is ~35 s at 4
+GPUs). That is why the 5N/10N/20N walls are ~tied — a GPU-worker **sysimage**
+(removing the JIT) is the next lever and should push the scan toward ~2–3 min and
+re-expose the more-GPUs/radius advantage.
+
+Scripts: `build/mps-scan-wrapper.sh` + `build/batch_run_scan20_{20N,10N,5N}.sh`
+(generalized by `GPUS_PER_RADIUS`). The GPU eigenvector inverse-iteration solve
+lives in TJLF (`_gpu_lu_solve!`, CUSOLVER getrf/getrs), gated by
+`TJLF_GPU_EIGVEC` (default on): validated 1.85× (`:threads`) / 3.55× (`:mps_team`)
+per-radius vs the host `lu!`/`ldiv!`, SFmin bit-exact.
+
 ## 9. Running comparison (`test-agreement`)
 
 ```bash
