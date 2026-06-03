@@ -40,6 +40,10 @@ const INNER = Symbol(get(ENV, "INNER", "mps_team"))
 const TEAM_GPUS = let s = get(ENV, "TEAM_GPUS", get(ENV, "CUDA_VISIBLE_DEVICES", "0"))
     String.(split(s, ',', keepempty=false))
 end
+# Optional GPU-worker sysimage (TJLFEP_gpu_sysimage.so): bakes the TJLF/TJLFEP/CUDA GPU
+# eigensolve path so workers skip the ~110 s/team JIT on a cold spawn. Empty -> JIT as before.
+const GPU_SYSIMAGE = get(ENV, "TJLFEP_GPU_SYSIMAGE", "")
+const _SYSIMG_FLAGS = (!isempty(GPU_SYSIMAGE) && isfile(GPU_SYSIMAGE)) ? `--sysimage=$(GPU_SYSIMAGE)` : ``
 
 if INNER === :mps_team
     # Spawn the team. Workers inherit the MPS pipe dir and are pinned (round-robin) across
@@ -58,7 +62,7 @@ if INNER === :mps_team
     for w in 1:NTEAM
         env = copy(base_env)
         env["CUDA_VISIBLE_DEVICES"] = TEAM_GPUS[(w - 1) % length(TEAM_GPUS) + 1]
-        addprocs(1; exeflags=`--project=$(ROOT) -t $(THREADS_PER_WORKER) --startup-file=no`,
+        addprocs(1; exeflags=`--project=$(ROOT) -t $(THREADS_PER_WORKER) --startup-file=no $(_SYSIMG_FLAGS)`,
                  env=env)
     end
 
@@ -97,6 +101,7 @@ printout = get(ENV, "TJLFEP_PRINTOUT", "0") == "1"
 
 const TEAM = INNER === :mps_team ? workers() : nothing
 println("=== gacode scan task (inner=$INNER) ===")
+println("worker sysimage=", isempty(_SYSIMG_FLAGS.exec) ? "<none, JIT>" : GPU_SYSIMAGE)
 println("scan_index=$scan_index / $scan_n  team=$(INNER === :mps_team ? nworkers() : 0) workers  " *
         "threads/worker=$THREADS_PER_WORKER  team_gpus=$(join(TEAM_GPUS, ','))")
 println("OUT_DIR=$OUT_DIR")
