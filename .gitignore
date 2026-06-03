@@ -57,6 +57,12 @@ build/mps-gate-wrapper.sh
 build/mps-pin-wrapper.sh
 build/mps-wrapper.sh
 
+# eigenvector GPU-vs-CPU A/B experiment scripts + outputs (one-off)
+build/run_eigvec_ab*.jl
+build/batch_eigvec_ab_*.sh
+build/eigvec_ab_*/
+build/.layout_jobids
+
 # Experimental run outputs / serialized matrices (regenerable)
 build/*.jls
 build/eig_warntype.txt
