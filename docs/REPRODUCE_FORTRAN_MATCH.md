@@ -68,9 +68,9 @@ in one job.
 
 ```bash
 cd build
-sbatch batch_run_scan20_5N.sh
+sbatch run/batch_run_scan20_5N.sh
 # or the fully-documented, self-contained template (edit CONFIG paths at top):
-sbatch submit_tjlfep_gpu_5N_example.sh
+sbatch run/submit_tjlfep_gpu_5N_example.sh
 ```
 
 Inputs: `examples/DIIID_202017C42_500ms_v3.1/input.gacode` +

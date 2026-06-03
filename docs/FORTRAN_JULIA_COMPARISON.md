@@ -152,6 +152,27 @@ lives in TJLF (`_gpu_lu_solve!`, CUSOLVER getrf/getrs), gated by
 `TJLF_GPU_EIGVEC` (default on): validated 1.85× (`:threads`) / 3.55× (`:mps_team`)
 per-radius vs the host `lu!`/`ldiv!`, SFmin bit-exact.
 
+## 14. dd/IMAS-path preprocessing parity with input.gacode (2026-06-03)
+
+Goal: a `dd` converted from an `input.gacode` should reproduce the gacode-file
+TJLFEP inputs. `InputTGLF_EP` (`src/context.jl`) was aligned to the file path
+(`tjlfep_read_inputs.jl` / GACODE `expro_util.f90`):
+
+| Quantity | Before (dd path) | After (matches file path) |
+|----------|------------------|---------------------------|
+| log-gradients (`dlnn/dlnt`) | `IMAS.calc_z(rmin, f, :backward)` | `expro_bound_deriv(-log(f), rmin_work)` (3-pt Lagrange, `rmin+1e-6`, `eps_n=1e-30`) |
+| geometry slopes (`drmaj`, `s_kappa/delta/zeta`, `dpdr`) | `IMAS.gradient(rmin, …)` | `expro_bound_deriv(…, rmin_work)` |
+| magnetic shear | `(rmin/q)·dq/dr` | `rmin·d(ln\|q\|)/dr` (expro_util log form) |
+| sound speed `cs` | `GACODE.c_s` (mass `md`, cm/s) | expro_util CGS `sqrt(k·1e3·Te/(2·md))/1e2` (m/s); stored as cm/s |
+| `gammaE`/`gammap` | `a/c_s` in m/(cm/s), `abs(q)` | `a/cs` in m/(m/s) with **signed** `q` |
+
+**Verification** (`build/compare_imas_vs_expro_scan.jl`, dd vs Fortran EXPRO on
+`dump.gacode`): RLNS/RLTS match to ~1.7e-6; `cs` bit-exact; `|gammaE|`/`|gammap|`
+bit-exact (previously off by `100×√2`). A residual overall sign on
+`gammaE`/`gammap` (IMAS stores `q`>0 and flips `w0`) is irrelevant — the
+threshold logic uses `abs(gammaE)`/`abs(gammap)` and only when
+`ROTATIONAL_SUPPRESSION_FLAG=1`.
+
 ## 9. Running comparison (`test-agreement`)
 
 ```bash
