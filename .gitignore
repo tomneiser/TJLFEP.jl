@@ -1,3 +1,7 @@
+# Quarantined / deletable files parked for review (not shipped; recoverable on disk).
+# Remove attic/ permanently with `rm -rf attic/` once confirmed unneeded.
+attic/
+
 # Slurm / local run artifacts
 build/*.out
 build/*.err
@@ -32,8 +36,8 @@ Manifest-v*.toml
 Manifest.toml.*.bak
 
 # Experimental MPS / eigensolver benchmark + profiling scratch (one-off, regenerable).
-# Production keepers (mps-pair-wrapper.sh, batch_run_gacode_scan20_mps_10node_2gpu.sh,
-# run_gacode_scan20_mps_task.jl) are tracked explicitly and not matched below.
+# Production keepers (mps-scan-wrapper.sh, run_gacode_scan20_mps_task.jl) are tracked
+# explicitly and not matched below.
 build/batch_bench_*.sh
 build/batch_diag_*.sh
 build/batch_probe_*.sh

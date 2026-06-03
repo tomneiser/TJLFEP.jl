@@ -19,10 +19,10 @@ export TJLFEP_DEBUG=1
 export TJLFEP_FILE_ONLY=1
 
 TJLFEP_ROOT="${TJLFEP_ROOT:-/pscratch/sd/t/tneiser/.julia/dev/TJLFEP}"
-export CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/src/DIIIDfiles/202017C42_500ms_v3.1}"
+export CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/examples/DIIID_202017C42_500ms_v3.1}"
 export GACODE_DUMP="${GACODE_DUMP:-${CASE_DIR}/input.gacode}"
-export TGLFEP_FILE="${TJLFEP_ROOT}/build/debug_nb6/input.TGLFEP"
-export FILE_DIR="${TJLFEP_ROOT}/build/debug_nb6/fileInput_${SLURM_JOB_ID:-local}"
+export TGLFEP_FILE="${TGLFEP_FILE:-${CASE_DIR}/input_singleradius_nb6.TGLFEP}"
+export FILE_DIR="${FILE_DIR:-${TJLFEP_ROOT}/build/fileInput_nb6_${SLURM_JOB_ID:-local}}"
 
 cd "${TJLFEP_ROOT}/build"
 

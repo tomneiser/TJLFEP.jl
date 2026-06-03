@@ -32,9 +32,9 @@ export TJLFEP_PROBE="${TJLFEP_PROBE:-0}"
 NB="${NB:-6}"
 
 TJLFEP_ROOT="${TJLFEP_ROOT:-/pscratch/sd/t/tneiser/.julia/dev/TJLFEP}"
-export CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/src/DIIIDfiles/202017C42_500ms_v3.1}"
+export CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/examples/DIIID_202017C42_500ms_v3.1}"
 export GACODE_FILE="${GACODE_FILE:-${CASE_DIR}/input.gacode}"
-export TGLFEP_FILE="${TJLFEP_ROOT}/build/debug_nb${NB}/input_scan20.TGLFEP"
+export TGLFEP_FILE="${TGLFEP_FILE:-${CASE_DIR}/input_scan20_nb${NB}.TGLFEP}"
 export OUT_DIR="${TJLFEP_ROOT}/build/gacode_nb${NB}_scan20_jgpu_${SLURM_JOB_ID}_tasks"
 
 export CUDA_MPS_PIPE_DIRECTORY="/tmp/nvidia-mps.$SLURM_JOB_ID"
@@ -42,7 +42,7 @@ export CUDA_MPS_LOG_DIRECTORY="/tmp/nvidia-log.$SLURM_JOB_ID"
 
 # GPU sysimage (TJLF + TJLFEP baked) for BOTH master + workers. Workers pick it up via
 # TJLFEP_GPU_SYSIMAGE in run_gacode_scan20_mps_task.jl; the master gets the flag below.
-GPU_SYSIMG="${TJLFEP_GPU_SYSIMAGE:-${TJLFEP_ROOT}/build/TJLFEP_gpu_sysimage.so}"
+GPU_SYSIMG="${TJLFEP_GPU_SYSIMAGE:-${TJLFEP_ROOT}/build/TJLFEP_gpu_generic_sysimage.so}"
 if [[ -f "${GPU_SYSIMG}" ]]; then
     export TJLFEP_GPU_SYSIMAGE="${GPU_SYSIMG}"
     MASTER_SYSIMG_ARGS=(--sysimage="${GPU_SYSIMG}")

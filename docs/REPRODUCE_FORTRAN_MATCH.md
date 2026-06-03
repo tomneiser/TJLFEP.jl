@@ -7,7 +7,7 @@ Validated on Perlmutter CPU (premium QoS). See `FORTRAN_JULIA_COMPARISON.md` for
 ```bash
 # TJLFEP depends on registered TJLF >= 1.2.4 (FuseRegistry) — no TJLF checkout needed.
 git clone git@github.com:ProjectTorreyPines/TJLFEP.jl.git TJLFEP
-cd TJLFEP   # master (fortran_match is merged)
+cd TJLFEP
 ```
 
 TJLF >= 1.2.4 provides the `use_gpu` kwarg and the `TJLFCUDAExt` /
@@ -27,75 +27,82 @@ File-based runs (no IMAS/FUSE):
 
 ```bash
 export TJLFEP_FILE_ONLY=1
-export GACODE_DUMP=$PWD/src/DIIIDfiles/202017C42_500ms_v3.1/input.gacode
+export GACODE_DUMP=$PWD/examples/DIIID_202017C42_500ms_v3.1/input.gacode
 ```
 
 ## Fortran TGLF-EP
 
-Build `TGLFEP_driver` from GACODE add-on `TGLF-EP` (Perlmutter CPU). Edit paths in batch scripts if needed:
+The verification scripts default to the shared, prebuilt Fortran `TGLFEP_driver`
+on m3739:
 
 ```bash
+export TGLFEP_DIR=/global/cfs/cdirs/m3739/gacode_add_d3d/TGLF-EP   # default in the scripts
+# GACODE source providing shared/bin/gacode_setup + platform env (override for your install):
 export GACODE_ROOT=.../gacode
-export GACODE_ADD_ROOT=.../gacode_add
 export GACODE_PLATFORM=PERLMUTTER_CPU
 ```
 
+To compare a local build instead, point `TGLFEP_DIR` (or `TGLFEP_DRIVER`) at it.
+
 ## Reference case
 
-`src/DIIIDfiles/202017C42_500ms_v3.1/` (`dump.profile`, `input.gacode`).
+`examples/DIIID_202017C42_500ms_v3.1/` (`input.gacode`, `dump.profile`, scan-control
+`input_scan20_nb{6,8,16,32}.TGLFEP`, and Fortran golden outputs `out.TGLFEP`,
+`out.scalefactor_r*`, `alpha_*_crit.input`).
 
-## SCAN_N=20 on GPU (5 nodes, gacode-only)
+## SCAN_N=20 on GPU (5 nodes, gacode path)
 
 > **CUDA >= 12.6 required.** The GPU eigensolver calls `cusolverDnXgeev`
 > (`CUDA.CUSOLVER.Xgeev!`), which does not exist in CUDA 12.4 — a 12.4 runtime
 > fails with *"This operation is not supported by the current CUDA version."*
 > Load `cudatoolkit/12.9` (the batch scripts already do); do **not** follow the
 > Lmod hint to load 12.4. If CUDA.jl was precompiled against a different runtime
-> you may see an "unsupported" warning; align it once with
+> align it once with
 > `using CUDA; CUDA.set_runtime_version!(v"12.9"; local_toolkit=true)`.
-> GPU and CPU SFmin agree to machine precision (validated: `0.937306345503666`).
+> GPU and CPU SFmin agree to machine precision.
 
-Recommended: **one job on 5 GPU nodes** — `srun -n 20`, **4 tasks/node**, **1 A100 + 32 CPU threads** per radius.
+Validated production layout: **20 radii on 5 GPU nodes** — `srun -n 20`,
+**4 tasks/node**, **1 A100 + an MPS worker team** per radius. Scan and merge run
+in one job.
 
 ```bash
 cd build
-./submit_gacode_scan20_gpu.sh
-# or manually:
-sbatch batch_run_gacode_scan20_gpu_5nodes.sh
+sbatch batch_run_scan20_5N.sh
+# or the fully-documented, self-contained template (edit CONFIG paths at top):
+sbatch submit_tjlfep_gpu_5N_example.sh
 ```
 
-Scan and merge run in one job (`srun` then `finalize_gacode_scan` on the batch head node CPU).
+Inputs: `examples/DIIID_202017C42_500ms_v3.1/input.gacode` +
+`input_scan20_nb32.TGLFEP` (`N_BASIS=32`, `SCAN_N=20`). Outputs per task:
+`task_<i>.jls`, optional `out.scalefactor_r*`; after merge: `alpha_*_crit.input`,
+`sfmin_scan.txt` (in `OUT_DIR`).
 
-Alternative (20 separate array tasks): `sbatch batch_run_gacode_scan20_gpu_array.sh`, then
-`OUT_DIR=build/gacode_scan20_<ARRAY_JOB_ID>_tasks sbatch batch_merge_gacode_scan20.sh`.
-
-Inputs: `input.gacode` + `build/debug_nb6/input_scan20.TGLFEP` (`N_BASIS=6`, `SCAN_N=20`).
-
-Outputs per task: `task_<i>.jls`, optional `out.scalefactor_r*`. After merge: `alpha_*_crit.input`, `sfmin_scan.txt`.
-
-## N_BASIS=6, SCAN_N=20, 10 nodes (CPU, legacy file inputs)
+## N_BASIS=6, SCAN_N=20, 10 nodes (CPU, file-based verification)
 
 | Step | Command |
 |------|---------|
 | Fortran | `cd build && sbatch batch_debug_nb6_fortran_scan20_10n.sh` |
 | Julia | `cd build && sbatch batch_debug_nb6_julia_scan20_10n.sh` |
-| Compare | `FORTRAN_DIR=fortran_runs/debug_nb6_scan20_10n_<FJOB> JULIA_DIR=debug_out_nb6_scan20_<JJOB>_dist FILE_DIR=debug_nb6/fileInput_scan20_10n_<JJOB> ./compare_debug_nb6_scan20.sh` |
+| Compare | `FORTRAN_DIR=fortran_runs/debug_nb6_scan20_10n_<FJOB> JULIA_DIR=debug_out_nb6_scan20_<JJOB>_dist FILE_DIR=fileInput_nb6_scan20_10n_<JJOB> ./compare_debug_nb6_scan20.sh` |
 
-Inputs: `build/debug_nb6/input_scan20.TGLFEP` (`N_BASIS=6`, `SCAN_N=20`, `IRS=2`).
+Inputs: `examples/DIIID_202017C42_500ms_v3.1/input_scan20_nb6.TGLFEP`
+(`N_BASIS=6`, `SCAN_N=20`, `IRS=2`).
 
-Expected agreement at `IR_EXP` radii (2026-05-19 jobs 53171364 / 53171385):
+Expected agreement at `IR_EXP` radii:
 
 - SFmin: max relative error ~0.03%
 - α(dn/dr), α(dp/dr): max relative error ~0.5%
 
-Plots: `build/compare_nb6_scan20_plots/` (created by compare script; gitignored).
+Plots: `build/compare_nb6_scan20_plots/` (created by the compare script; gitignored).
 
-## Other scripts
+## Other verification scripts
 
-| N_BASIS | Single radius | SCAN_N=20 (1 node) | SCAN_N=20 (10 nodes) |
-|---------|---------------|--------------------|----------------------|
-| 6 | `batch_debug_nb6_{fortran,julia}.sh` | `batch_debug_nb6_*_scan20.sh` | `batch_debug_nb6_*_scan20_10n.sh` |
-| 16 | `batch_debug_nb16_*` | — | — |
-| 32 | `batch_debug_nb32_*` | — | `batch_prod_nb32_*` |
+| N_BASIS | Single radius | SCAN_N=20 (10 nodes) |
+|---------|---------------|----------------------|
+| 6 | `batch_debug_nb6_{fortran,julia}.sh` + `compare_debug_nb6.sh` | `batch_debug_nb6_*_scan20_10n.sh` + `compare_debug_nb6_scan20.sh` |
 
-Text diff of outputs: `src/DIIIDfiles/compare_fortran_julia.jl` with `FORTRAN_DIR` / `JULIA_DIR` set.
+Larger-basis (nb16/nb32) verification variants from development are preserved in
+`attic/build/` if needed.
+
+Text diff of outputs: `examples/DIIID_202017C42_500ms_v3.1/compare_fortran_julia.jl`
+with `FORTRAN_DIR` / `JULIA_DIR` set.

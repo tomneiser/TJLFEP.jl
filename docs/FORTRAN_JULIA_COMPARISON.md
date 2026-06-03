@@ -1,6 +1,6 @@
 # TGLF-EP: Julia (TJLFEP) vs Fortran comparison results
 
-This document records verification outcomes from the detailed comparison plan. Fortran sources live in `TJLFEP/TGLF-EP/`; Julia in `TJLFEP/src/`.
+This document records verification outcomes from the detailed comparison plan. The Fortran reference is the shared build at `/global/cfs/cdirs/m3739/gacode_add_d3d/TGLF-EP` (a snapshot of the original `TGLF-EP/` subdir is archived under `attic/`); Julia lives in `TJLFEP/src/`.
 
 ## 1. RMIN_LOC normalization (`verify-rmin-norm`)
 
@@ -81,8 +81,8 @@ Post-processing uses `DENS_$ep_slot` (last species), consistent with the EP slot
 
 - Paths: `EP_TJLF` → `TJLFEP` in `DIIID_juliaValidation.jl` and `batchRun.sh`.
 - TJLF branch: use `origin/gpu_new` at `/pscratch/sd/t/tneiser/.julia/dev/TJLF`.
-- Sysimage: `TJLFEP/build/noTJLF_TJLFEP_sysimage.so` (optional).
-- Comparison script: `src/DIIIDfiles/compare_fortran_julia.jl`.
+- Sysimage: `TJLFEP/build/TJLFEP_cpu_sysimage.so` (optional).
+- Comparison script: `examples/DIIID_202017C42_500ms_v3.1/compare_fortran_julia.jl`.
 
 ## 10. Debug workflow (N_BASIS=6)
 
@@ -95,17 +95,17 @@ Set `TGLFEP_DEBUG=1` (Fortran) and `TJLFEP_DEBUG=1` (Julia) for matched debug li
 
 ## 11. Single-radius basis scans (SCAN_N=1, ir=2)
 
-Same case as nb6; only `N_BASIS` changes in `build/debug_nb{N}/input.TGLFEP`.
+Same case as nb6; only `N_BASIS` changes in the scan-control input. The kept nb6
+single-radius path uses `examples/DIIID_202017C42_500ms_v3.1/input_singleradius_nb6.TGLFEP`.
 
 | N_BASIS | Fortran job | Julia job | Compare script |
 |---------|-------------|-----------|----------------|
 | 6 | `TGLFEP_nb6` | `TJLFEP_nb6` | `compare_debug_nb6.sh` |
-| 16 | `TGLFEP_nb16` | `TJLFEP_nb16` | `compare_debug_nb16.sh` |
-| 32 | `TGLFEP_nb32` | `TJLFEP_nb32` | `compare_debug_nb32.sh` |
 
-Nb6 single-radius match (2026-05-18): SFmin 2.8125, n_EP/n_e 96.1%, β_crit 4.46% (jobs 53156424 / 53156921).
+Nb6 single-radius match (2026-05-18): SFmin 2.8125, n_EP/n_e 96.1%, β_crit 4.46%.
 
-Multi-radius production (`SCAN_N=20`) uses `build/debug_prod/input.TGLFEP` and `batch_prod_nb32_*` when needed.
+Larger-basis (nb16/nb32) single-radius and production variants from development
+are archived under `attic/build/`.
 
 ## 12. N_BASIS=6 SCAN_N=20 on 10 nodes (2026-05-19)
 
@@ -121,7 +121,7 @@ At scan radii (`IR_EXP`): SFmin max rel err ~0.03%; α(dn/dr) ~0.5%; α(dp/dr) ~
 ## 13. N_BASIS=32 SCAN_N=20 GPU vs Fortran head-to-head (2026-06-02)
 
 Full 20-radius production scan on Perlmutter A100 nodes (MPS team, GPU eigenvalue
-**and** eigenvector solve), case `202017C42_500ms_v3.1`, `input_scan20.TGLFEP`.
+**and** eigenvector solve), case `202017C42_500ms_v3.1`, `input_scan20_nb32.TGLFEP`.
 
 **Correctness.** All three GPU layouts (20N / 10N / 5N) produced an *identical*
 `SFmin` profile across all 20 radii, matching the Fortran reference `out.TGLFEP`
@@ -145,8 +145,9 @@ GPUs). That is why the 5N/10N/20N walls are ~tied — a GPU-worker **sysimage**
 (removing the JIT) is the next lever and should push the scan toward ~2–3 min and
 re-expose the more-GPUs/radius advantage.
 
-Scripts: `build/mps-scan-wrapper.sh` + `build/batch_run_scan20_{20N,10N,5N}.sh`
-(generalized by `GPUS_PER_RADIUS`). The GPU eigenvector inverse-iteration solve
+Scripts: `build/mps-scan-wrapper.sh` + `build/batch_run_scan20_5N.sh` (the
+validated production layout; the 20N/10N layouts are archived under `attic/build/`,
+generalized by `GPUS_PER_RADIUS`). The GPU eigenvector inverse-iteration solve
 lives in TJLF (`_gpu_lu_solve!`, CUSOLVER getrf/getrs), gated by
 `TJLF_GPU_EIGVEC` (default on): validated 1.85× (`:threads`) / 3.55× (`:mps_team`)
 per-radius vs the host `lu!`/`ldiv!`, SFmin bit-exact.
@@ -154,12 +155,12 @@ per-radius vs the host `lu!`/`ldiv!`, SFmin bit-exact.
 ## 9. Running comparison (`test-agreement`)
 
 ```bash
-cd /pscratch/sd/t/tneiser/.julia/dev/TJLFEP/src/DIIIDfiles
-module load julia   # Perlmutter
+cd examples/DIIID_202017C42_500ms_v3.1
+module load julia/1.11.7   # Perlmutter
 julia --project=../.. compare_fortran_julia.jl path/to/GPU_n32_*_20_*
 julia --project=../.. diagnose_crit_grad.jl path/to/GPU_n32_*_20_* 4
 ```
 
-Fortran reference outputs: `202017C42_500ms_v3.1/out.scalefactor_r*`, `alpha_*_crit.input`, `out.TGLFEP`.
+Fortran reference outputs (in `examples/DIIID_202017C42_500ms_v3.1/`): `out.scalefactor_r*`, `alpha_*_crit.input`, `out.TGLFEP`.
 
 The comparison parser was smoke-tested on Fortran reference files (self-comparison). Re-run `DIIID_juliaValidation.jl` after the code fixes above, then point the scripts at the new `GPU_*` or `CPU_*` output directory.

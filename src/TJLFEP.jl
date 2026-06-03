@@ -3,8 +3,7 @@ module TJLFEP
 const _FILE_ONLY = get(ENV, "TJLFEP_FILE_ONLY", "0") == "1"
 
 using Base.Threads
-using LinearAlgebra # Don't really need this for tjlf-ep
-# using CUDA
+using LinearAlgebra
 using SparseArrays
 using Printf
 using StaticArrays

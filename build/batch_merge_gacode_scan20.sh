@@ -18,9 +18,9 @@ export JULIA_DEPOT_PATH="${PSCRATCH}/.julia${JULIA_DEPOT_PATH:+:${JULIA_DEPOT_PA
 export TJLFEP_FILE_ONLY=1
 
 TJLFEP_ROOT="${TJLFEP_ROOT:-/pscratch/sd/t/tneiser/.julia/dev/TJLFEP}"
-export CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/src/DIIIDfiles/202017C42_500ms_v3.1}"
+export CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/examples/DIIID_202017C42_500ms_v3.1}"
 export GACODE_FILE="${GACODE_FILE:-${CASE_DIR}/input.gacode}"
-export TGLFEP_FILE="${TGLFEP_FILE:-${TJLFEP_ROOT}/build/debug_nb6/input_scan20.TGLFEP}"
+export TGLFEP_FILE="${TGLFEP_FILE:-${CASE_DIR}/input_scan20_nb6.TGLFEP}"
 
 # Set by submit script or manually: OUT_DIR=.../gacode_scan20_<ARRAY_JOB_ID>_tasks
 : "${OUT_DIR:?set OUT_DIR to gacode_scan20_<array_jobid>_tasks}"

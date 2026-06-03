@@ -701,8 +701,6 @@ function readTGLFEP(filename::String, ir_exp::Vector{Int64})
     nr = 201
     nn = 5
     inputTJLFEP = Options{Float64}(nscan_in, widthin, nn, nr, jtscale_max, nmodes)
-    # println("inputTJLFEP.IR_EXP = ",inputTJLFEP.IR_EXP)
-    # println("ir_exp", ir_exp)
     inputTJLFEP.IR_EXP = ir_exp
     inputTJLFEP.NMODES = nmodes
    
@@ -733,10 +731,7 @@ function readTGLFEP(filename::String, ir_exp::Vector{Int64})
             else
                 val = parse(Float64, line[1])
             end
-            # println("field: $field, val: $val")
-
             try
-                println("field: $field $(contains(string(field),"THETA_2_THRESH"))")
                 if contains(string(field),"THETA_2_THRESH")
                     setfield!(inputTJLFEP, Symbol("THETA_SQ_THRESH"), val)
                 else
@@ -838,13 +833,6 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
             inputTJLF.TAUS[i] = 1.0 # species w/ TAUS=0 will have AS=0, so setting to 1 doesn't affect physics
         end
     end
-
-    # println("===== Beginning Check =====")
-    # # check above statement:
-    # AS_zeros = inputTJLF.AS .== 0.0
-    # TAUS_zeros = inputTJLF.TAUS .== 0.0
-    # @assert all(AS_zeros .== TAUS_zeros) "AS and TAUS zeroes entries don't match"
-    # println("===== End Check =====")
 
     inputTJLF.ZS[1] = -1.0
     # Prevent ZS=0 for zero-density fast species: ZS=0 → bb=taus*mass*(ky/0)²=Inf

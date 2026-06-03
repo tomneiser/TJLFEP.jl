@@ -16,4 +16,4 @@ export FORTRAN_LABEL="${FORTRAN_LABEL:-Fortran}"
 export JULIA_LABEL="${JULIA_LABEL:-Julia}"
 export PLOT_TITLE="${PLOT_TITLE:-N_BASIS=6, SCAN_N=1, ir=2}"
 
-julia --project="${TJLFEP_ROOT}" "${TJLFEP_ROOT}/build/plot_nb32_scan_compare.jl"
+julia --project="${TJLFEP_ROOT}" "${TJLFEP_ROOT}/build/plot_alpha_compare.jl"

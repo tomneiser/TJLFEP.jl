@@ -26,13 +26,12 @@ export JULIA_WORKER_THREADS="${JULIA_WORKER_THREADS:-${SLURM_CPUS_PER_TASK:-64}}
 
 NB="${NB:-6}"
 export N_BASIS="${NB}"
-export DEBUG_DIR="debug_nb${NB}"
 
 TJLFEP_ROOT="${TJLFEP_ROOT:-/pscratch/sd/t/tneiser/.julia/dev/TJLFEP}"
-export CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/src/DIIIDfiles/202017C42_500ms_v3.1}"
+export CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/examples/DIIID_202017C42_500ms_v3.1}"
 export GACODE_DUMP="${GACODE_DUMP:-${CASE_DIR}/input.gacode}"
-export TGLFEP_FILE="${TJLFEP_ROOT}/build/debug_nb${NB}/input_scan20.TGLFEP"
-export FILE_DIR="${TJLFEP_ROOT}/build/debug_nb${NB}/fileInput_scan20_10n_${SLURM_JOB_ID}"
+export TGLFEP_FILE="${TGLFEP_FILE:-${CASE_DIR}/input_scan20_nb${NB}.TGLFEP}"
+export FILE_DIR="${FILE_DIR:-${TJLFEP_ROOT}/build/fileInput_nb${NB}_scan20_10n_${SLURM_JOB_ID}}"
 
 # Full CPU sysimage (TJLF + TJLFEP baked) for BOTH the master and the SlurmClusterManager
 # workers. Workers pick it up via TJLFEP_SYSIMAGE in time_scan20_julia_cpu.jl; the master

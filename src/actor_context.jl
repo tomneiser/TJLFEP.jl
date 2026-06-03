@@ -408,11 +408,7 @@ function populate_tjlfep_profile!(prof::profile, extraEP::Dict, input::InputTGLF
     # extraEP["ZS"] should have length >= 4
 
     prof.ZS = extraEP["ZS"]
-    # println("prof.ZS: ", prof.ZS)
-    
     prof.MASS = extraEP["MASS"]
-    # println("prof.MASS: ", prof.MASS)
-
     prof.N_ION = extraEP["N_ION"]
     
     # Species data - populate matrices with full radial profiles

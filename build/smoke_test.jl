@@ -1,12 +1,12 @@
 # Single-process DIII-D smoke test (no SlurmClusterManager).
 # Run from TJLFEP/build:
-#   julia --project=.. --sysimage=noTJLF_TJLFEP_sysimage.so smoke_test.jl
+#   julia --project=.. --sysimage=TJLFEP_cpu_sysimage.so smoke_test.jl
 
 using Pkg
 Pkg.activate("..")
 
 const TJLFEP_ROOT = normpath(@__DIR__, "..")
-const SYSIMAGE = joinpath(@__DIR__, "noTJLF_TJLFEP_sysimage.so")
+const SYSIMAGE = joinpath(@__DIR__, "TJLFEP_cpu_sysimage.so")
 if isfile(SYSIMAGE)
     println("Using sysimage: ", SYSIMAGE)
 else
@@ -22,7 +22,7 @@ using LinearAlgebra
 BLAS.set_num_threads(1)
 TJLF.pick_device(:auto)
 
-const INPUT = joinpath(TJLFEP_ROOT, "src", "DIIIDfiles", "202017C42_500ms_v3.1", "input.gacode")
+const INPUT = joinpath(TJLFEP_ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
 @assert isfile(INPUT) "Missing test input: $INPUT"
 
 SCAN_N = 1
@@ -59,7 +59,7 @@ cd(outdir) do
         dd, rho, OptionsDict;
         printout = true,
         saveFiles = false,
-        dir = joinpath(TJLFEP_ROOT, "src", "DIIIDfiles", "fileInput"),
+        dir = joinpath(TJLFEP_ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "fileInput"),
         use_gpu = use_gpu,
     )
     println("SFmin = ", SFmin)

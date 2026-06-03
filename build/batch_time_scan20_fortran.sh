@@ -13,17 +13,19 @@
 
 set -euo pipefail
 
-export GACODE_ROOT=/pscratch/sd/t/tneiser/gacode_cpu/gacode
-export GACODE_ADD_ROOT=/pscratch/sd/t/tneiser/gacode_cpu/gacode_add
-export GACODE_PLATFORM=PERLMUTTER_CPU
-export TGLFEP_DIR="${GACODE_ADD_ROOT}/TGLF-EP"
+# Canonical Fortran TGLF-EP build (shared m3739 reference; override TGLFEP_DIR for a local build).
+export TGLFEP_DIR="${TGLFEP_DIR:-/global/cfs/cdirs/m3739/gacode_add_d3d/TGLF-EP}"
+DRIVER="${TGLFEP_DRIVER:-${TGLFEP_DIR}/TGLFEP_driver}"
+# GACODE source that provides shared/bin/gacode_setup + platform env (override for your install).
+export GACODE_ROOT="${GACODE_ROOT:-/pscratch/sd/t/tneiser/gacode_cpu/gacode}"
+export GACODE_PLATFORM="${GACODE_PLATFORM:-PERLMUTTER_CPU}"
 export TGLFEP_DEBUG=0
 
+NB="${NB:-6}"
 TJLFEP_ROOT="${TJLFEP_ROOT:-/pscratch/sd/t/tneiser/.julia/dev/TJLFEP}"
-CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/src/DIIIDfiles/202017C42_500ms_v3.1}"
-DEBUG_DIR="${TJLFEP_ROOT}/build/debug_nb6"
-DRIVER="${TGLFEP_DIR}/TGLFEP_driver"
-RUN_DIR="${TJLFEP_ROOT}/build/timing_runs/fortran_scan20_${SLURM_JOB_ID}"
+CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/examples/DIIID_202017C42_500ms_v3.1}"
+TGLFEP_INPUT="${TGLFEP_INPUT:-${CASE_DIR}/input_scan20_nb${NB}.TGLFEP}"
+RUN_DIR="${TJLFEP_ROOT}/build/timing_runs/fortran_scan20_nb${NB}_${SLURM_JOB_ID}"
 
 set +u
 # shellcheck source=/dev/null
@@ -34,11 +36,11 @@ set -u
 
 mkdir -p "${RUN_DIR}"
 cd "${RUN_DIR}"
-ln -sf "${DEBUG_DIR}/input_scan20.TGLFEP" input.TGLFEP
+ln -sf "${TGLFEP_INPUT}" input.TGLFEP
 ln -sf "${CASE_DIR}/input.gacode" input.gacode
 
 JOB_T0=$(date +%s.%N)
-echo "TIMING_START backend=fortran device=cpu path=gacode nodes=${SLURM_NNODES:-10} tasks=${SLURM_NTASKS:-20} SCAN_N=20 N_BASIS=6"
+echo "TIMING_START backend=fortran device=cpu path=gacode nodes=${SLURM_NNODES:-10} tasks=${SLURM_NTASKS:-20} SCAN_N=20 N_BASIS=${NB}"
 
 T0=$(date +%s.%N)
 set +e
@@ -50,7 +52,7 @@ SCAN_S=$(python3 -c "print(f'{float(\"${T1}\") - float(\"${T0}\"): .3f}')")
 JOB_T1=$(date +%s.%N)
 TOTAL_S=$(python3 -c "print(f'{float(\"${JOB_T1}\") - float(\"${JOB_T0}\"): .3f}')")
 
-echo "TIMING_RESULT backend=fortran device=cpu phase=scan seconds=${SCAN_S} SCAN_N=20 N_BASIS=6 nodes=${SLURM_NNODES:-10} tasks=${SLURM_NTASKS:-20} srun_exit=${SRUN_RC}"
-echo "TIMING_RESULT backend=fortran device=cpu phase=total_job seconds=${TOTAL_S} SCAN_N=20 N_BASIS=6 nodes=${SLURM_NNODES:-10} tasks=${SLURM_NTASKS:-20}"
+echo "TIMING_RESULT backend=fortran device=cpu phase=scan seconds=${SCAN_S} SCAN_N=20 N_BASIS=${NB} nodes=${SLURM_NNODES:-10} tasks=${SLURM_NTASKS:-20} srun_exit=${SRUN_RC}"
+echo "TIMING_RESULT backend=fortran device=cpu phase=total_job seconds=${TOTAL_S} SCAN_N=20 N_BASIS=${NB} nodes=${SLURM_NNODES:-10} tasks=${SLURM_NTASKS:-20}"
 [ "${SRUN_RC}" -ne 0 ] && echo "NOTE: srun exited ${SRUN_RC} (often MPI teardown); check outputs in ${RUN_DIR}"
 echo "srun_exit_code=${SRUN_RC} (MPI teardown may segfault after successful scan)"

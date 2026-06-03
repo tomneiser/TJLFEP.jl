@@ -3,7 +3,7 @@
 # EXAMPLE: TJLFEP (Julia, GPU) SCAN_N=20 submit for 5 GPU nodes, with sysimage.
 #
 # This is the GPU/Julia analogue of the Fortran TGLF-EP submit
-# (see batch_fortran_tglfep_cpu.sh). Side-by-side:
+# (see batch_debug_nb6_fortran_scan20_10n.sh). Side-by-side:
 #
 #   Fortran TGLF-EP (CPU, 10 nodes)          TJLFEP (Julia, GPU, 5 nodes)
 #   -------------------------------          ----------------------------
@@ -40,18 +40,18 @@ set -uo pipefail
 # 1) Your TJLFEP.jl checkout (contains build/, src/, Project.toml).
 TJLFEP_ROOT="${TJLFEP_ROOT:-/global/cfs/cdirs/m3739/$USER/TJLFEP}"
 
-# 2) Prebuilt GPU sysimage (file-only). Build it ONCE with batch_build_gpu_sysimage.sh,
+# 2) Prebuilt GPU sysimage (file-only). Build it ONCE with batch_build_gpu_sysimage_generic.sh,
 #    then keep the .so on a shared, non-purged path (CFS is good; $PSCRATCH is purged).
 #    The same .so works for any node count -- nothing about the layout is baked in.
 #    Leave empty (SYSIMAGE="") to fall back to JIT (~110 s/team slower per radius).
-SYSIMAGE="${TJLFEP_GPU_SYSIMAGE:-/global/cfs/cdirs/m3739/$USER/sysimages/TJLFEP_gpu_sysimage.so}"
+SYSIMAGE="${TJLFEP_GPU_SYSIMAGE:-/global/cfs/cdirs/m3739/$USER/sysimages/TJLFEP_gpu_generic_sysimage.so}"
 
 # 3) Case directory holding input.gacode (equilibrium + profiles).
-CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/src/DIIIDfiles/202017C42_500ms_v3.1}"
+CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/examples/DIIID_202017C42_500ms_v3.1}"
 
 # 4) TGLF-EP scan-control input (input.TGLFEP with SCAN_N=20) -- the same file the
 #    Fortran TGLFEP_driver reads.
-TGLFEP_INPUT="${TGLFEP_INPUT:-${TJLFEP_ROOT}/build/debug_nb32/input_scan20.TGLFEP}"
+TGLFEP_INPUT="${TGLFEP_INPUT:-${CASE_DIR}/input_scan20_nb32.TGLFEP}"
 
 # The Julia "driver" (analogue of $TGLFEP_DIR/TGLFEP_driver), its per-node launch
 # wrapper (starts MPS + pins GPUs + sets SCAN_INDEX), and the result-merge driver.

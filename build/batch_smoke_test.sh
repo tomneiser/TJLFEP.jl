@@ -17,22 +17,24 @@ module load julia/1.11.7
 export JULIA_DEPOT_PATH="${PSCRATCH}/.julia"
 
 TJLFEP_ROOT="${TJLFEP_ROOT:-/pscratch/sd/t/tneiser/.julia/dev/TJLFEP}"
-SYSIMAGE="${TJLFEP_ROOT}/build/noTJLF_TJLFEP_sysimage.so"
-
-if [[ ! -f "${SYSIMAGE}" ]]; then
-    echo "ERROR: sysimage missing: ${SYSIMAGE}"
-    echo "Run batch_build_sysimage.sh first."
-    exit 1
-fi
+# Optional GPU sysimage (build once with batch_build_gpu_sysimage_generic.sh). Missing -> JIT.
+SYSIMAGE="${TJLFEP_GPU_SYSIMAGE:-${TJLFEP_ROOT}/build/TJLFEP_gpu_generic_sysimage.so}"
 
 cd "${TJLFEP_ROOT}/build"
 echo "=== TJLFEP smoke test ==="
 echo "host: $(hostname)"
 echo "date: $(date)"
-ls -lh "${SYSIMAGE}"
+
+if [[ -f "${SYSIMAGE}" ]]; then
+    ls -lh "${SYSIMAGE}"
+    SYSIMG_ARGS=(--sysimage="${SYSIMAGE}")
+else
+    echo "sysimage not found at ${SYSIMAGE} -> running with JIT"
+    SYSIMG_ARGS=()
+fi
 
 julia --project="${TJLFEP_ROOT}" \
-    --sysimage="${SYSIMAGE}" \
+    "${SYSIMG_ARGS[@]}" \
     -t "${SLURM_CPUS_PER_TASK:-32}" \
     smoke_test.jl
 

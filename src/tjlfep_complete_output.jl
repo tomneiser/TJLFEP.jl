@@ -46,7 +46,6 @@ function tjlfep_complete_output(profile_in::Vector{T}, inputsEP::Options{S}, inp
     end # irs <= i_r <= ir_max_0
 
     # For radii above the final scan_n's radius to 201, set the profile to 0
-    # I think this is a relic of MPI:
     for i_r = ir_out[inputsEP.SCAN_N]+1:inputsPR.NR
         profile_out[i_r] = 0.0
     end

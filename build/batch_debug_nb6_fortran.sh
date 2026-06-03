@@ -13,16 +13,17 @@
 
 set -euo pipefail
 
-export GACODE_ROOT=/pscratch/sd/t/tneiser/gacode_cpu/gacode
-export GACODE_ADD_ROOT=/pscratch/sd/t/tneiser/gacode_cpu/gacode_add
-export GACODE_PLATFORM=PERLMUTTER_CPU
-export TGLFEP_DIR="${GACODE_ADD_ROOT}/TGLF-EP"
+# Canonical Fortran TGLF-EP build (shared m3739 reference; override TGLFEP_DIR for a local build).
+export TGLFEP_DIR="${TGLFEP_DIR:-/global/cfs/cdirs/m3739/gacode_add_d3d/TGLF-EP}"
+DRIVER="${TGLFEP_DRIVER:-${TGLFEP_DIR}/TGLFEP_driver}"
+# GACODE source that provides shared/bin/gacode_setup + platform env (override for your install).
+export GACODE_ROOT="${GACODE_ROOT:-/pscratch/sd/t/tneiser/gacode_cpu/gacode}"
+export GACODE_PLATFORM="${GACODE_PLATFORM:-PERLMUTTER_CPU}"
 export TGLFEP_DEBUG=1
 
 TJLFEP_ROOT="${TJLFEP_ROOT:-/pscratch/sd/t/tneiser/.julia/dev/TJLFEP}"
-CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/src/DIIIDfiles/202017C42_500ms_v3.1}"
-DEBUG_DIR="${TJLFEP_ROOT}/build/debug_nb6"
-DRIVER="${TGLFEP_DIR}/TGLFEP_driver"
+CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/examples/DIIID_202017C42_500ms_v3.1}"
+TGLFEP_INPUT="${TGLFEP_INPUT:-${CASE_DIR}/input_singleradius_nb6.TGLFEP}"
 RUN_DIR="${TJLFEP_ROOT}/build/fortran_runs/debug_nb6_${SLURM_JOB_ID:-local}"
 
 set +u
@@ -35,7 +36,7 @@ set -u
 mkdir -p "${RUN_DIR}"
 cd "${RUN_DIR}"
 
-ln -sf "${DEBUG_DIR}/input.TGLFEP" input.TGLFEP
+ln -sf "${TGLFEP_INPUT}" input.TGLFEP
 ln -sf "${CASE_DIR}/input.gacode" input.gacode
 
 echo "=== Fortran debug nb6 (1 rank) ==="

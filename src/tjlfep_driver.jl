@@ -1,4 +1,3 @@
-#using MPI
 include("TJLFEP.jl")
 using .TJLFEP
 using .TJLFEP: convert_input
@@ -36,8 +35,6 @@ iEPexist::Bool = false
 iMPexist::Bool = false
 iEXPexist::Bool = false
 
-# println(homedir)
-
 iEPexist = isfile(homedir*"/input.TGLFEP")
 iMPexist = isfile(homedir*"/input.MTGLF")
 iEXPexist = isfile(homedir*"/input.EXPRO")
@@ -74,16 +71,13 @@ if (inputTGLFEP.INPUT_PROFILE_METHOD == 2)
     for i in eachindex(dpdr_EP)
         dpdr_EP[i] = ni[i]*Ti[i]*(dlnnidr[i]+dlntidr[i])
     end
-    #println(inputTGLFEP.FACTOR)
     dpdr_EP_abs = abs.(dpdr_EP)
     dpdr_EP_max = maximum(dpdr_EP_abs)
     dpdr_EP_max_loc = argmax(dpdr_EP_abs)
     n_at_max = ni[dpdr_EP_max_loc]
     if (inputTGLFEP.PROCESS_IN != 5)
         for ir = 1:inputTGLFEP.SCAN_N
-            #println(inputTGLFEP.SCAN_N)
             inputTGLFEP.FACTOR = inputTGLFEP.FACTOR*dpdr_EP_max/dpdr_EP_abs[ir_exp[ir]]
-            #println(inputTGLFEP.FACTOR)
         end
     end
     inputTGLFEP.FACTOR_MAX_PROFILE .= inputTGLFEP.FACTOR
@@ -109,27 +103,6 @@ if (inputTGLFEP.INPUT_PROFILE_METHOD == 2)
 end
 
 
-# Needs to be corrected later (before mainsub):
-#=
-This is just a list, not something that needs to be uncommented for the Threads version:
-
-    # each MPI color group is assigned one ir_exp:
-    # !correct color!:
-    inputTGLFEP.IR = inputTGLFEP.IR_EXP[color+1] 
-    ir::Int = inputTGLFEP.IR
-    else
-    inputTGLFEP.IR = color + inputMTGLF.IRS
-    ir::Int = inputTGLFEP.IR
-
-str_r = string(Char(round(Int,ir/100) + UInt32('0'))) * 
-    string(Char(round(Int,mod(ir, 100)/10) + UInt32('0'))) * 
-    string(Char(mod(ir, 10) + UInt32('0')))
-
-inputTGLFEP.SUFFIX = "_r"*str_r
-
-inputTGLFEP.FACTOR_IN = inputTGLFEP.FACTOR[color+1]
-=#
-
 # Things that need to be set for the function of the driver:
 # str_r & SUFFIX
 # FACTOR_IN
@@ -153,13 +126,11 @@ start_time = now()
 for i in 1:n_ir
     #try
         arrTGLFEP[i].IR = arrTGLFEP[i].IR_EXP[i]
-        #println(arrTGLFEP[i].IR)
         ir = arrTGLFEP[i].IR
         str_r = string(Char(round(Int,ir/100) + UInt32('0'))) * 
         string(Char(round(Int,mod(ir, 100)/10) + UInt32('0'))) * 
         string(Char(mod(ir, 10) + UInt32('0')))
         arrTGLFEP[i].SUFFIX = "_r"*str_r
-        #println(arrTGLFEP[i].SUFFIX)
         arrTGLFEP[i].FACTOR_IN = arrTGLFEP[i].FACTOR[i]
         input1 = arrTGLFEP[i]
         input2 = arrMTGLF[i]
@@ -172,67 +143,19 @@ end_time = now()
 
 time_diff = end_time - start_time
 time_in_seconds = Dates.value(time_diff) / 1000
-# println(time_in_seconds)
 
-
-
-# println(growthrate)
 # Right now, width_in is being set directly from first entry from the TGLFEP input
 # rather than some range of widths as TGLFEP does. This can be easily implemented but 
 # most inputs won't need that for now.
 
-#println(inputTGLFEP.WIDTH_IN, " for id & color ", id_world, " ", color)
-
 kymark_out::Vector{Float64} = fill(NaN, inputTGLFEP.SCAN_N)
 width::Vector{Float64} = fill(NaN, inputTGLFEP.SCAN_N)
 
-# MPI:
-# local buf_width::Vector{Float64} = fill(NaN, 1)
-# local buf_kymark::Vector{Float64} = fill(NaN, 1)
-
 if (!inputTGLFEP.WIDTH_IN_FLAG)
-    # Non-MPI:
-    # There are only "3" processes in Threads -- 
     for i = 1:n_ir
         width[i] = arrTGLFEP[i].WIDTH_IN
         kymark_out[i] = arrTGLFEP[i].KYMARK
     end
-
-    # Original MPI:
-    #=
-    #println("id & color: ", id_world, " ", color)
-    MPI.Barrier(MPI.COMM_WORLD)
-    println("Here! ", id_world, " ", color)
-    if (id_world < inputTGLFEP.SCAN_N && id_world != 0)
-        # This lines up with the Fortran.
-        MPI.Send([inputTGLFEP.WIDTH_IN], 0, id_world, MPI.COMM_WORLD) # No, dest=0 is correct.
-        MPI.Send([inputTGLFEP.KYMARK], 0, id_world+inputTGLFEP.SCAN_N, MPI.COMM_WORLD)
-        
-        println("id, ir, sent WIDTH_IN and KYMARK: ", id_world, " : ", inputTGLFEP.IR, " : ", inputTGLFEP.WIDTH_IN, " : ", inputTGLFEP.KYMARK)
-        #println(buf_width, " before ", id, " & ", color)
-    end
-    MPI.Barrier(MPI.COMM_WORLD)
-    println("Here! ", id_world, " ", color)
-    if (id_world == 0)
-        width[1] = inputTGLFEP.WIDTH_IN
-        #println(width[1])
-        kymark_out[1] = inputTGLFEP.KYMARK
-        # I believe the reason Scan_n-1 works here is because all of the processes will have been reduced, and thus will not be of concern
-        # This does mean that there will be things sent that are not received.
-        for i = 1:inputTGLFEP.SCAN_N-1 
-            buf_width = [NaN]
-            #println([width[i+1]], " before ", id_world, " & ", color, " & ", i)
-            buf_kymark = [NaN]
-            MPI.Recv!(buf_width, i, i, MPI.COMM_WORLD)
-            MPI.Recv!(buf_kymark, i, i+inputTGLFEP.SCAN_N, MPI.COMM_WORLD)
-            width[i+1] = buf_width[1]
-            kymark_out[i+1] = buf_kymark[1]
-            #println([width[i+1]], " before ", id_world, " & ", color, " & ", i)
-            #width[i+1] = buf_width[1]
-            #kymark_out[i+1] = buf_kymark[1]
-        end
-    end
-    =#
 end
 
 # Print out basic information about the run (that is common to all radii):
@@ -278,24 +201,9 @@ close(io2)
 
 
 # Lastly is the printing of the density threshold:
-#local buf_factor::Vector{Float64} = fill(NaN, 1)
 
 # Now continue on to radii-dependent part:
 if ((inputTGLFEP.PROCESS_IN == 4) || (inputTGLFEP.PROCESS_IN == 5) || (inputTGLFEP.PROCESS_IN == 6 ))
-    # Threads Process won't happen until later:
-
-
-    # Original MPI:
-    #=if (id_world < inputTGLFEP.SCAN_N && id_world != 0)
-        if (inputTGLFEP.THRESHOLD_FLAG == 0)
-            #buf_factor = [inputTGLFEP.FACTOR_IN]
-            MPI.Send([inputTGLFEP.FACTOR_IN], 0, id_world, MPI.COMM_WORLD)
-            #inputTGLFEP.FACTOR_IN = buf_factor[1]
-        end
-        #MPI.Send(inputTGLFEP) only process-In 4 here.
-    end # id == 0
-    MPI.Barrier(TJLFEP_COMM_IN)=#
-    
     io3 = open("out.TGLFEP", "a")
     println(io3, "**************************************************************")
     println(io3, "************** The critical EP density gradient **************")
@@ -309,26 +217,10 @@ if ((inputTGLFEP.PROCESS_IN == 4) || (inputTGLFEP.PROCESS_IN == 5) || (inputTGLF
     dpdr_crit_out = fill(NaN, inputMTGLF.NR)
 
     if (inputTGLFEP.THRESHOLD_FLAG == 0)
-        # Threads Correct:
         # Set the returned guesses for "f_guess" as SFmin[i]:
         for i = 1:n_ir
             SFmin[i] = arrTGLFEP[i].FACTOR_IN
         end
-        # MPI Original:
-        #SFmin[1] = inputTGLFEP.FACTOR_IN
-        #println(io3, inputTGLFEP.FACTOR_IN, " factor_in before")
-        #println("Before MPI.Recv! for factor_in.")
-        #=for i = 1:inputTGLFEP.SCAN_N-1
-            buf_factor = [NaN]
-            MPI.Recv!(buf_factor, i, i, MPI.COMM_WORLD)
-            SFmin[i+1] = buf_factor[1]
-            #println(io3, SFmin[i_1], " factor_in after and ", inputTGLFEP.FACTOR_IN, " buf_factor after")
-            #println(io3, SFmin) # before buf_factor
-            #SFmin[i+1] = buf_factor[1]
-            #println(io3, SFmin) # after buf_factor, before comp.out
-            
-        end=#
-        println("After MPI.Recv! for factor_in")
         println(io3, "--------------------------------------------------------------")
         println(io3, "SFmin")
         
@@ -337,9 +229,7 @@ if ((inputTGLFEP.PROCESS_IN == 4) || (inputTGLFEP.PROCESS_IN == 5) || (inputTGLF
         # and then interpolates the remaining values.
 
         SFmin, SFmin_out, ir_min, ir_max, l_accept_profile = tjlfep_complete_output(SFmin, inputTGLFEP, inputMTGLF)
-        println(io3, SFmin, " SFmin after buf and coutput") # after comp.out
-
-        #println(io3, inputTGLFEP.FACTOR_MAX_PROFILE)
+        println(io3, SFmin, " SFmin after complete_output")
 
         # We've received the altered profile (interpolated and accepted or not).
         # If the minimum radius is not the first one...
@@ -465,13 +355,8 @@ if ((inputTGLFEP.PROCESS_IN == 4) || (inputTGLFEP.PROCESS_IN == 5) || (inputTGLF
 end # process 4 || 5
 close(io3)
 
-#MPI.Finalize()
 # The rest of the fortran is deallocations and a process_in == 6 route
 
-# Checking out some info:
-#@profview TJLFEP.mainsub(inputTGLFEP, inputMTGLF, TJLFEP_COMM_IN)
-#using BenchmarkTools
-#@btime TJLFEP.mainsub(inputTGLFEP, inputMTGLF, TJLFEP_COMM_IN)
 # The following list is for unpopulated fields and things I want to look into today:
 # inputTJLF.USE_AVE_ION_GRID
 # inputTJLF.WIDTH_SPECTRUM

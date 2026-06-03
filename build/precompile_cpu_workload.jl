@@ -18,8 +18,8 @@ using LinearAlgebra
 BLAS.set_num_threads(1)
 
 const ROOT   = normpath(@__DIR__, "..")
-const GACODE = joinpath(ROOT, "src", "DIIIDfiles", "202017C42_500ms_v3.1", "input.gacode")
-const TGLFEP = joinpath(ROOT, "build", "debug_nb6", "input.TGLFEP")   # N_BASIS=6, SCAN_N=1
+const GACODE = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
+const TGLFEP = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input_singleradius_nb6.TGLFEP")   # N_BASIS=6, SCAN_N=1
 
 @assert isfile(GACODE) "missing $GACODE"
 @assert isfile(TGLFEP) "missing $TGLFEP"

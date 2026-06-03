@@ -14,9 +14,9 @@ using TJLF
 
 const _NB6_DIR   = @__DIR__
 const _ROOT      = normpath(_NB6_DIR, "..")
-const _CASE_DIR  = joinpath(_ROOT, "src", "DIIIDfiles", "202017C42_500ms_v3.1")
+const _CASE_DIR  = joinpath(_ROOT, "examples", "DIIID_202017C42_500ms_v3.1")
 const _GACODE    = joinpath(_CASE_DIR, "input.gacode")
-const _TGLFEP    = joinpath(_ROOT, "build", "debug_nb6", "input_scan20.TGLFEP")
+const _TGLFEP    = joinpath(_CASE_DIR, "input_scan20_nb6.TGLFEP")
 const _GOLDEN    = joinpath(_NB6_DIR, "fixtures", "202017C42_nb6", "out.TGLFEP")
 
 # Parse the `SFmin` block from a Fortran out.TGLFEP into a Vector{Float64}

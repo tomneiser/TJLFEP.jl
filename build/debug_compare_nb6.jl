@@ -20,12 +20,11 @@ using LinearAlgebra
 BLAS.set_num_threads(1)
 
 const TJLFEP_ROOT = normpath(@__DIR__, "..")
-const DEBUG_DIR = normpath(@__DIR__, "debug_nb6")
 const CASE_DIR = get(ENV, "CASE_DIR",
-    joinpath(TJLFEP_ROOT, "src", "DIIIDfiles", "202017C42_500ms_v3.1"))
-const TGLFEP_FILE = get(ENV, "TGLFEP_FILE", joinpath(DEBUG_DIR, "input.TGLFEP"))
+    joinpath(TJLFEP_ROOT, "examples", "DIIID_202017C42_500ms_v3.1"))
+const TGLFEP_FILE = get(ENV, "TGLFEP_FILE", joinpath(CASE_DIR, "input_singleradius_nb6.TGLFEP"))
 const FILE_DIR = get(ENV, "FILE_DIR",
-    joinpath(DEBUG_DIR, "fileInput_$(get(ENV, "SLURM_JOB_ID", "local"))"))
+    joinpath(TJLFEP_ROOT, "build", "fileInput_nb6_$(get(ENV, "SLURM_JOB_ID", "local"))"))
 # Physical ni/Ti and expro log-gradients (match Fortran expro_read).
 const GACODE_DUMP = get(ENV, "GACODE_DUMP", joinpath(CASE_DIR, "input.gacode"))
 if !haskey(ENV, "GACODE_DUMP")

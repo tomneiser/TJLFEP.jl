@@ -250,7 +250,6 @@ function _runTHD_core!(
                 SFmin[i] = arrTGLFEP[i].FACTOR_IN
             end
             if printout
-                println("After MPI.Recv! for factor_in")
                 push!(outTGLFEP_buffer, "--------------------------------------------------------------")
                 push!(outTGLFEP_buffer, "SFmin")
             end
@@ -258,7 +257,7 @@ function _runTHD_core!(
             SFmin, SFmin_out, ir_min, ir_max, l_accept_profile = tjlfep_complete_output(SFmin, Options, profile)
 
             if printout
-                push!(outTGLFEP_buffer, string(SFmin, " SFmin after buf and coutput"))
+                push!(outTGLFEP_buffer, string(SFmin, " SFmin after complete_output"))
             end
 
             if (ir_min - Options.IRS + 1) > 1
@@ -397,9 +396,6 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     # Auto-detect device via TJLF.pick_device(:auto); shadows the use_gpu parameter.
     # Thread safety: Threads.@threads runs each iteration in a separate Julia task.
     # CUDA.jl v5 assigns per-task streams, so concurrent GPU calls are stream-isolated.
-    # use_gpu = TJLF.pick_device(:auto) === :gpu
-    # processor = use_gpu ? "GPU" : "CPU"
-    # println("TJLFEP runTHD: using $processor")
 
     @assert isfile(tglfepfilepath) "Requested TGLFEP input file path does not exist"
     @assert isfile(mtglffilepath) "Requested MTGLF input file path does not exist"

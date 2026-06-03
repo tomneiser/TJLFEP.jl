@@ -3,7 +3,7 @@
 # distributed CPU workers otherwise pay on every spawn. CUDA and the FUSE/IMAS stack are
 # excluded (TJLFEP_FILE_ONLY=1 must be set when TJLFEP is precompiled; the batch script does).
 #
-# CPU analogue of build_gpu_sysimage.jl. Unlike the older noTJLF_TJLFEP_sysimage.so, this
+# CPU analogue of build_gpu_sysimage_generic.jl, baking TJLF + TJLFEP for the file-based path. This
 # DOES bake TJLF (it was previously left out so TJLF source could be iterated during
 # development without rebuilding the image). Run on a CPU node.
 

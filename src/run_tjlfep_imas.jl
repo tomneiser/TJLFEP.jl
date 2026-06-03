@@ -228,12 +228,9 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     width::Vector{Float64} = fill(NaN, Options.SCAN_N)
 
     if (!Options.WIDTH_IN_FLAG)
-        # Non-MPI:
-        # There are only "3" processes in Threads -- 
         for i = 1:n_ir
             width[i] = arrTGLFEP[i].WIDTH_IN
             kymark_out[i] = arrTGLFEP[i].KYMARK
-            
         end
     end
 
@@ -302,22 +299,7 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
             for i = 1:n_ir
                 SFmin[i] = arrTGLFEP[i].FACTOR_IN
             end
-            # MPI Original:
-            #SFmin[1] = Options.FACTOR_IN
-            #println(io3, Options.FACTOR_IN, " factor_in before")
-            #println("Before MPI.Recv! for factor_in.")
-            #=for i = 1:Options.SCAN_N-1
-                buf_factor = [NaN]
-                MPI.Recv!(buf_factor, i, i, MPI.COMM_WORLD)
-                SFmin[i+1] = buf_factor[1]
-                #println(io3, SFmin[i_1], " factor_in after and ", Options.FACTOR_IN, " buf_factor after")
-                #println(io3, SFmin) # before buf_factor
-                #SFmin[i+1] = buf_factor[1]
-                #println(io3, SFmin) # after buf_factor, before comp.out
-            
-            end=#
             if (printout)
-                println("After MPI.Recv! for factor_in")
                 println(io3, "--------------------------------------------------------------")
                 println(io3, "SFmin")
             end
@@ -328,9 +310,8 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
             SFmin, SFmin_out, ir_min, ir_max, l_accept_profile = tjlfep_complete_output(SFmin, Options, profile)
         
             if (printout)
-                println(io3, SFmin, " SFmin after buf and coutput") # after comp.out
+                println(io3, SFmin, " SFmin after complete_output")
             end
-            #println(io3, Options.FACTOR_MAX_PROFILE)
 
             # We've received the altered profile (interpolated and accepted or not).
             # If the minimum radius is not the first one...

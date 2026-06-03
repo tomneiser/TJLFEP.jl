@@ -14,15 +14,14 @@ function logmsg(args...)
 end
 
 const TJLFEP_ROOT = normpath(@__DIR__, "..")
-const DEBUG_DIR = normpath(@__DIR__, "debug_nb6")
 const CASE_DIR = get(ENV, "CASE_DIR",
-    joinpath(TJLFEP_ROOT, "src", "DIIIDfiles", "202017C42_500ms_v3.1"))
+    joinpath(TJLFEP_ROOT, "examples", "DIIID_202017C42_500ms_v3.1"))
 const FILE_DIR = get(ENV, "FILE_DIR",
-    joinpath(DEBUG_DIR, "fileInput_scan20_10n_$(get(ENV, "SLURM_JOB_ID", "local"))"))
+    joinpath(TJLFEP_ROOT, "build", "fileInput_nb6_scan20_$(get(ENV, "SLURM_JOB_ID", "local"))"))
 const SCAN_N = parse(Int, get(ENV, "SCAN_N", "20"))
 const THREADS_PER_WORKER = parse(Int, get(ENV, "JULIA_WORKER_THREADS",
     get(ENV, "SLURM_CPUS_PER_TASK", "64")))
-const TGLFEP_FILE = get(ENV, "TGLFEP_FILE", joinpath(DEBUG_DIR, "input_scan20.TGLFEP"))
+const TGLFEP_FILE = get(ENV, "TGLFEP_FILE", joinpath(CASE_DIR, "input_scan20_nb6.TGLFEP"))
 const GACODE_DUMP = get(ENV, "GACODE_DUMP", joinpath(CASE_DIR, "input.gacode"))
 if !haskey(ENV, "GACODE_DUMP")
     ENV["GACODE_DUMP"] = GACODE_DUMP
@@ -49,7 +48,7 @@ logmsg("TJLF: ", pathof(TJLF))
 logmsg("TJLFEP: ", pathof(TJLFEP))
 
 project_path = TJLFEP_ROOT
-_sysimage = get(ENV, "TJLFEP_SYSIMAGE", joinpath(TJLFEP_ROOT, "build", "noTJLF_TJLFEP_sysimage.so"))
+_sysimage = get(ENV, "TJLFEP_SYSIMAGE", joinpath(TJLFEP_ROOT, "build", "TJLFEP_cpu_sysimage.so"))
 exeflags = if isfile(_sysimage)
     `--project=$(project_path) --sysimage=$(_sysimage) -t $(THREADS_PER_WORKER)`
 else

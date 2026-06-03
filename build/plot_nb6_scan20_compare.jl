@@ -8,10 +8,10 @@ using TJLFEP
 using Plots
 
 const BUILD = @__DIR__
-const CASE = normpath(@__DIR__, "..", "src", "DIIIDfiles", "202017C42_500ms_v3.1")
+const CASE = normpath(@__DIR__, "..", "examples", "DIIID_202017C42_500ms_v3.1")
 const FORTRAN_DIR = get(ENV, "FORTRAN_DIR", joinpath(BUILD, "fortran_runs", "debug_nb6_scan20_10n_53171364"))
 const JULIA_DIR = get(ENV, "JULIA_DIR", joinpath(BUILD, "debug_out_nb6_scan20_53171385_dist"))
-const FILE_DIR = get(ENV, "FILE_DIR", joinpath(BUILD, "debug_nb6", "fileInput_scan20_10n_53171385"))
+const FILE_DIR = get(ENV, "FILE_DIR", joinpath(BUILD, "fileInput_nb6_scan20_53171385"))
 const OUTDIR = get(ENV, "PLOT_OUTDIR", joinpath(BUILD, "compare_nb6_scan20_plots"))
 const FORTRAN_LABEL = get(ENV, "FORTRAN_LABEL", "Fortran")
 const JULIA_LABEL = get(ENV, "JULIA_LABEL", "Julia")

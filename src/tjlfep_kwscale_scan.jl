@@ -206,7 +206,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
     kyhat = fill(T(NaN), nkyhat)
 
     ikyhat_write = floor(Int, nkyhat/2) # 2
-    # println(ikyhat_write)
     iefwid_write = floor(Int, nefwid/2) # 5
     ifactor_write = nfactor # 10
     f_guess_mark = T(1.0E20)
@@ -295,9 +294,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         # through all dimensions of lkeep_i, which is a reference matrix
         # telling you where each 
         imark = fill(nfactor+1, (nkyhat, nefwid))
-        #if (id == 0)
-        #    println(imark, " imark at id: ", id)
-        #end
 
         # The following loop sets the matrix imark finds the first mode for a specific ikyhat, iefwid, ifactor combination
         # that is set to be kept in lkeep_i. This mode is thus representing that specific ifactor value for the run
@@ -351,18 +347,14 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 for iefwid = 1:nefwid
                     lkeep_ref[ikyhat, iefwid] = false  # reset each k iteration (matches Fortran)
                     imark_ref = nfactor-1 # ? What is the point ?
-                    #println("pass 1: ", imark_ref)
-                    
+
                     # if imark is not the final one of the factor spectrum, set the reference to imark
                     # and set it as kept; otherwise, if it's the last one, set the reference to imark-1
                     # (9) and set as kept, and if it's a default value of 11, set reference to 10.
                     if (imark[ikyhat, iefwid] < nfactor) # < 10
                         imark_ref = imark[ikyhat, iefwid]
-                        #println("route 1: ", imark_ref)
                         lkeep_ref[ikyhat, iefwid] = true
                     else # 10 or 11
-                        #imark_ref = imark[ikyhat, iefwid] - 1
-                        #println("route 2: ", imark_ref)
                         if (imark[ikyhat, iefwid] == nfactor) # == 10
                             lkeep_ref[ikyhat,iefwid] = true
                         end
@@ -441,20 +433,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                             # This loops over all combos of kyhat and width to find a single guess for "f"
                         
 
-                            #=if (id == 0)
-                                println("Statements set! for id & ir and k: ", id, " ", inputsEP.IR, " ", k)
-                                println("kywrite, wdwrite: ", ikyhat_mark, " ", iefwid_mark)
-                                println("After: ", fmark, ", ", gmark, ", ", f_guess_mark)
-                            end
-                            sleep(0.25)
-                            if (id == 1)
-                                println("Statements set! for id & ir and k: ", id, " ", inputsEP.IR, " ", k)
-                                println("kywrite, wdwrite: ", ikyhat_mark, " ", iefwid_mark)
-                                println("After: ", fmark, ", ", gmark, ", ", f_guess_mark)
-                            end=#
-                        
-                    else
-                        #println("Statements NOT set! for id & ir: ", id, " ", inputsEP.IR)
                     end
                 end # iefwid
             end # ikyhat
@@ -569,7 +547,6 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         else
             f0 = f1
             f1 = 10.0*f1
-            #println("fmark < 1e10 : Pass ", k)
         end
 
         _probe && (_ser_wall += (time_ns() - _t_ser) / 1e9)
@@ -589,8 +566,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
             " eigensolve_frac=", _PROBE_KY[] > 0 ? round(100 * _PROBE_RUN[] / _PROBE_KY[]; digits=1) : 0.0, "%",
             " (per-process sums; for :threads this is the whole radius)")
     end
-    #println(imark_min)
-    
+
     # After the fourth round, if no unstable modes have been found, default the scalefactor which will be used In
     # the calculation in the driver to 10k, the width to its default (I think around 100) and same for kyhat.
     # Otherwise, set the factor to the best guess at ikyhat_mark, iefwid_mark and their corresponding width and kyhat

@@ -14,7 +14,7 @@ use_gpu = TJLF.pick_device(:auto) === :gpu
 
 const TJLFEP_ROOT = normpath(@__DIR__, "..")
 const CASE_DIR = get(ENV, "CASE_DIR",
-    joinpath(TJLFEP_ROOT, "src", "DIIIDfiles", "202017C42_500ms_v3.1"))
+    joinpath(TJLFEP_ROOT, "examples", "DIIID_202017C42_500ms_v3.1"))
 const FILE_DIR = get(ENV, "FILE_DIR",
     joinpath(@__DIR__, "fileInput_$(get(ENV, "SLURM_JOB_ID", "local"))"))
 

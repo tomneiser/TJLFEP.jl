@@ -1,4 +1,3 @@
-using MPI
 include("TJLFEP.jl")
 using .TJLFEP
 using .TJLFEP: convert_input

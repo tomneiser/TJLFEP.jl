@@ -1,9 +1,3 @@
-# More temp calls:
-#include("../tjlf-ep/TJLFEP.jl")
-#using .TJLFEP
-#using .TJLFEP: convert_input
-#using MPI
-
 # Opt-in latency probe (TJLFEP_PROBE=1). Per-process atomic accumulators: total time inside
 # TJLFEP_ky vs the TJLF.run (eigensolve) sub-call, so kwscale_scan can report the
 # eigensolve-vs-CPU split that bounds the MPS-team speedup (Amdahl).
@@ -125,7 +119,6 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
         debug_dump_ky_postrun(inputsEP, inputTJLF, g, f, n)
     end
 
-    # println("before ", gamma_out)
     #GAMMA STILL NON-ZERO UP TO HERE
 
     # Establishes the lkeep vector. LKEEP is defaulted to all true as nothing is rejected yet.
@@ -214,9 +207,6 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
                 x_tear_test[n] = max(x_tear_test[n], absdiffwavefunction/wave_max)
                 ef_phi_norm += abs(wavefunction[n,1,i])
                 theta_2_moment[n] += (9 * π * (-1.0 + (2.0 * (i - 1)) / (max_plot - 1)))^2 * abs(wavefunction[n, 1, i])
-                # println("xteartest= ", x_tear_test)
-                # println("theta_2_moment = ", theta_2_moment) 
-                # println("ef_phi_norm = ", ef_phi_norm)  
             end
             theta_2_moment[n] /= ef_phi_norm
 
@@ -295,10 +285,7 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
         inputsEP.LKEEP[n] = (inputsEP.LKEEP[n] && !inputsEP.L_QL_RATIO[n])
         inputsEP.LKEEP[n] = (inputsEP.LKEEP[n] && !inputsEP.L_THETA_SQ[n])
     end
-    #extra print to test variables
 
-    # println("absdiffwavefunction",absdiffwavefunction)
-    
     # Next is writing the wavefunction files themselves:
     wavefunction_buffer = nothing
     if (l_wavefunction_out == 1) # nplot = max_plot_out; nfields = 1 by def.
@@ -335,8 +322,6 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
                 n_out = n
             end
         end
-        #println("LKEEP ", inputsEP.LKEEP)
-        #println("n_out = " ,n_out)
         if n_out == 0
             n_out = 1
             push!(wavefunction_buffer, "No kept modes at nominal write parameters. Showing leading mode.")

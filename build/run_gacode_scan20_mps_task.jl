@@ -40,7 +40,7 @@ const INNER = Symbol(get(ENV, "INNER", "mps_team"))
 const TEAM_GPUS = let s = get(ENV, "TEAM_GPUS", get(ENV, "CUDA_VISIBLE_DEVICES", "0"))
     String.(split(s, ',', keepempty=false))
 end
-# Optional GPU-worker sysimage (TJLFEP_gpu_sysimage.so): bakes the TJLF/TJLFEP/CUDA GPU
+# Optional GPU-worker sysimage (TJLFEP_gpu_generic_sysimage.so): bakes the TJLF/TJLFEP/CUDA GPU
 # eigensolve path so workers skip the ~110 s/team JIT on a cold spawn. Empty -> JIT as before.
 const GPU_SYSIMAGE = get(ENV, "TJLFEP_GPU_SYSIMAGE", "")
 const _SYSIMG_FLAGS = (!isempty(GPU_SYSIMAGE) && isfile(GPU_SYSIMAGE)) ? `--sysimage=$(GPU_SYSIMAGE)` : ``
@@ -83,9 +83,9 @@ using TJLF
 using LinearAlgebra
 BLAS.set_num_threads(1)
 
-const CASE   = get(ENV, "CASE_DIR", joinpath(ROOT, "src", "DIIIDfiles", "202017C42_500ms_v3.1"))
+const CASE   = get(ENV, "CASE_DIR", joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1"))
 const GACODE = get(ENV, "GACODE_FILE", joinpath(CASE, "input.gacode"))
-const TGLFEP = get(ENV, "TGLFEP_FILE", joinpath(ROOT, "build", "debug_nb32", "input_scan20.TGLFEP"))
+const TGLFEP = get(ENV, "TGLFEP_FILE", joinpath(CASE, "input_scan20_nb32.TGLFEP"))
 const OUT_DIR = get(ENV, "OUT_DIR", joinpath(@__DIR__, "gacode_scan20_mps_$(get(ENV, "SLURM_JOB_ID", "local"))_tasks"))
 
 @assert isfile(GACODE) "missing $GACODE"
