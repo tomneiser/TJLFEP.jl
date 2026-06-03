@@ -1,10 +1,12 @@
 #!/bin/bash -l
-# Timing: Julia CPU SCAN_N=20, 10 nodes, 20 workers (2/node), SlurmClusterManager + pmap.
-# Same layout as batch_debug_nb6_julia_scan20_10n.sh (faithful production path).
+# Timing: Julia CPU SCAN_N=20, 10 nodes, 20 workers (2/node), SlurmClusterManager + pmap,
+# with the FULL CPU sysimage (TJLF + TJLFEP baked) on master AND workers for a fair
+# comparison against the GPU run (which bakes the same compute path).
+# Sweep nbasis via NB env (default 6):  NB=32 sbatch batch_time_scan20_julia_cpu.sh
 #SBATCH -A m3739
 #SBATCH -q premium
 #SBATCH -N 10
-#SBATCH -t 02:00:00
+#SBATCH -t 00:45:00
 #SBATCH -C cpu
 #SBATCH -J time_s20_jcpu
 #SBATCH -o time_scan20_julia_cpu_%j.out
@@ -13,7 +15,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=64
 
-set -euo pipefail
+set -uo pipefail
 
 module load julia/1.11.7
 export JULIA_DEPOT_PATH="${PSCRATCH}/.julia${JULIA_DEPOT_PATH:+:${JULIA_DEPOT_PATH}}"
@@ -22,21 +24,35 @@ export TJLFEP_DEBUG=0
 export SCAN_N=20
 export JULIA_WORKER_THREADS="${JULIA_WORKER_THREADS:-${SLURM_CPUS_PER_TASK:-64}}"
 
+NB="${NB:-6}"
+export N_BASIS="${NB}"
+export DEBUG_DIR="debug_nb${NB}"
+
 TJLFEP_ROOT="${TJLFEP_ROOT:-/pscratch/sd/t/tneiser/.julia/dev/TJLFEP}"
 export CASE_DIR="${CASE_DIR:-${TJLFEP_ROOT}/src/DIIIDfiles/202017C42_500ms_v3.1}"
 export GACODE_DUMP="${GACODE_DUMP:-${CASE_DIR}/input.gacode}"
-export TGLFEP_FILE="${TJLFEP_ROOT}/build/debug_nb6/input_scan20.TGLFEP"
-export FILE_DIR="${TJLFEP_ROOT}/build/debug_nb6/fileInput_scan20_10n_${SLURM_JOB_ID}"
+export TGLFEP_FILE="${TJLFEP_ROOT}/build/debug_nb${NB}/input_scan20.TGLFEP"
+export FILE_DIR="${TJLFEP_ROOT}/build/debug_nb${NB}/fileInput_scan20_10n_${SLURM_JOB_ID}"
+
+# Full CPU sysimage (TJLF + TJLFEP baked) for BOTH the master and the SlurmClusterManager
+# workers. Workers pick it up via TJLFEP_SYSIMAGE in time_scan20_julia_cpu.jl; the master
+# gets the flag below. Missing -> JIT (slower; not a fair comparison vs the GPU sysimage run).
+CPU_SYSIMG="${TJLFEP_SYSIMAGE:-${TJLFEP_ROOT}/build/TJLFEP_cpu_sysimage.so}"
+if [[ -f "${CPU_SYSIMG}" ]]; then
+    export TJLFEP_SYSIMAGE="${CPU_SYSIMG}"
+    MASTER_SYSIMG_ARGS=(--sysimage="${CPU_SYSIMG}")
+    echo "CPU sysimage (master+workers): ${CPU_SYSIMG}"
+else
+    MASTER_SYSIMG_ARGS=()
+    echo "CPU sysimage: none found at '${CPU_SYSIMG}' -> running with JIT"
+fi
 
 cd "${TJLFEP_ROOT}/build"
-# shellcheck source=julia_sysimage.inc.sh
-source "${TJLFEP_ROOT}/build/julia_sysimage.inc.sh"
-
-echo "=== Julia CPU timing: SCAN_N=${SCAN_N} nodes=${SLURM_NNODES:-?} ntasks=${SLURM_NTASKS:-?} (SlurmClusterManager) ==="
+echo "=== Julia CPU timing: SCAN_N=${SCAN_N} N_BASIS=${NB} nodes=${SLURM_NNODES:-?} ntasks=${SLURM_NTASKS:-?} (SlurmClusterManager) ==="
 echo "FILE_DIR=${FILE_DIR}"
 
 stdbuf -oL -eL julia --startup-file=no --project="${TJLFEP_ROOT}" \
-    "${JULIA_SYSIMAGE_ARGS[@]}" \
+    "${MASTER_SYSIMG_ARGS[@]}" \
     -t 8 time_scan20_julia_cpu.jl
 
 echo "=== Julia CPU distributed timing finished ==="

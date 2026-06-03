@@ -16,24 +16,33 @@ const KNOWN_SCAN20 = Dict(
     32 => (fortran = 1546.0, julia_cpu = 13200.76, julia_gpu = 581.0),   # 53260741.0 (25:46), 53260866 @time, 53260659.0 (9:41)
 )
 
+# Report TOTAL WALLCLOCK of the run (phase=total_job): end-to-end wall including process
+# spawn, sysimage load, compute, and merge. The Fortran binary compile and the Julia sysimage
+# build are the equivalent one-time costs and are EXCLUDED from both (neither is in total_job).
+# Falls back to scan/compute for older logs that lack a total_job line.
 function parse_timing_log(path::String)
-    fort = cpu = gpu = nothing
-    isfile(path) || return fort, cpu, gpu
+    isfile(path) || return nothing, nothing, nothing
+    vals = Dict{String,Float64}()   # "backend|device|phase" => seconds
     for line in readlines(path)
         occursin("TIMING_RESULT", line) || continue
-        m = match(r"seconds=([0-9.]+)", replace(line, " " => ""))
+        s = replace(line, " " => "")
+        m = match(r"seconds=([0-9.]+)", s)
         m === nothing && continue
         t = parse(Float64, m.captures[1])
-        if occursin("backend=fortran", line) && occursin("phase=scan", line)
-            fort = t
-        elseif occursin("backend=julia", line) && occursin("device=cpu", line) &&
-               (occursin("phase=compute", line) || occursin("phase=scan", line))
-            cpu = t
-        elseif occursin("backend=julia", line) && occursin("device=gpu", line) &&
-               occursin("phase=scan", line)
-            gpu = t
-        end
+        be  = occursin("backend=fortran", s) ? "fortran" :
+              occursin("backend=julia", s)   ? "julia"   : ""
+        dev = occursin("device=gpu", s) ? "gpu" :
+              occursin("device=cpu", s) ? "cpu" : ""
+        ph  = occursin("phase=total_job", s) ? "total"   :
+              occursin("phase=scan", s)      ? "scan"    :
+              occursin("phase=compute", s)   ? "compute" : ""
+        (isempty(be) || isempty(ph)) && continue
+        vals["$be|$dev|$ph"] = t
     end
+    pick(ks...) = (for k in ks; haskey(vals, k) && return vals[k]; end; nothing)
+    fort = pick("fortran|cpu|total", "fortran|cpu|scan")
+    cpu  = pick("julia|cpu|total", "julia|cpu|compute", "julia|cpu|scan")
+    gpu  = pick("julia|gpu|total", "julia|gpu|scan")
     return fort, cpu, gpu
 end
 
@@ -82,20 +91,9 @@ end
 function collect_nb(nb::Int)
     fort = cpu = gpu = nothing
 
-    if nb == 6
-        f = newest("time_scan20_fortran_*.out")
-        fort, _, _ = f === nothing ? (nothing, nothing, nothing) : parse_timing_log(f)
-        cpath = newest("time_scan20_julia_cpu_*.out")
-        _, c, _ = cpath === nothing ? (nothing, nothing, nothing) : parse_timing_log(cpath)
-        gpath = newest("time_scan20_julia_gpu_*.out")
-        _, _, g = gpath === nothing ? (nothing, nothing, nothing) : parse_timing_log(gpath)
-        fort = something(fort, NB6_FALLBACK.fortran)
-        cpu = something(c, NB6_FALLBACK.julia_cpu)
-        gpu = something(g, NB6_FALLBACK.julia_gpu)
-    end
-
-    # Timing harness logs (preferred for timing runs)
-    f_time = nb == 6 ? newest("time_scan20_fortran_*.out") : newest("time_scan20_nb$(nb)_fortran_*.out")
+    # Timing harness logs (preferred -- these are the fresh per-nbasis runs). Take these
+    # FIRST so a fresh nb6 run wins over the legacy no-nbasis logs / NB6_FALLBACK below.
+    f_time = newest("time_scan20_nb$(nb)_fortran_*.out")
     j_time = newest("time_scan20_nb$(nb)_julia_cpu_*.out")
     g_time = newest("time_scan20_nb$(nb)_julia_gpu_*.out")
     if fort === nothing && f_time !== nothing
@@ -136,20 +134,42 @@ function collect_nb(nb::Int)
         gpu = gt
     end
 
+    # KNOWN_SCAN20 are OLD pre-optimization/pre-sysimage numbers: use them only as a
+    # FALLBACK when no fresh log was found, never to override a freshly measured run.
     if haskey(KNOWN_SCAN20, nb)
         k = KNOWN_SCAN20[nb]
         if k.fortran !== nothing
             fort = fort === nothing ? k.fortran : fort
         end
         if k.julia_cpu !== nothing
-            cpu = k.julia_cpu
+            cpu = cpu === nothing ? k.julia_cpu : cpu
         end
         if k.julia_gpu !== nothing
-            gpu = k.julia_gpu
+            gpu = gpu === nothing ? k.julia_gpu : gpu
         end
     end
     if gpu === nothing && g_dbg !== nothing
         gpu = parse_gpu_max_task(g_dbg)
+    end
+
+    # nb6 legacy fallbacks: older runs used logs without the "nb6" tag. Only consulted if
+    # no fresh nb6-tagged log was found above.
+    if nb == 6
+        if fort === nothing
+            lf = newest("time_scan20_fortran_*.out")
+            lf !== nothing && (fort = parse_timing_log(lf)[1])
+        end
+        if cpu === nothing
+            lc = newest("time_scan20_julia_cpu_*.out")
+            lc !== nothing && (cpu = parse_timing_log(lc)[2])
+        end
+        if gpu === nothing
+            lg = newest("time_scan20_julia_gpu_*.out")
+            lg !== nothing && (gpu = parse_timing_log(lg)[3])
+        end
+        fort = fort === nothing ? NB6_FALLBACK.fortran : fort
+        cpu = cpu === nothing ? NB6_FALLBACK.julia_cpu : cpu
+        gpu = gpu === nothing ? NB6_FALLBACK.julia_gpu : gpu
     end
 
     return fort, cpu, gpu
