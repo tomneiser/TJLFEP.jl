@@ -779,6 +779,94 @@ Outputs: InputTJLF struct ready for usage in running TJLF.
 #include("../tjlf-ep/TJLFEP.jl")
 #using .TJLFEP
 
+"""
+    default_input_tjlf(::Type{T}, ns::Int, nky::Int) -> TJLF.InputTJLF{T}
+
+Build a `TJLF.InputTJLF` pre-populated with the TGLF-EP default values the TJLFEP
+path relies on. This reproduces exactly what the former
+`TJLFEP.InputTJLF{T}(ns, nky, true)` default constructor produced once copied into
+`TJLF.InputTJLF` by `convert_input`, so the consolidated single-type path is
+numerically identical. Fields not set here keep the `TJLF.InputTJLF` constructor
+defaults (NaN/sentinel arrays + `SHAPE_*` harmonics), exactly as the previous
+convert path did. `USE_AVE_ION_GRID`/`FIND_EIGEN` are left at TJLF defaults (they
+were `missing` in the old default and are always overwritten by `TJLFEP_ky` before
+TJLF runs).
+"""
+function default_input_tjlf(::Type{T}, ns::Int, nky::Int) where {T<:Real}
+    input = TJLF.InputTJLF{T}(ns, nky)
+    input.NKY = nky
+    input.UNITS = "GYRO"
+    input.USE_BPER = false
+    input.USE_BPAR = false
+    input.USE_MHD_RULE = true
+    input.USE_BISECTION = true
+    input.USE_INBOARD_DETRAPPED = false
+    input.NEW_EIKONAL = true
+    input.FIND_WIDTH = false
+    input.IFLUX = true
+    input.ADIABATIC_ELEC = false
+    input.SAT_RULE = 0
+    input.NMODES = 2
+    input.NWIDTH = 21
+    input.NBASIS_MAX = 4
+    input.NBASIS_MIN = 4
+    input.NXGRID = 32
+    input.KYGRID_MODEL = 0
+    input.XNU_MODEL = 2
+    input.VPAR_MODEL = 0
+    input.IBRANCH = -1
+    input.SIGN_BT = 1
+    input.SIGN_IT = 1
+    input.KY = 0.3
+    input.VEXB_SHEAR = 0.0
+    input.BETAE = 0.0
+    input.XNUE = 0.0
+    input.ZEFF = 1.0
+    input.DEBYE = 0.0
+    input.ALPHA_MACH = 0.0
+    input.ALPHA_E = 1.0
+    input.ALPHA_P = 1.0
+    input.ALPHA_QUENCH = 0
+    input.ALPHA_ZF = 1.0
+    input.XNU_FACTOR = 1.0
+    input.DEBYE_FACTOR = 1.0
+    input.ETG_FACTOR = 1.25
+    input.RLNP_CUTOFF = 18.0
+    input.WIDTH = 1.65
+    input.WIDTH_MIN = 0.3
+    input.RMIN_LOC = 0.5
+    input.RMAJ_LOC = 3.0
+    input.ZMAJ_LOC = 0.0
+    input.DRMINDX_LOC = 1.0
+    input.DRMAJDX_LOC = 0.0
+    input.DZMAJDX_LOC = 0.0
+    input.Q_LOC = 2.0
+    input.KAPPA_LOC = 1.0
+    input.S_KAPPA_LOC = 16.0
+    input.DELTA_LOC = 0.0
+    input.S_DELTA_LOC = 0.0
+    input.ZETA_LOC = 0.0
+    input.S_ZETA_LOC = 0.0
+    input.P_PRIME_LOC = 0.0
+    input.Q_PRIME_LOC = 16.0
+    input.BETA_LOC = 0.0
+    input.KX0_LOC = 0.0
+    input.DAMP_PSI = 0.0
+    input.DAMP_SIG = 0.0
+    input.WDIA_TRAPPED = 0.0
+    input.PARK = 1.0
+    input.GHAT = 1.0
+    input.GCHAT = 1.0
+    input.WD_ZERO = 0.1
+    input.LINSKER_FACTOR = 0.0
+    input.GRADB_FACTOR = 0.0
+    input.FILTER = 0.0
+    input.THETA_TRAPPED = 0.7
+    input.SMALL = 1.0e-13
+    input.USE_TRANSPORT_MODEL = true
+    return input
+end
+
 function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
     # Access the fields like this:
     # inputsOptions = inputsEP.Options
@@ -802,7 +890,7 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
     inputsEP.KY_MODEL = 3
 
     # Okay finally I can do this lol:
-    inputTJLF = InputTJLF{T}(inputsPR.NS, 12, true) # It is being set to the default...
+    inputTJLF = default_input_tjlf(T, inputsPR.NS, 12) # TJLF.InputTJLF seeded with TGLF-EP defaults
     if (inputsEP.IR < 1 || inputsEP.IR > inputsPR.NR)
         println("ir isn't within range")
         return 1

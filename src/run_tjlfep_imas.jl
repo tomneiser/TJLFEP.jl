@@ -47,7 +47,7 @@ function preprocess_imas_inputs(dd::IMAS.dd, rho::AbstractVector{Float64}, Optio
     end
 
     prof = TJLFEP.profile{Float64}(extraEP["NR"], extraEP["NS"])
-    profile = TJLFEP.populate_tjlfep_profile!(prof, extraEP, input_tglfep, extraEP["NR"], extraEP["NS"])
+    profile = TJLFEP.populate_tjlfep_profile!(prof, extraEP, extraEP["NR"], extraEP["NS"])
 
     Options = TJLFEP.Options{Float64}(OptionsDict["SCAN_N"], OptionsDict["WIDTH_IN_FLAG"], OptionsDict["nn"], extraEP["NR"], OptionsDict["jtscale_max"], OptionsDict["nmodes"])
 

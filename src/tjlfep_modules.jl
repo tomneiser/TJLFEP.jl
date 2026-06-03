@@ -175,6 +175,9 @@ Base.@kwdef mutable struct InputTGLF
 end
 
 
+#= Removed (consolidated onto TJLF.InputTJLF): the former TJLFEP-local duplicate `InputTJLF`
+   type and its 3-arg default constructor. `default_input_tjlf` (tjlfep_read_inputs.jl) now
+   seeds a `TJLF.InputTJLF` with these same TGLF-EP defaults, so there is a single input type.
 mutable struct InputTJLF{T<:Real}
 
     UNITS::Union{String,Missing}
@@ -307,6 +310,7 @@ mutable struct InputTJLF{T<:Real}
         end
     end
 end
+=#
 
 mutable struct Options{T<:Real} # This acts as the interface module of Fortran, essentially. It reads the TGLFEP file
     PROCESS_IN::Union{Int, Missing} # May need to be a MODE_IN::Union{T, Missing} for PROCESS_IN <= 1
@@ -554,12 +558,6 @@ mutable struct profile{T<:Real}
     end
 end
 
-mutable struct InputTJLFEP{T<:Real}
-    InputTJLF::InputTJLF
-    Options::Options
-    profile::profile
-
-    # function InputTJLFEP()
-    # end
-end
+# Removed (unused): `InputTJLFEP` bundled the now-removed duplicate `InputTJLF` with
+# `Options`/`profile`. The live path passes `Options`/`profile` directly.
 

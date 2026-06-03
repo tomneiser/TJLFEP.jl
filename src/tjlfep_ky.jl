@@ -74,40 +74,36 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
 
     inputTJLF.KX0_LOC = 0.0
 
-    convInput = convert_input(inputTJLF, inputTJLF.NS, inputTJLF.NKY)
+    # Consolidated onto TJLF.InputTJLF: TJLF_map returns a TJLF.InputTJLF directly, so we
+    # run TJLF on inputTJLF in place (no convert_input/revert_input round-trip).
     # Seed EIGEN_SPECTRUM from cache so KrylovKit can be used instead of full geev!
-    
-    if eigen_cache !== nothing && !ismissing(convInput.EIGEN_SPECTRUM) && length(eigen_cache) == length(convInput.EIGEN_SPECTRUM)
-        convInput.EIGEN_SPECTRUM .= eigen_cache
+    if eigen_cache !== nothing && !ismissing(inputTJLF.EIGEN_SPECTRUM) && length(eigen_cache) == length(inputTJLF.EIGEN_SPECTRUM)
+        inputTJLF.EIGEN_SPECTRUM .= eigen_cache
     end
 
     # Run TJLF and return QLweight and eigenvalues:
     # TJLF.run hardcodes zeros(Float64,...) for result arrays, which fails for Dual.
     # _tjlf_run_dual is identical but uses zeros(T,...). T===Float64 is a compile-time
     # check so Julia eliminates the unused branch for each specialization.
-    # result = TJLF.run(convInput) # old
     if T === Float64
         if _pb
             _tr = time_ns()
-            result = TJLF.run(convInput; use_gpu=use_gpu)
+            result = TJLF.run(inputTJLF; use_gpu=use_gpu)
             Threads.atomic_add!(_PROBE_RUN, (time_ns() - _tr) / 1e9)
         else
-            result = TJLF.run(convInput; use_gpu=use_gpu)
+            result = TJLF.run(inputTJLF; use_gpu=use_gpu)
         end
     else
         quit()
-        result = _tjlf_run_dual(convInput, T; use_gpu=use_gpu)
+        result = _tjlf_run_dual(inputTJLF, T; use_gpu=use_gpu)
     end
     gamma_out        = result.eigenvalue[:, 1, 1]   # [nmodes], ky=1
     freq_out         = result.eigenvalue[:, 1, 2]   # [nmodes], ky=1
     particle_QL_out  = result.QL_weights[:, :, :, 1, 1]  # [fields, species, nmodes], ky=1
     energy_QL_out    = result.QL_weights[:, :, :, 1, 2]  # [fields, species, nmodes], ky=1
     field_weight_out = result.field_weight_out[:, :, :, 1]  # [fields, basis, nmodes], ky=1
-    satParams        = TJLF.get_sat_params(convInput);
-    eigen_out        = ismissing(convInput.EIGEN_SPECTRUM) ? nothing : copy(convInput.EIGEN_SPECTRUM)  # cache for next call
-
-
-    inputTJLF = revert_input(convInput, convInput.NS, convInput.NKY)
+    satParams        = TJLF.get_sat_params(inputTJLF);
+    eigen_out        = ismissing(inputTJLF.EIGEN_SPECTRUM) ? nothing : copy(inputTJLF.EIGEN_SPECTRUM)  # cache for next call
     
     g = fill(T(NaN), inputTJLF.NMODES)
     f = fill(T(NaN), inputTJLF.NMODES)
@@ -138,10 +134,10 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     # geometry arrays internally (xp, hp, plot_field_out). For Dual runs we strip
     # partials from all three args — wavefunction shape is independent of AD parameters.
     if T === Float64
-        wavefunction, angle, nplot, nmodes_out = TJLF.get_wavefunction(convInput, satParams, field_weight_out)
+        wavefunction, angle, nplot, nmodes_out = TJLF.get_wavefunction(inputTJLF, satParams, field_weight_out)
     else
         quit()
-        ci_f64 = _to_float64_input(convInput)
+        ci_f64 = _to_float64_input(inputTJLF)
         sp_f64 = TJLF.get_sat_params(ci_f64)
         fw_f64 = map(x -> ComplexF64(ForwardDiff.value(real(x)), ForwardDiff.value(imag(x))), field_weight_out)
         wavefunction, angle, nplot, nmodes_out = TJLF.get_wavefunction(ci_f64, sp_f64, fw_f64)

@@ -686,52 +686,7 @@ function finalize_gacode_scan(
     return width, kymark_out, SFmin, dpdr_out, dndr_out
 end
 
-"""
-checkInput(inputTJLF::InputTJLF)
-
-description:
-check that the InputTJLF struct is properly populated
-"""
-function checkInput(inputTJLFEP::InputTJLF)
-field_names = fieldnames(InputTJLFEP)
-for field_name in field_names
-    field_value = getfield(inputTJLFEP, field_name)
-    if typeof(field_value)<:Missing
-        @assert !ismissing(field_value) "Did not properly populate inputTJLFEP for $field_name = $field_value"
-    end
-    if typeof(field_value)<:Real
-        @assert !isnan(field_value) "Did not properly populate inputTJLFEP for $field_name = $field_value"
-    end
-    if typeof(field_value)<:Vector && field_name!=:KY_SPECTRUM && field_name!=:EIGEN_SPECTRUM
-        for val in field_value
-            @assert !isnan(val) "Did not properly populate inputTJLFEP for array $field_name = $val"
-        end
-    end
-end
-if !inputTJLFEP.FIND_EIGEN
-    @assert !inputTJLFEP.FIND_WIDTH "If FIND_EIGEN false, FIND_WIDTH should also be false"
-end
-end
-
-function checkInput(inputTJLFEPVector::Vector{InputTJLF})
-for inputTJLFEP in inputTJLFEPVector
-    field_names = fieldnames(inputTJLFEP)
-    for field_name in field_names
-        field_value = getfield(inputTJLFEP, field_name)
-        if typeof(field_value)<:Missing
-            @assert !ismissing(field_value) "Did not properly populate inputTJLFEP for $field_name = $field_value"
-        end
-        if typeof(field_value)<:Real
-            @assert !isnan(field_value) "Did not properly populate inputTJLFEP for $field_name = $field_value"
-        end
-        if typeof(field_value)<:Vector && field_name!=:KY_SPECTRUM && field_name!=:EIGEN_SPECTRUM
-            for val in field_value
-                @assert !isnan(val) "Did not properly populate inputTJLFEP for array $field_name = $val"
-            end
-        end
-    end
-    if !inputTJLFEP.FIND_EIGEN
-        @assert !inputTJLFEP.FIND_WIDTH "If FIND_EIGEN false, FIND_WIDTH should also be false"
-    end
-end
-end
+# NOTE: the former TJLFEP-local `checkInput(::InputTJLF)` / `checkInput(::Vector{InputTJLF})`
+# operated on the now-removed duplicate `TJLFEP.InputTJLF` type and were dead (the live path
+# calls `TJLF.checkInput` directly, e.g. in tjlfep_ad_extensions.jl). Removed during the
+# consolidation onto `TJLF.InputTJLF`.
