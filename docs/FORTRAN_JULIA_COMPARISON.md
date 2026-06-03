@@ -88,8 +88,8 @@ Post-processing uses `DENS_$ep_slot` (last species), consistent with the EP slot
 
 | Slurm job name | Code | Script |
 |----------------|------|--------|
-| `TGLFEP_nb6` | Fortran TGLF-EP | `build/batch_debug_nb6_fortran.sh` |
-| `TJLFEP_nb6` | Julia TJLFEP | `build/batch_debug_nb6_julia.sh` |
+| `TGLFEP_nb6` | Fortran TGLF-EP | `build/verify/batch_debug_nb6_fortran.sh` |
+| `TJLFEP_nb6` | Julia TJLFEP | `build/verify/batch_debug_nb6_julia.sh` |
 
 Set `TGLFEP_DEBUG=1` (Fortran) and `TJLFEP_DEBUG=1` (Julia) for matched debug lines tagged `[TGLFEP_DBG]` and `[TJLFEP_DBG]`. Julia file runs should set `TJLFEP_FILE_ONLY=1` so `using TJLFEP` does not load IMAS/FUSE (unused on the string `runTHD` path). No sysimage is recommended while TJLFEP/TJLF are under active development.
 
@@ -100,7 +100,7 @@ single-radius path uses `examples/DIIID_202017C42_500ms_v3.1/input_singleradius_
 
 | N_BASIS | Fortran job | Julia job | Compare script |
 |---------|-------------|-----------|----------------|
-| 6 | `TGLFEP_nb6` | `TJLFEP_nb6` | `compare_debug_nb6.sh` |
+| 6 | `TGLFEP_nb6` | `TJLFEP_nb6` | `build/verify/compare_debug_nb6.sh` |
 
 Nb6 single-radius match (2026-05-18): SFmin 2.8125, n_EP/n_e 96.1%, β_crit 4.46%.
 
@@ -111,10 +111,10 @@ are archived under `attic/build/`.
 
 | Job | Code | Script |
 |-----|------|--------|
-| `TGLFEP_nb6_s20_10n` | Fortran | `build/batch_debug_nb6_fortran_scan20_10n.sh` |
-| `TJLFEP_nb6_s20_10n` | Julia | `build/batch_debug_nb6_julia_scan20_10n.sh` |
+| `TGLFEP_nb6_s20_10n` | Fortran | `build/verify/batch_debug_nb6_fortran_scan20_10n.sh` |
+| `TJLFEP_nb6_s20_10n` | Julia | `build/verify/batch_debug_nb6_julia_scan20_10n.sh` |
 
-Compare: `build/compare_debug_nb6_scan20.sh` → `build/compare_nb6_scan20_plots/`.
+Compare: `build/verify/compare_debug_nb6_scan20.sh` → `build/compare_nb6_scan20_plots/`.
 
 At scan radii (`IR_EXP`): SFmin max rel err ~0.03%; α(dn/dr) ~0.5%; α(dp/dr) ~0.4%. Full reproduction steps: `docs/REPRODUCE_FORTRAN_MATCH.md`.
 
@@ -145,7 +145,7 @@ GPUs). That is why the 5N/10N/20N walls are ~tied — a GPU-worker **sysimage**
 (removing the JIT) is the next lever and should push the scan toward ~2–3 min and
 re-expose the more-GPUs/radius advantage.
 
-Scripts: `build/mps-scan-wrapper.sh` + `build/batch_run_scan20_5N.sh` (the
+Scripts: `build/common/mps-scan-wrapper.sh` + `build/run/batch_run_scan20_5N.sh` (the
 validated production layout; the 20N/10N layouts are archived under `attic/build/`,
 generalized by `GPUS_PER_RADIUS`). The GPU eigenvector inverse-iteration solve
 lives in TJLF (`_gpu_lu_solve!`, CUSOLVER getrf/getrs), gated by

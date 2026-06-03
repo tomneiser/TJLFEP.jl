@@ -36,8 +36,9 @@ Manifest-v*.toml
 Manifest.toml.*.bak
 
 # Experimental MPS / eigensolver benchmark + profiling scratch (one-off, regenerable).
-# Production keepers (mps-scan-wrapper.sh, run_gacode_scan20_mps_task.jl) are tracked
-# explicitly and not matched below.
+# Production keepers (common/mps-scan-wrapper.sh, common/run_gacode_scan20_mps_task.jl)
+# live in build/ subdirectories and are tracked explicitly; the scratch patterns below
+# only match one-off scripts at the build/ top level.
 build/batch_bench_*.sh
 build/batch_diag_*.sh
 build/batch_probe_*.sh

@@ -15,10 +15,11 @@ TJLF >= 1.2.4 provides the `use_gpu` kwarg and the `TJLFCUDAExt` /
 
 ## Julia environment
 
-```bash
-module load julia/1.11.7
-export JULIA_DEPOT_PATH=$PSCRATCH/.julia   # optional, site-specific
+Julia **1.11+** (1.11.7 or the default NERSC `juliaup` 1.12+). On HPC, load the
+module (e.g. `module load julia` on Perlmutter); optionally point
+`JULIA_DEPOT_PATH` at scratch if your home directory is small or slow.
 
+```bash
 cd TJLFEP
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 ```
@@ -81,9 +82,9 @@ Inputs: `examples/DIIID_202017C42_500ms_v3.1/input.gacode` +
 
 | Step | Command |
 |------|---------|
-| Fortran | `cd build && sbatch batch_debug_nb6_fortran_scan20_10n.sh` |
-| Julia | `cd build && sbatch batch_debug_nb6_julia_scan20_10n.sh` |
-| Compare | `FORTRAN_DIR=fortran_runs/debug_nb6_scan20_10n_<FJOB> JULIA_DIR=debug_out_nb6_scan20_<JJOB>_dist FILE_DIR=fileInput_nb6_scan20_10n_<JJOB> ./compare_debug_nb6_scan20.sh` |
+| Fortran | `cd build && sbatch verify/batch_debug_nb6_fortran_scan20_10n.sh` |
+| Julia | `cd build && sbatch verify/batch_debug_nb6_julia_scan20_10n.sh` |
+| Compare | `FORTRAN_DIR=fortran_runs/debug_nb6_scan20_10n_<FJOB> JULIA_DIR=debug_out_nb6_scan20_<JJOB>_dist FILE_DIR=fileInput_nb6_scan20_10n_<JJOB> ./verify/compare_debug_nb6_scan20.sh` |
 
 Inputs: `examples/DIIID_202017C42_500ms_v3.1/input_scan20_nb6.TGLFEP`
 (`N_BASIS=6`, `SCAN_N=20`, `IRS=2`).
@@ -99,7 +100,7 @@ Plots: `build/compare_nb6_scan20_plots/` (created by the compare script; gitigno
 
 | N_BASIS | Single radius | SCAN_N=20 (10 nodes) |
 |---------|---------------|----------------------|
-| 6 | `batch_debug_nb6_{fortran,julia}.sh` + `compare_debug_nb6.sh` | `batch_debug_nb6_*_scan20_10n.sh` + `compare_debug_nb6_scan20.sh` |
+| 6 | `verify/batch_debug_nb6_{fortran,julia}.sh` + `verify/compare_debug_nb6.sh` | `verify/batch_debug_nb6_*_scan20_10n.sh` + `verify/compare_debug_nb6_scan20.sh` |
 
 Larger-basis (nb16/nb32) verification variants from development are preserved in
 `attic/build/` if needed.

@@ -70,8 +70,8 @@ runTHD(dd, rho, OptionsDict; use_gpu=true)   # see examples/ITER/ITERstructExamp
 ```
 
 On Perlmutter, the batch wrappers in `build/` drive these on Slurm; start with
-`sbatch build/batch_smoke_test.sh` (capability 2). See `build/README.md` for the
-full per-capability script index.
+`cd build && sbatch run/batch_smoke_test.sh` (capability 2). See `build/README.md`
+for the full per-capability script index.
 
 ## Verification against Fortran
 
@@ -82,10 +82,10 @@ scripts default to the shared Fortran build at
 
 ```bash
 cd build
-sbatch batch_debug_nb6_fortran_scan20_10n.sh   # Fortran reference
-sbatch batch_debug_nb6_julia_scan20_10n.sh     # Julia
+sbatch verify/batch_debug_nb6_fortran_scan20_10n.sh   # Fortran reference
+sbatch verify/batch_debug_nb6_julia_scan20_10n.sh     # Julia
 # then overlay:
-FORTRAN_DIR=... JULIA_DIR=... FILE_DIR=... ./compare_debug_nb6_scan20.sh
+FORTRAN_DIR=... JULIA_DIR=... FILE_DIR=... ./verify/compare_debug_nb6_scan20.sh
 ```
 
 Agreement at the scan radii: `SFmin` max relative error ~0.03%; α(dn/dr) ~0.5%.
@@ -99,7 +99,7 @@ one radius against the archived Fortran golden output. Full steps:
 20-radius scan on Perlmutter; Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
 SlurmClusterManager) vs Julia GPU (5 A100 nodes, MPS team), all with sysimages.
 
-![Wallclock vs N_BASIS](docs/img/scan20_timing_lines.png)
+![Wallclock vs N_BASIS](docs/plots/scan20_timing_lines.png)
 
 | N_BASIS | Fortran CPU (s) | Julia CPU (s) | Julia GPU (s) | GPU speedup vs Fortran |
 |--------:|----------------:|--------------:|--------------:|-----------------------:|
@@ -110,8 +110,8 @@ SlurmClusterManager) vs Julia GPU (5 A100 nodes, MPS team), all with sysimages.
 
 The GPU eigensolver wins decisively as the basis (and therefore the dense
 eigenproblem) grows: at the production `N_BASIS=32` it is **6.8× faster** than the
-Fortran CPU reference. Data: `docs/img/scan20_timing.csv`. Reproduce with
-`build/submit_timing_vs_nbasis.sh` (capability 4).
+Fortran CPU reference. Data: `docs/plots/scan20_timing.csv`. Reproduce with
+`build/timing/submit_timing_vs_nbasis.sh` (capability 4).
 
 ## Citation
 
