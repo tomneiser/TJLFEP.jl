@@ -112,3 +112,9 @@ The GPU eigensolver wins decisively as the basis (and therefore the dense
 eigenproblem) grows: at the production `N_BASIS=32` it is **6.8× faster** than the
 Fortran CPU reference. Data: `docs/img/scan20_timing.csv`. Reproduce with
 `build/submit_timing_vs_nbasis.sh` (capability 4).
+
+## Citation
+
+If this software contributes to an academic publication, please cite it as follows:
+
+> T.F. Neiser, D. Sun, B. Agnew, T. Slendebroek, O. Meneghini, B.C. Lyons, A. Ghiozzi, J. McClenaghan, G. Staebler and J. Candy, _TJLF: The quasi-linear model of gyrokinetic transport TGLF translated to Julia_, APS Meeting Abstracts (2024)
