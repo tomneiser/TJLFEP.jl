@@ -11,6 +11,7 @@ using TJLF
 using TJLF: InputTJLF  # consolidated single input type (re-exported below)
 if !_FILE_ONLY
     using IMAS
+    import GACODE
     using TurbulentTransport
 end
 using Plots
