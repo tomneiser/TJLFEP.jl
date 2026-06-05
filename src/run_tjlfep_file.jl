@@ -1,10 +1,10 @@
 using Distributed
 using Serialization
 
-"""Unpack `mainsub` return for PROCESS_IN=5: `((growth, ep, mt), buffers)`."""
+"""Unpack `mainsub` return for PROCESS_IN=5: `((growth, ep, mt, marginal_ql), buffers)`."""
 function _unpack_mainsub!(ret)
-    (growth, ep, mt), _buffers = ret
-    return growth, ep, mt
+    (growth, ep, mt, marginal_ql), _buffers = ret
+    return growth, ep, mt, marginal_ql
 end
 
 """Run mainsub for one scan index (radius). Used by threads and distributed loops."""
@@ -18,6 +18,7 @@ function _runTHD_radius!(
     stdout_lock::Union{ReentrantLock,Nothing} = nothing,
     inner::Symbol = :threads,
     team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+    ql_flux_scan::Bool = false,
 )
     arrTGLFEP[i].IR = arrTGLFEP[i].IR_EXP[i]
     ir = arrTGLFEP[i].IR
@@ -31,8 +32,9 @@ function _runTHD_radius!(
             println("=============================================================")
         end
     end
-    growth, ep, mt = _unpack_mainsub!(
-        TJLFEP.mainsub(arrTGLFEP[i], arrMTGLF[i], printout; use_gpu=use_gpu, inner=inner, team=team))
+    growth, ep, mt, _ = _unpack_mainsub!(
+        TJLFEP.mainsub(arrTGLFEP[i], arrMTGLF[i], printout; use_gpu=use_gpu, inner=inner, team=team,
+                       ql_flux_scan=ql_flux_scan))
     arrgrowth[i] = growth
     arrTGLFEP[i] = ep
     arrMTGLF[i] = mt
@@ -99,6 +101,7 @@ function _runTHD_core!(
     parallel::Symbol=:auto,
     inner::Symbol=:threads,
     team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
+    ql_flux_scan::Bool=false,
 )
     ni, Ti, dlnnidr, dlntidr = expro.ni, expro.Ti, expro.dlnnidr, expro.dlntidr
 
@@ -123,7 +126,8 @@ function _runTHD_core!(
         # kwscale_scan scope short-circuits (no concurrent set_num_threads)
         TJLF.with_blas_threads(1) do
         Threads.@threads for i in 1:n_ir
-            _runTHD_radius!(i, arrTGLFEP, arrMTGLF, arrgrowth, printout, use_gpu; stdout_lock=stdout_lock, inner=inner, team=team)
+            _runTHD_radius!(i, arrTGLFEP, arrMTGLF, arrgrowth, printout, use_gpu;
+                            stdout_lock=stdout_lock, inner=inner, team=team, ql_flux_scan=ql_flux_scan)
         end
         end
     elseif par === :distributed
@@ -136,14 +140,14 @@ function _runTHD_core!(
             ep.FACTOR_IN = ep.FACTOR[i]
             println("worker $(myid()) on $(gethostname()): i=$i ir=$ir start")
             flush(stdout)
-            ret = TJLFEP.mainsub(ep, mt, printout; use_gpu=use_gpu)
+            ret = TJLFEP.mainsub(ep, mt, printout; use_gpu=use_gpu, ql_flux_scan=ql_flux_scan)
             println("worker $(myid()) on $(gethostname()): i=$i ir=$ir done")
             flush(stdout)
             return ret
         end, 1:n_ir)
         results = [_unpack_mainsub!(p) for p in pmap_outputs]
         all_buffers = [p[2] for p in pmap_outputs]
-        for (i, (growth, ep, mt)) in enumerate(results)
+        for (i, (growth, ep, mt, _)) in enumerate(results)
             arrgrowth[i] = growth
             arrTGLFEP[i] = ep
             arrMTGLF[i] = mt
@@ -391,7 +395,8 @@ end
 
 function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::String;
                 printout::Bool=false, use_gpu::Bool=false, parallel::Symbol=:auto,
-                inner::Symbol=:threads, team::Union{Nothing,AbstractVector{<:Integer}}=nothing)
+                inner::Symbol=:threads, team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
+                ql_flux_scan::Bool=_ql_flux_scan_env())
 
     # Auto-detect device via TJLF.pick_device(:auto); shadows the use_gpu parameter.
     # Thread safety: Threads.@threads runs each iteration in a separate Julia task.
@@ -415,7 +420,8 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
         gammaE=gammaE, gammap=gammap, omegaGAM=omegaGAM,
     )
     _apply_runthd_expro_setup!(Options, profile, expro)
-    return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel, inner=inner, team=team)
+    return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel,
+                         inner=inner, team=team, ql_flux_scan=ql_flux_scan)
 end
 
 """
@@ -442,10 +448,12 @@ function runTHD_from_gacode(
     parallel::Symbol=:auto,
     inner::Symbol=:threads,
     team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
+    ql_flux_scan::Bool=_ql_flux_scan_env(),
 )
     Options, profile, expro = preprocess_gacode_inputs(gacode_file, tglfep_file)
     _apply_runthd_expro_setup!(Options, profile, expro)
-    return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel, inner=inner, team=team)
+    return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel,
+                         inner=inner, team=team, ql_flux_scan=ql_flux_scan)
 end  # runTHD_from_gacode
 
 """Apply `tjlfep_complete_output` padding on `SFmin`, then write α profiles (matches `_runTHD_core`)."""
@@ -581,6 +589,7 @@ function run_gacode_scan_task(
     printout::Bool=false,
     inner::Symbol=:threads,
     team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
+    ql_flux_scan::Bool=_ql_flux_scan_env(),
 )
     mkpath(out_dir)
     Options, profile, expro = preprocess_gacode_inputs(gacode_file, tglfep_file)
@@ -598,8 +607,8 @@ function run_gacode_scan_task(
     logmsg = printout ? println : (_, args...) -> nothing
     logmsg("scan_index=$scan_index ir=$ir use_gpu=$use_gpu host=$(gethostname()) inner=$inner team=$(team === nothing ? "—" : length(team))")
 
-    ret = TJLFEP.mainsub(ep, mt, printout; use_gpu=use_gpu, inner=inner, team=team)
-    growth, ep_out, mt_out = _unpack_mainsub!(ret)
+    ret = TJLFEP.mainsub(ep, mt, printout; use_gpu=use_gpu, inner=inner, team=team, ql_flux_scan=ql_flux_scan)
+    growth, ep_out, mt_out, _ = _unpack_mainsub!(ret)
     sfmin = ep_out.FACTOR_IN
     width = coalesce(ep_out.WIDTH_IN, ep_out.WIDTH, NaN)
     kymark = coalesce(ep_out.KYMARK, NaN)

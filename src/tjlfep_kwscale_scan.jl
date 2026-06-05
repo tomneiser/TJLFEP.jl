@@ -57,13 +57,14 @@ function _kw_combo(i::Int, k::Int, k_max::Int, nfactor::Int, nefwid::Int,
 
     # eigen_cache=nothing: the sequential-seeding optimization is incompatible with the
     # parallel (threaded or distributed) execution here, so each combo starts cold.
-    gamma_out, freq_out, inputTJLF, _, wavefunction_buffer =
+    gamma_out, freq_out, inputTJLF, _, wavefunction_buffer, dep_out, ep_flux_out =
         TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out; eigen_cache=nothing, use_gpu=use_gpu)
 
     NM = local_inputsEP.NMODES
     return (
         ikyhat = ikyhat, iefwid = iefwid, ifactor = ifactor,
         gamma_out = gamma_out[1:NM], freq_out = freq_out[1:NM],
+        dep_out = dep_out[1:NM], ep_flux_out = ep_flux_out[1:NM],
         LKEEP      = local_inputsEP.LKEEP[1:NM],
         LTEARING   = local_inputsEP.LTEARING[1:NM],
         L_TH_PINCH = local_inputsEP.L_TH_PINCH[1:NM],
@@ -83,12 +84,13 @@ end
 
 # Scatter one _kw_combo result into the shared per-combo arrays. Identical for the
 # threaded and distributed paths, so the reduction below the loop sees the same data.
-function _scatter_combo!(r, growthrate, frequency, lkeep_i, ltearing_i, l_th_pinch_i,
+function _scatter_combo!(r, growthrate, frequency, dep_scan, lkeep_i, ltearing_i, l_th_pinch_i,
                          l_i_pinch_i, l_e_pinch_i, l_EP_pinch_i, l_theta_sq_i, l_QL_ratio_i)
     ik = r.ikyhat; iw = r.iefwid; ifa = r.ifactor
     for n in eachindex(r.gamma_out)
         growthrate[ik, iw, ifa, n]   = r.gamma_out[n]
         frequency[ik, iw, ifa, n]    = r.freq_out[n]
+        dep_scan[ik, iw, ifa, n]     = r.dep_out[n]
         lkeep_i[ik, iw, ifa, n]      = r.LKEEP[n]
         ltearing_i[ik, iw, ifa, n]   = r.LTEARING[n]
         l_th_pinch_i[ik, iw, ifa, n] = r.L_TH_PINCH[n]
@@ -153,7 +155,8 @@ end
 
 function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool = true;
                       use_gpu::Bool = false, inner::Symbol = :threads,
-                      team::Union{Nothing,AbstractVector{<:Integer}} = nothing) where {T<:Real}
+                      team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                      ql_flux_scan::Bool = false) where {T<:Real}
     # These are for testing purposes:
     #baseDirectory = "/Users/benagnew/TJLF.jl/outputs/tglfep_tests/input.MTGLF"
     #inputsPR = readMTGLF(baseDirectory)
@@ -175,6 +178,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
 
     growthrate = zeros(T, nkyhat, nefwid, nfactor, inputsEP.NMODES)
     growthrate_out = zeros(T, nkyhat, nefwid, nfactor, inputsEP.NMODES)
+    dep_scan = zeros(T, nkyhat, nefwid, nfactor, inputsEP.NMODES)
 
     frequency = zeros(T, nkyhat, nefwid, nfactor, inputsEP.NMODES)
     frequency_out = zeros(T, nkyhat, nefwid, nfactor, inputsEP.NMODES)
@@ -282,7 +286,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         _t_ser = _probe ? time_ns() : UInt64(0)
         for i = 1:nkwf
             r = results[i]
-            _scatter_combo!(r, growthrate, frequency, lkeep_i, ltearing_i, l_th_pinch_i,
+            _scatter_combo!(r, growthrate, frequency, dep_scan, lkeep_i, ltearing_i, l_th_pinch_i,
                             l_i_pinch_i, l_e_pinch_i, l_EP_pinch_i, l_theta_sq_i, l_QL_ratio_i)
             if r.wavefunction_buffer !== nothing
                 push!(wavebuffer_all, (r.str_wf_file, r.wavefunction_buffer))
@@ -584,8 +588,15 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         inputsEP.KYMARK = kyhat[ikyhat_mark]
     end
 
+    marginal_ql = extract_marginal_ql(
+        inputsEP, inputsPR, growthrate, dep_scan, factor;
+        imark=imark, ikyhat_mark=ikyhat_mark, iefwid_mark=iefwid_mark,
+        imark_min=imark_min, nkyhat=nkyhat, nefwid=nefwid, nfactor=nfactor,
+        use_gpu=use_gpu, use_flux_scan=ql_flux_scan,
+    )
+
     # Return to the driver these values and the final growthrate values of the last scan.
-    return growthrate, inputsEP, inputsPR, scalefactor_buffer, wavebuffer_all
+    return growthrate, inputsEP, inputsPR, marginal_ql, scalefactor_buffer, wavebuffer_all
 
     # This function will be done for however many radii you are testing. These values do not interact in the driver. 
 end

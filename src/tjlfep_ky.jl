@@ -173,6 +173,7 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     theta_2_moment = fill(zero(T), 4)
     # TGLFEP hard-codes nmodes = 4, so that is why these are all defined like this.
     DEP = fill(T(NaN), 4)
+    ep_ql_flux = fill(T(NaN), 4)
     chi_th = fill(T(NaN), 4)
     chi_i = fill(T(NaN), 4)
     chi_i_cond = fill(T(NaN), 4)
@@ -239,6 +240,7 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
 
         th_eff_grad = i_eff_grad + inputTJLF.RLTS[1]*inputTJLF.AS[1]
         th_QL_flux = i_QL_cond_flux[n] + e_QL_cond_flux[n]
+        ep_ql_flux[n] = EP_QL_flux
         DEP[n] = EP_QL_flux / (inputTJLF.AS[inputsEP.IS_EP+1]*inputTJLF.RLNS[inputsEP.IS_EP+1])
         chi_e[n] = e_QL_flux / (inputTJLF.RLTS[1]*inputTJLF.AS[1])
         chi_e_cond[n] = e_QL_cond_flux[n] / (inputTJLF.RLTS[1]*inputTJLF.AS[1])
@@ -333,6 +335,5 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
         Threads.atomic_add!(_PROBE_N, 1)
     end
     # This is the end of ky.jl. Returning values will likely need to be changed later.
-    return gamma_out, freq_out, inputTJLF, eigen_out, wavefunction_buffer
-    # return gamma_out, freq_out, inputTJLF
+    return gamma_out, freq_out, inputTJLF, eigen_out, wavefunction_buffer, DEP, ep_ql_flux
 end

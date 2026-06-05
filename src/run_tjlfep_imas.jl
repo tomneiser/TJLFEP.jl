@@ -125,7 +125,9 @@ end
 
 IMAS/FUSE entry point (not loaded when `TJLFEP_FILE_ONLY=1`).
 """
-function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any}; printout::Bool=false, saveFiles::Bool=false, dir::String="ddFiles", use_gpu::Bool=false)
+function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any};
+                printout::Bool=false, saveFiles::Bool=false, dir::String="ddFiles", use_gpu::Bool=false,
+                ql_flux_scan::Bool=false)
 
     Options, profile, extraEP, expro_state = preprocess_imas_inputs(dd, rho, OptionsDict; verbose=printout)
     ni = expro_state.ni
@@ -172,7 +174,7 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
         println("i is ", i, " ir is ", ir)
         println("=============================================================")
 
-        return TJLFEP.mainsub(input1, input2, printout; use_gpu=use_gpu)
+        return TJLFEP.mainsub(input1, input2, printout; use_gpu=use_gpu, ql_flux_scan=ql_flux_scan)
     end, 1:n_ir)
 
     # pmap_outputs is a Vector of 2-tuples: ((growth, tglfep_i, mtglf_i), (scalefactor_buffer, wavebuffer_all))
@@ -450,5 +452,6 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
             close(io3)
         end
     end # process 4 || 5
-    return width, kymark_out, SFmin, dpdr_crit_out, dndr_crit_out
+    marginal_ql = [r[4] for r in results]
+    return width, kymark_out, SFmin, dpdr_crit_out, dndr_crit_out, marginal_ql
 end  # End of struct-based runTHD
