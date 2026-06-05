@@ -218,6 +218,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
     # across combos). Replaces the old per-scan placeholder InputTJLF used only for these.
     zs_ep = T(NaN); mass_ep = T(NaN); taus_ep = T(NaN)
     imark_min = 0
+    imark = fill(nfactor + 1, (nkyhat, nefwid))  # declared here so its final-k value survives the loop (used by extract_marginal_ql below)
     f_guess = fill(T(NaN), (nkyhat, nefwid))
     ikyhat_mark::Int64 = 0
     iefwid_mark::Int64 = 0
