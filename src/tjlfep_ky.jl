@@ -85,17 +85,43 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     # TJLF.run hardcodes zeros(Float64,...) for result arrays, which fails for Dual.
     # _tjlf_run_dual is identical but uses zeros(T,...). T===Float64 is a compile-time
     # check so Julia eliminates the unused branch for each specialization.
-    if T === Float64
-        if _pb
-            _tr = time_ns()
-            result = TJLF.run(inputTJLF; use_gpu=use_gpu)
-            Threads.atomic_add!(_PROBE_RUN, (time_ns() - _tr) / 1e9)
+    # The TGLF dispersion matrix can be singular for pathological inputs — most
+    # commonly the separatrix scan point (ir = NR, rho ~ 1.0) of a synthesized
+    # (e.g. FUSE) equilibrium where the edge gradients (RLTS/RLNS) blow up. A
+    # singular matrix means there is no resolvable eigenmode, so treat the combo
+    # as stable (no AE drive) instead of letting the SingularException crash the
+    # whole scan.
+    local result
+    try
+        if T === Float64
+            if _pb
+                _tr = time_ns()
+                result = TJLF.run(inputTJLF; use_gpu=use_gpu)
+                Threads.atomic_add!(_PROBE_RUN, (time_ns() - _tr) / 1e9)
+            else
+                result = TJLF.run(inputTJLF; use_gpu=use_gpu)
+            end
         else
-            result = TJLF.run(inputTJLF; use_gpu=use_gpu)
+            quit()
+            result = _tjlf_run_dual(inputTJLF, T; use_gpu=use_gpu)
         end
-    else
-        quit()
-        result = _tjlf_run_dual(inputTJLF, T; use_gpu=use_gpu)
+    catch err
+        err isa SingularException || rethrow()
+        @warn "TJLFEP_ky: singular TGLF dispersion matrix (ir=$(inputsEP.IR), ky=$(inputTJLF.KY), width=$(inputTJLF.WIDTH)); treating combo as stable (no AE mode)" maxlog = 5
+        NM = inputTJLF.NMODES
+        inputsEP.LKEEP .= false
+        inputsEP.LTEARING .= false
+        inputsEP.L_I_PINCH .= false
+        inputsEP.L_E_PINCH .= false
+        inputsEP.L_TH_PINCH .= false
+        inputsEP.L_EP_PINCH .= false
+        inputsEP.L_QL_RATIO .= false
+        inputsEP.L_THETA_SQ .= false
+        if _pb
+            Threads.atomic_add!(_PROBE_KY, (time_ns() - _t_ky) / 1e9)
+            Threads.atomic_add!(_PROBE_N, 1)
+        end
+        return fill(T(0), NM), fill(T(0), NM), inputTJLF, nothing, nothing, fill(T(NaN), 4), fill(T(NaN), 4)
     end
     gamma_out        = result.eigenvalue[:, 1, 1]   # [nmodes], ky=1
     freq_out         = result.eigenvalue[:, 1, 2]   # [nmodes], ky=1

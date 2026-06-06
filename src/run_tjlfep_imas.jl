@@ -402,7 +402,7 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
             
             if (Options.INPUT_PROFILE_METHOD == 2)
                 dpdr_crit .= 10000.0
-                dpdr_EP[:] .= ni[:].*Ti[:].*(dlnnidr[:].+dlntidr[:]).*0.16022
+                dpdr_EP = ni .* Ti .* (dlnnidr .+ dlntidr) .* 0.16022
                 for i = 1:Options.SCAN_N
                     if (SFmin[i] < 9000.0)
                         if ((Options.PROCESS_IN == 4) || (Options.PROCESS_IN == 5))
