@@ -1,6 +1,69 @@
 using Distributed
 using Serialization
 
+"""
+    _with_mps_team(f, n_team::Int)
+
+Run `f(team)` where `team` is a vector of `n_team` worker pids that all share this
+process's pinned GPU as NVIDIA MPS clients (so the within-radius kw-scan eigensolves
+overlap on the device via Hyper-Q). Requires the MPS control daemon to be running on
+the node and `CUDA_MPS_PIPE_DIRECTORY` in the env (the run_tjlfep / gacode batch scripts
+set these up). The team is torn down (`rmprocs`) on exit.
+
+`n_team <= 0` runs `f(nothing)` (single-process threaded inner). If team spawn fails
+for any reason (notably: `addprocs` is only valid from the cluster master, so a nested
+call from a Distributed worker is not supported), this falls back to `f(nothing)` with a
+warning so the run never breaks. Shared by the gacode-file MPS task and the FUSE-dd
+`runTHD(::IMAS.dd)` path.
+"""
+function _with_mps_team(f, n_team::Int)
+    if n_team <= 0
+        return f(nothing)
+    end
+    team = Int[]
+    try
+        base_env = Dict{String,String}()
+        for k in ("JULIA_DEPOT_PATH", "CUDA_MPS_PIPE_DIRECTORY", "CUDA_MPS_LOG_DIRECTORY",
+                  "JULIA_CUDA_USE_COMPAT", "JULIA_CUDA_MEMORY_POOL")
+            haskey(ENV, k) && (base_env[k] = ENV[k])
+        end
+        base_env["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
+        vis = get(ENV, "CUDA_VISIBLE_DEVICES", "0")
+        threads_per = parse(Int, get(ENV, "JULIA_WORKER_THREADS", "2"))
+        proj = pkgdir(TJLFEP)
+        sysimg = get(ENV, "TJLFEP_GPU_SYSIMAGE", "")
+        sysflag = (!isempty(sysimg) && isfile(sysimg)) ? `--sysimage=$(sysimg)` : ``
+        for _ in 1:n_team
+            env = copy(base_env)
+            env["CUDA_VISIBLE_DEVICES"] = vis
+            pids = addprocs(1; exeflags=`--project=$(proj) -t $(threads_per) --startup-file=no $(sysflag)`, env=env)
+            append!(team, pids)
+        end
+        # Load the GPU eigensolve stack + pin the shared GPU on the team workers. Use
+        # remotecall_eval (what @everywhere lowers to) so the `using` statements run at
+        # top level on the workers -- @everywhere itself cannot be expanded inside a function.
+        Distributed.remotecall_eval(Main, team, quote
+            using CUDA
+            using TJLFEP
+            using TJLF
+            using LinearAlgebra
+            LinearAlgebra.BLAS.set_num_threads(1)
+            CUDA.functional() && CUDA.device!(first(CUDA.devices()))
+        end)
+        return f(team)
+    catch err
+        @warn "_with_mps_team: team setup failed; falling back to single-process threaded inner" exception = (err, catch_backtrace())
+        return f(nothing)
+    finally
+        if !isempty(team)
+            try
+                rmprocs(team)
+            catch
+            end
+        end
+    end
+end
+
 """Unpack `mainsub` return for PROCESS_IN=5: `((growth, ep, mt, marginal_ql), buffers)`."""
 function _unpack_mainsub!(ret)
     (growth, ep, mt, marginal_ql), _buffers = ret

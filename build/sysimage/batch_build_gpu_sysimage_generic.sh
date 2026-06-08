@@ -24,13 +24,18 @@ module load julia/1.11.7
 export JULIA_DEPOT_PATH="${PSCRATCH}/.julia"
 mkdir -p "${JULIA_DEPOT_PATH}/compiled"
 
-# GENERIC image: TJLFEP_FILE_ONLY must be UNSET/0 so the baked _FILE_ONLY const is false and
-# IMAS/FUSE/TurbulentTransport are loaded into the image. JULIA_CUDA_USE_COMPAT=false matches
-# the runtime env.
-unset TJLFEP_FILE_ONLY || true
+# GENERIC image: IMAS/GACODE/TurbulentTransport are weak deps of TJLFEP and load the
+# TJLFEPIMASExt extension (the dd/FUSE actor path) automatically when present. The build
+# project (TJLFEP_ROOT) precompiles the ext because the weak deps are in its manifest, and
+# the precompile_execution file `using`s FUSE -> the ext + FUSE are baked into the image.
+# JULIA_CUDA_USE_COMPAT=false matches the runtime env.
 export JULIA_CUDA_USE_COMPAT=false
 
 TJLFEP_ROOT="${TJLFEP_ROOT:-/pscratch/sd/t/tneiser/.julia/dev/TJLFEP}"
+# The generic image bakes the FUSE/IMAS stack, which can only be resolved from the FUSE
+# project (FUSE is not -- and cannot be -- a TJLFEP dep). build_gpu_sysimage_generic.jl
+# activates FUSE_ROOT and stacks TJLFEP_ROOT for PackageCompiler.
+export FUSE_ROOT="${FUSE_ROOT:-${TJLFEP_ROOT}/../FUSE}"
 cd "${TJLFEP_ROOT}/build"
 
 echo "=== TJLFEP GENERIC GPU sysimage build ==="
@@ -40,13 +45,10 @@ nvidia-smi -L 2>/dev/null | head -1 || true
 echo "TJLF: $(git -C "${TJLFEP_ROOT}/../TJLF" rev-parse --abbrev-ref HEAD 2>/dev/null) $(git -C "${TJLFEP_ROOT}/../TJLF" log -1 --oneline 2>/dev/null)"
 echo "TJLFEP: $(git -C "${TJLFEP_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null) $(git -C "${TJLFEP_ROOT}" log -1 --oneline 2>/dev/null)"
 
-# 1) Instantiate + precompile dependencies (FUSE/IMAS/CUDA/...).
-# 2) FORCE-recompile TJLFEP so its baked _FILE_ONLY const is false. An ENV change alone does
-#    NOT invalidate Julia's precompile cache, and the file-only build above left the depot's
-#    TJLFEP .ji at FILE_ONLY=true, so we must force a fresh compile here. This also restores
-#    the depot to the generic (dev-friendly) TJLFEP cache afterward.
+# Instantiate + precompile dependencies (FUSE/IMAS/CUDA/TurbulentTransport/...). With the
+# extension model there is no _FILE_ONLY const and no ENV-driven cache footgun, so no forced
+# recompile is needed: precompiling the project builds TJLFEPIMASExt (weak deps in manifest).
 julia --project="${TJLFEP_ROOT}" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
-julia --project="${TJLFEP_ROOT}" -e 'Base.compilecache(Base.identify_package("TJLFEP")); using TJLFEP; @assert !TJLFEP._FILE_ONLY "TJLFEP still compiled file-only; generic build aborted"; println("TJLFEP _FILE_ONLY=", TJLFEP._FILE_ONLY)'
 
 julia --project="${TJLFEP_ROOT}" -t "${SLURM_CPUS_PER_TASK:-32}" sysimage/build_gpu_sysimage_generic.jl
 
@@ -57,15 +59,30 @@ if [[ ! -f "${SO}" ]]; then
 fi
 ls -lh "${SO}"
 
-# Self-check: load the freshly built image with a clean ENV and assert it is GENERIC
-# (TJLFEP._FILE_ONLY == false, FUSE baked, IMAS actor entry points present). Fail loudly
-# otherwise so we never ship a silently-file-only "generic" image again.
-echo "=== verifying generic image (clean env) ==="
-env -u TJLFEP_FILE_ONLY julia --startup-file=no --sysimage="${SO}" --project="${TJLFEP_ROOT}" -e '
+# Self-check: load the freshly built image and assert it is GENERIC -- the TJLFEPIMASExt
+# extension is loaded (dd/FUSE actor path), FUSE is baked, and runTHD has the ::IMAS.dd
+# method. Fail loudly otherwise so we never ship a silently file-only "generic" image.
+echo "=== verifying generic image ==="
+julia --startup-file=no --sysimage="${SO}" --project="${TJLFEP_ROOT}" -e '
     fuse = Base.PkgId(Base.UUID("e64856f0-3bb8-4376-b4b7-c03396503992"), "FUSE")
-    @assert !TJLFEP._FILE_ONLY  "GENERIC build FAILED: baked TJLFEP._FILE_ONLY=true (file-only variant)"
+    ext = Base.get_extension(TJLFEP, :TJLFEPIMASExt)
+    @assert ext !== nothing  "GENERIC build FAILED: TJLFEPIMASExt not loaded (IMAS/GACODE/TurbulentTransport not baked)"
     @assert haskey(Base.loaded_modules, fuse)  "GENERIC build FAILED: FUSE not baked into image"
-    @assert isdefined(TJLFEP, :InputTGLFEP)  "GENERIC build FAILED: TJLFEP.InputTGLFEP missing (IMAS/FUSE actor path not compiled in)"
-    println("generic image OK: _FILE_ONLY=", TJLFEP._FILE_ONLY, "  FUSE baked + InputTGLFEP present")'
+    @assert length(methods(TJLFEP.runTHD)) >= 2  "GENERIC build FAILED: runTHD(::IMAS.dd) method missing (actor path not compiled in)"
+    println("generic image OK: TJLFEPIMASExt loaded, FUSE baked, runTHD methods=", length(methods(TJLFEP.runTHD)))'
+
+# Publish to the shared CFS location (the default run_tjlfep sysimage) with a .sha sidecar
+# recording the TJLFEP + TJLF git HEADs. run_tjlfep's staleness guard (_tjlfep_sysimage_ok)
+# compares this sidecar to the live source SHAs to decide reuse vs rebuild.
+CFS_DIR="/global/cfs/cdirs/m3739/TJLFEP"
+if mkdir -p "${CFS_DIR}" 2>/dev/null; then
+    cp -f "${SO}" "${CFS_DIR}/"
+    TJLFEP_SHA="$(git -C "${TJLFEP_ROOT}" rev-parse HEAD 2>/dev/null || echo "")"
+    TJLF_SHA="$(git -C "${TJLFEP_ROOT}/../TJLF" rev-parse HEAD 2>/dev/null || echo "")"
+    printf 'TJLFEP=%s\nTJLF=%s\n' "${TJLFEP_SHA}" "${TJLF_SHA}" > "${CFS_DIR}/$(basename "${SO}").sha"
+    echo "=== published to ${CFS_DIR}/$(basename "${SO}") (+ .sha: TJLFEP=${TJLFEP_SHA} TJLF=${TJLF_SHA}) ==="
+else
+    echo "WARNING: could not write ${CFS_DIR}; sysimage left at ${SO} only (run_tjlfep will JIT-fallback)"
+fi
 
 echo "=== GENERIC GPU sysimage build OK: ${SO} ==="

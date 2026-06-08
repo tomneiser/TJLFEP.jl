@@ -1,6 +1,11 @@
 module TJLFEP
-# File-based validation (dump.profile + runTHD string): set TJLFEP_FILE_ONLY=1 to skip IMAS/FUSE/TurbulentTransport.
-const _FILE_ONLY = get(ENV, "TJLFEP_FILE_ONLY", "0") == "1"
+# IMAS/FUSE entry points (`runTHD(::IMAS.dd)`, `preprocess_imas_inputs`, ...) live in the
+# TJLFEPIMASExt package extension (ext/TJLFEPIMASExt.jl), which Julia loads automatically
+# only when IMAS, GACODE, and TurbulentTransport are all present in the environment (e.g.
+# under FUSE). Loaded standalone, TJLFEP provides only the file-based path
+# (`runTHD(::String,...)` / `runTHD_from_gacode`) and stays light (no IMAS/HDF5/FUSE).
+# This replaces the former `TJLFEP_FILE_ONLY` ENV flag, which was fragile because ENV is
+# not part of Julia's precompile cache key.
 
 using Base.Threads
 using LinearAlgebra
@@ -9,11 +14,6 @@ using Printf
 using StaticArrays
 using TJLF
 using TJLF: InputTJLF  # consolidated single input type (re-exported below)
-if !_FILE_ONLY
-    using IMAS
-    import GACODE
-    using TurbulentTransport
-end
 using Plots
 
 include("tjlfep_modules.jl")
@@ -28,17 +28,19 @@ include("tjlfep_ql_extract.jl")
 include("mainsub.jl")
 include("tjlfep_complete_output.jl")
 include("run_tjlfep_file.jl")
-if !_FILE_ONLY
-    include("run_tjlfep_imas.jl")
-end
 
 include("tjlfep_generate_input.jl")
 
-if !_FILE_ONLY
-    include("context.jl")
-end
-
 include("plotCritGrads.jl")
+
+# Generic function bindings for the IMAS-path entry points implemented in
+# ext/TJLFEPIMASExt.jl. Declaring them here lets the extension add methods, and lets
+# TJLFEP export the names even when the extension is not loaded.
+function preprocess_imas_inputs end
+function save_imas_preprocessed_inputs end
+function remap_extraEP_for_fortran_save! end
+# SPMD per-radius entry point for the MPS-team layout (method in ext/TJLFEPIMASExt.jl).
+function runTHD_dd_radius end
 
 export profile, Options, InputTJLF  # InputTJLF is TJLF.InputTJLF (single consolidated type)
 export readMTGLF, readTGLFEP, TJLF_map, readEXPRO, save_TGLFEP, save_MTGLF, save_EXPRO, save_all
@@ -55,10 +57,10 @@ export run_gacode_scan_task, finalize_gacode_scan, slurm_array_task_id
 
 export TJLFEP_generate_input, readline_values
 
-if !_FILE_ONLY
-    export InputTGLFEP
-    export preprocess_imas_inputs, save_imas_preprocessed_inputs, remap_extraEP_for_fortran_save!
-end
+# IMAS-path entry points (methods provided by TJLFEPIMASExt when IMAS/GACODE/TurbulentTransport
+# are loaded). InputTGLFEP now lives in TurbulentTransport (use `TurbulentTransport.InputTGLFEP`).
+export preprocess_imas_inputs, save_imas_preprocessed_inputs, remap_extraEP_for_fortran_save!
+export runTHD_dd_radius
 
 export make_crit_grad_plots
 export TJLF

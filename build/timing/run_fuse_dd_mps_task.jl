@@ -1,0 +1,112 @@
+# Phase 2 of the FUSE-dd MPS-team SPMD layout: ONE radius of the SCAN_N scan, on ONE GPU, with
+# an MPS *team* (this is the verified DIII-D layout, run_gacode_scan20_mps_task.jl, but the inputs
+# come from the FUSE `dd` instead of an input.gacode file).
+#
+# 1 SLURM task = 1 radius = 1 GPU (pinned via CUDA_VISIBLE_DEVICES by mps-scan-wrapper.sh) + an
+# MPS_TEAM-sized pool of local worker processes that share that GPU as MPS clients (Hyper-Q). The
+# team is spawned at TOP LEVEL here (addprocs + @everywhere) -- exactly as in the gacode task --
+# and passed explicitly to runTHD_dd_radius, so there is no nested-master addprocs.
+#
+# Loads the phase-1 artifacts (dd_in.json + optionsdict.jls + rho_scan.jls) from TJLFEP_OUT_DIR,
+# runs the single radius SCAN_INDEX, and writes tasks/task_<SCAN_INDEX>.jls (the pmap-element the
+# phase-3 merge reassembles).
+#
+# Env knobs:
+#   SCAN_INDEX (set by mps-scan-wrapper.sh)  MPS_TEAM (8)  INNER (mps_team|threads)  USE_GPU (1)
+#   TJLFEP_OUT_DIR  TEAM_GPUS/CUDA_VISIBLE_DEVICES  JULIA_WORKER_THREADS (2)  TJLFEP_GPU_SYSIMAGE
+
+using Pkg
+
+const TJLFEP_ROOT = get(ENV, "TJLFEP_ROOT", normpath(@__DIR__, "..", ".."))
+const FUSE_ROOT = get(ENV, "FUSE_ROOT", normpath(TJLFEP_ROOT, "..", "FUSE"))
+Pkg.activate(FUSE_ROOT)
+push!(LOAD_PATH, TJLFEP_ROOT)
+
+@assert get(ENV, "USE_GPU", "") == "1" "run_fuse_dd_mps_task.jl is GPU-only; set USE_GPU=1"
+
+using CUDA
+let rv = CUDA.runtime_version()
+    rv >= v"12.6" || error("GPU run needs CUDA >= 12.6 for cusolverDnXgeev, but CUDA runtime is $rv. Load cudatoolkit/12.9.")
+end
+
+using Distributed
+
+const NTEAM = parse(Int, get(ENV, "MPS_TEAM", "8"))
+const THREADS_PER_WORKER = parse(Int, get(ENV, "JULIA_WORKER_THREADS", "2"))
+const INNER = Symbol(get(ENV, "INNER", "mps_team"))
+const TEAM_GPUS = let s = get(ENV, "TEAM_GPUS", get(ENV, "CUDA_VISIBLE_DEVICES", "0"))
+    String.(split(s, ',', keepempty=false))
+end
+const GPU_SYSIMAGE = get(ENV, "TJLFEP_GPU_SYSIMAGE", "")
+const _SYSIMG_FLAGS = (!isempty(GPU_SYSIMAGE) && isfile(GPU_SYSIMAGE)) ? `--sysimage=$(GPU_SYSIMAGE)` : ``
+
+if INNER === :mps_team
+    base_env = Dict{String,String}()
+    for k in ("JULIA_DEPOT_PATH", "CUDA_MPS_PIPE_DIRECTORY", "CUDA_MPS_LOG_DIRECTORY",
+              # JULIA_CUDA_USE_COMPAT=false is REQUIRED: CUDA.jl's forward-compat driver shim
+              # hangs in cuInit when initializing as an MPS client on Perlmutter.
+              "JULIA_CUDA_USE_COMPAT", "JULIA_CUDA_MEMORY_POOL")
+        haskey(ENV, k) && (base_env[k] = ENV[k])
+    end
+    base_env["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
+    for w in 1:NTEAM
+        env = copy(base_env)
+        env["CUDA_VISIBLE_DEVICES"] = TEAM_GPUS[(w - 1) % length(TEAM_GPUS) + 1]
+        # Team workers run the kw-scan eigensolves only -> TJLFEP project (CUDA/TJLF/TJLFEP),
+        # NOT FUSE. Matches run_gacode_scan20_mps_task.jl.
+        addprocs(1; exeflags=`--project=$(TJLFEP_ROOT) -t $(THREADS_PER_WORKER) --startup-file=no $(_SYSIMG_FLAGS)`,
+                 env=env)
+    end
+    @everywhere workers() begin
+        using CUDA
+        using TJLFEP
+        using TJLF
+        using LinearAlgebra
+        BLAS.set_num_threads(1)
+        CUDA.functional() && CUDA.device!(first(CUDA.devices()))
+    end
+end
+
+# Master loads IMAS + the TJLFEP IMAS extension (preprocess_imas_inputs/runTHD_dd_radius). Loading
+# IMAS + GACODE + TurbulentTransport triggers TJLFEPIMASExt without pulling all of FUSE at JIT;
+# under the baked CFS sysimage these are all instant.
+using IMAS
+import GACODE
+using TurbulentTransport
+using TJLFEP
+using TJLF
+using LinearAlgebra
+BLAS.set_num_threads(1)
+
+const OUT_DIR = get(() -> error("set TJLFEP_OUT_DIR"), ENV, "TJLFEP_OUT_DIR")
+const TASKS_DIR = joinpath(OUT_DIR, "tasks")
+const DD_IN_JSON = joinpath(OUT_DIR, "dd_in.json")
+const OPTIONSDICT_JLS = joinpath(OUT_DIR, "optionsdict.jls")
+const RHOSCAN_JLS = joinpath(OUT_DIR, "rho_scan.jls")
+@assert isfile(DD_IN_JSON) "missing $DD_IN_JSON (run prepare phase first)"
+
+using Serialization
+dd = IMAS.json2imas(DD_IN_JSON)
+OptionsDict = Serialization.deserialize(OPTIONSDICT_JLS)
+rho_scan = Serialization.deserialize(RHOSCAN_JLS)
+scan_n = OptionsDict["SCAN_N"]
+
+const SCAN_INDEX = haskey(ENV, "SCAN_INDEX") ? parse(Int, ENV["SCAN_INDEX"]) :
+    (parse(Int, get(ENV, "SLURM_PROCID", "0")) + 1)
+@assert 1 <= SCAN_INDEX <= scan_n "SCAN_INDEX=$SCAN_INDEX invalid for SCAN_N=$scan_n"
+
+const TEAM = INNER === :mps_team ? workers() : nothing
+println("=== fuse-dd scan task (inner=$INNER) ===")
+println("worker sysimage=", isempty(_SYSIMG_FLAGS.exec) ? "<none, JIT>" : GPU_SYSIMAGE)
+println("scan_index=$SCAN_INDEX / $scan_n  team=$(INNER === :mps_team ? nworkers() : 0) workers  ",
+        "threads/worker=$THREADS_PER_WORKER  team_gpus=$(join(TEAM_GPUS, ','))")
+println("OUT_DIR=$OUT_DIR")
+println("CUDA_VISIBLE_DEVICES=$(get(ENV, "CUDA_VISIBLE_DEVICES", "<unset>")) MPS=$(get(ENV, "CUDA_MPS_PIPE_DIRECTORY", "<none>"))")
+println("GPU=", CUDA.functional() ? CUDA.name(first(CUDA.devices())) : "n/a")
+flush(stdout)
+
+t0 = time()
+task_file = TJLFEP.runTHD_dd_radius(dd, rho_scan, OptionsDict, SCAN_INDEX;
+    out_dir=TASKS_DIR, use_gpu=true, inner=INNER, team=TEAM)
+println("OK scan_index=$SCAN_INDEX -> $task_file in $(round(time() - t0; digits=1)) s")
+flush(stdout)

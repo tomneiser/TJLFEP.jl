@@ -1,10 +1,30 @@
+module TJLFEPIMASExt
+
+# IMAS/FUSE entry points for TJLFEP. This package extension is loaded automatically
+# by Julia only when IMAS, GACODE, and TurbulentTransport are all available in the
+# environment (e.g. under FUSE). When TJLFEP is loaded standalone for the
+# file-based path (`runTHD(::String,...)` / `runTHD_from_gacode`), this extension is
+# NOT loaded, so `using TJLFEP` stays light (no IMAS/HDF5/FUSE pulled in).
+#
+# Previously this code lived in src/run_tjlfep_imas.jl behind a `TJLFEP_FILE_ONLY`
+# ENV flag and a precompile-time `_FILE_ONLY` const. That was fragile because ENV is
+# not part of Julia's precompile cache key. The weakdep/extension model makes the
+# split automatic and cache-correct.
+
+using TJLFEP
+using IMAS
+import GACODE
+using TurbulentTransport
+using Distributed
+using Serialization
+
 """
     remap_extraEP_for_fortran_save!(extraEP, ep_slot)
 
 Remap EP species data from `ep_slot` to `ep_slot-1` in `extraEP` so saved EXPRO
 matches the Fortran 3-species convention.
 """
-function remap_extraEP_for_fortran_save!(extraEP::Dict, ep_slot::Int)
+function TJLFEP.remap_extraEP_for_fortran_save!(extraEP::Dict, ep_slot::Int)
     for prefix in ("DENS", "TEMP", "DLNNDR", "DLNTDR")
         extraEP["$(prefix)_$(ep_slot - 1)"] = extraEP["$(prefix)_$ep_slot"]
         delete!(extraEP, "$(prefix)_$ep_slot")
@@ -17,7 +37,7 @@ end
 
 Write input.TGLFEP / input.MTGLF / input.EXPRO after Fortran-style EP remapping.
 """
-function save_imas_preprocessed_inputs(Options, profile, extraEP::Dict, dir::AbstractString)
+function TJLFEP.save_imas_preprocessed_inputs(Options, profile, extraEP::Dict, dir::AbstractString)
     ep_slot = extraEP["EP_SLOT"]
     extraEP_save = deepcopy(extraEP)
     remap_extraEP_for_fortran_save!(extraEP_save, ep_slot)
@@ -31,9 +51,9 @@ end
 Build `Options`, `profile`, and `extraEP` from IMAS without running TJLF.
 Also returns EP-slot EXPRO vectors used downstream by `runTHD`.
 """
-function preprocess_imas_inputs(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any};
+function TJLFEP.preprocess_imas_inputs(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any};
         verbose::Bool=false)
-    input_tglfep, extraEP = TJLFEP.InputTGLFEP(dd, rho; is_ep=OptionsDict["IS_EP"])
+    input_tglfep, extraEP = TurbulentTransport.InputTGLFEP(dd, rho; is_ep=OptionsDict["IS_EP"])
 
     if verbose
         println("printing species masses")
@@ -121,13 +141,49 @@ function preprocess_imas_inputs(dd::IMAS.dd, rho::AbstractVector{Float64}, Optio
 end
 
 """
-    runTHD(dd, rho, OptionsDict; ...)
+    _dd_radius_output(Options, profile, i; use_gpu, inner, team, ql_flux_scan)
 
-IMAS/FUSE entry point (not loaded when `TJLFEP_FILE_ONLY=1`).
+Run the kw-scan for ONE radius `i` and return the `pmap`-element
+`((growth, tglfep_i, mtglf_i, marginal_ql), (scalefactor_buffer, wavebuffer_all))`.
+Shared by `runTHD(::IMAS.dd)`'s in-process `pmap` and the SPMD per-radius task
+`runTHD_dd_radius` so both produce byte-identical per-radius results.
 """
-function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any};
+function _dd_radius_output(Options, profile, i::Int;
+        use_gpu::Bool=false, inner::Symbol=:threads,
+        team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
+        ql_flux_scan::Bool=false, printout::Bool=false)
+    arrTGLFEP_i = deepcopy(Options)
+    arrMTGLF_i = deepcopy(profile)
+
+    arrTGLFEP_i.IR = arrTGLFEP_i.IR_EXP[i]
+    ir = arrTGLFEP_i.IR
+    arrTGLFEP_i.SUFFIX = "_r" * lpad(string(ir), 3, '0')
+    arrTGLFEP_i.FACTOR_IN = arrTGLFEP_i.FACTOR[i]
+
+    println("=============================================================")
+    println("pre mainsub: i=", i, " ir=", ir, " inner=", inner,
+        " team=", team === nothing ? 0 : length(team))
+    println("=============================================================")
+
+    return TJLFEP.mainsub(arrTGLFEP_i, arrMTGLF_i, printout; use_gpu=use_gpu, inner=inner,
+        team=team, ql_flux_scan=ql_flux_scan)
+end
+
+"""
+    runTHD(dd, rho, OptionsDict; ..., precomputed_dir="")
+
+IMAS/FUSE entry point. Available when IMAS + GACODE + TurbulentTransport are loaded.
+
+`precomputed_dir` (defaults to ENV `TJLFEP_PRECOMPUTED_DIR`): when set, the per-radius
+kw-scans are NOT computed in-process; instead the `task_<i>.jls` files written by the
+SPMD per-radius tasks (`runTHD_dd_radius`) are loaded. This is the merge phase of the
+MPS-team SPMD layout (each radius ran on its own GPU with its own MPS team); the
+cross-radius post-processing below is identical to the in-process path.
+"""
+function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any};
                 printout::Bool=false, saveFiles::Bool=false, dir::String="ddFiles", use_gpu::Bool=false,
-                ql_flux_scan::Bool=false)
+                ql_flux_scan::Bool=false, inner::Symbol=:threads, mps_team::Int=0,
+                precomputed_dir::AbstractString=get(ENV, "TJLFEP_PRECOMPUTED_DIR", ""))
 
     Options, profile, extraEP, expro_state = preprocess_imas_inputs(dd, rho, OptionsDict; verbose=printout)
     ni = expro_state.ni
@@ -139,43 +195,27 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
         save_imas_preprocessed_inputs(Options, profile, extraEP, dir)
     end
 
-    # deepcopy is required so as to avoid overwriting of data:
     n_ir = Options.SCAN_N
-    Ts = fill(Options, n_ir)
-    Ts[1] = deepcopy(Options)
-    for i in 2:n_ir
-        Ts[i] = deepcopy(Ts[i-1])
-    end
-    arrTGLFEP = Ts
-    arrMTGLF = Vector{typeof(profile)}(undef, n_ir)
-    arrMTGLF[1] = deepcopy(profile)
-    for i in 2:n_ir
-        arrMTGLF[i] = deepcopy(arrMTGLF[i-1])
-    end
+    arrTGLFEP = [deepcopy(Options) for _ in 1:n_ir]
+    arrMTGLF = [deepcopy(profile) for _ in 1:n_ir]
     arrgrowth = fill(fill(NaN,(5, 10, 10, Options.NMODES)), n_ir)
 
-    stdout_lock = ReentrantLock()
-
-    pmap_outputs = pmap(i -> begin
-        arrTGLFEP_i = deepcopy(arrTGLFEP[i])
-        arrMTGLF_i = deepcopy(arrMTGLF[i])
-
-        arrTGLFEP_i.IR = arrTGLFEP_i.IR_EXP[i]
-        ir = arrTGLFEP_i.IR
-        str_r = lpad(string(ir), 3, '0')
-        arrTGLFEP_i.SUFFIX = "_r"*str_r
-
-        arrTGLFEP_i.FACTOR_IN = arrTGLFEP_i.FACTOR[i]
-        input1 = arrTGLFEP_i
-        input2 = arrMTGLF_i
-
-        println("=============================================================")
-        println("pre mainsub")
-        println("i is ", i, " ir is ", ir)
-        println("=============================================================")
-
-        return TJLFEP.mainsub(input1, input2, printout; use_gpu=use_gpu, ql_flux_scan=ql_flux_scan)
-    end, 1:n_ir)
+    if isempty(precomputed_dir)
+        # In-process scan. NOTE: this runs each radius's inner kw-scan on the calling
+        # process (threaded). MPS-team concurrency is NOT used here because addprocs is
+        # only valid from a cluster master, not from a pmap worker -- the MPS path is the
+        # SPMD layout (run_tjlfep inner=:mps_team -> runTHD_dd_radius per task + this merge).
+        pmap_outputs = pmap(i -> _dd_radius_output(Options, profile, i;
+            use_gpu=use_gpu, inner=:threads, team=nothing, ql_flux_scan=ql_flux_scan,
+            printout=printout), 1:n_ir)
+    else
+        @info "runTHD(dd): loading precomputed per-radius results (SPMD merge)" precomputed_dir n_ir
+        pmap_outputs = map(1:n_ir) do i
+            tf = joinpath(precomputed_dir, "task_$(i).jls")
+            isfile(tf) || error("runTHD(dd): missing SPMD task output $tf")
+            open(Serialization.deserialize, tf)
+        end
+    end
 
     # pmap_outputs is a Vector of 2-tuples: ((growth, tglfep_i, mtglf_i), (scalefactor_buffer, wavebuffer_all))
     results   = [p[1] for p in pmap_outputs]   # Vector of (growth, tglfep_i, mtglf_i)
@@ -455,3 +495,43 @@ function runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{Str
     marginal_ql = [r[4] for r in results]
     return width, kymark_out, SFmin, dpdr_crit_out, dndr_crit_out, marginal_ql
 end  # End of struct-based runTHD
+
+"""
+    runTHD_dd_radius(dd, rho, OptionsDict, scan_index; out_dir, use_gpu, inner, team, ql_flux_scan)
+
+SPMD per-radius entry point (DIII-D-style layout). Runs the kw-scan for the single
+radius `scan_index` and serializes the `pmap`-element result to `out_dir/task_<scan_index>.jls`
+so the merge phase (`runTHD(dd; precomputed_dir=out_dir)`) can assemble the cross-radius
+critical gradients exactly as the in-process path would.
+
+Invoked once per Slurm task (`srun -n SCAN_N`). The MPS `team` (worker pids sharing this
+task's pinned GPU) is spawned by the task driver at top level and passed in explicitly --
+matching the verified `run_gacode_scan_task` path (where `addprocs`/`@everywhere` run from
+the script's top level, not from inside a function or a `pmap` worker). `team=nothing` runs
+the single-process threaded baseline.
+"""
+function TJLFEP.runTHD_dd_radius(dd::IMAS.dd, rho::AbstractVector{Float64},
+        OptionsDict::Dict{String, Any}, scan_index::Int;
+        out_dir::AbstractString=".", use_gpu::Bool=false,
+        inner::Symbol=:mps_team,
+        team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
+        ql_flux_scan::Bool=false, printout::Bool=false)
+    Options, profile, _, _ = preprocess_imas_inputs(dd, rho, OptionsDict; verbose=printout)
+    1 <= scan_index <= Options.SCAN_N ||
+        error("runTHD_dd_radius: scan_index=$scan_index out of range 1:$(Options.SCAN_N)")
+    mkpath(out_dir)
+
+    @info "runTHD_dd_radius" scan_index ir=Options.IR_EXP[scan_index] inner team=(team === nothing ? 0 : length(team)) host=gethostname()
+
+    output = _dd_radius_output(Options, profile, scan_index;
+        use_gpu=use_gpu, inner=inner, team=team, ql_flux_scan=ql_flux_scan, printout=printout)
+
+    task_file = joinpath(out_dir, "task_$(scan_index).jls")
+    open(task_file, "w") do io
+        Serialization.serialize(io, output)
+    end
+    @info "runTHD_dd_radius wrote $task_file"
+    return task_file
+end
+
+end # module TJLFEPIMASExt

@@ -4,8 +4,11 @@
 # module context (IMAS/FUSE/TurbulentTransport loaded). The expensive JIT is the GPU per-combo
 # path, which this traces; IMAS/FUSE glue is loaded (baked) but compiles on first actual use.
 
-using Pkg
-Pkg.activate(normpath(@__DIR__, "..", ".."))
+# Built against the FUSE project (see build_gpu_sysimage_generic.jl). Stack TJLFEP_ROOT on
+# LOAD_PATH so CUDA (a TJLFEP dep, only transitive in FUSE) is loadable for the GPU trace;
+# TJLF/TJLFEP/IMAS/GACODE/TurbulentTransport resolve from the active FUSE project. Do NOT
+# Pkg.activate a different project here -- that would fight create_sysimage's build project.
+push!(LOAD_PATH, normpath(@__DIR__, "..", ".."))
 
 using CUDA
 using TJLF
