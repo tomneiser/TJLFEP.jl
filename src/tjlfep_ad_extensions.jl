@@ -489,9 +489,12 @@ function default_sensitivity_knobs(inputF)
     return knobs
 end
 
-function _knob_label(fld::Symbol, idx, is_ep::Int)
+# `ep_slot` is the EP species SLOT in InputTJLF, i.e. IS_EP+1 (TJLF_map sets
+# `is = inputsEP.IS_EP + 1`), not IS_EP itself. Slot 1 is the electron; the
+# remaining ions are labeled i1,i2,… skipping the EP slot.
+function _knob_label(fld::Symbol, idx, ep_slot::Int)
     idx === nothing && return string(fld)
-    tag = idx == 1 ? "e" : (idx == is_ep ? "EP" : "i$(idx-1)")
+    tag = idx == 1 ? "e" : (idx == ep_slot ? "EP" : "i$(idx-1)")
     return "$(fld)[$tag]"
 end
 
@@ -529,7 +532,8 @@ function gamma_input_sensitivities(inputsEP::Options{Float64}, inputsPR::profile
 
     ks = knobs === nothing ? default_sensitivity_knobs(inputF) : knobs
     N = length(ks)
-    is_ep = Int(coalesce(inputsEP.IS_EP, 0))
+    # EP species slot in InputTJLF is IS_EP+1 (see TJLF_map: is = IS_EP + 1); 0 if unset.
+    ep_slot = inputsEP.IS_EP === missing ? 0 : Int(inputsEP.IS_EP) + 1
 
     Tag = typeof(ForwardDiff.Tag(gamma_input_sensitivities, Float64))
     D   = ForwardDiff.Dual{Tag, Float64, N}
@@ -546,7 +550,7 @@ function gamma_input_sensitivities(inputsEP::Options{Float64}, inputsPR::profile
         else
             getfield(inputD, fld)[idx] = seed
         end
-        push!(labels, _knob_label(fld, idx, is_ep))
+        push!(labels, _knob_label(fld, idx, ep_slot))
     end
 
     res = _tjlf_run_dual(inputD, D; use_gpu = use_gpu)
