@@ -156,16 +156,16 @@ end
 function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool = true;
                       use_gpu::Bool = false, inner::Symbol = :threads,
                       team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
-                      ql_flux_scan::Bool = false) where {T<:Real}
+                      ql_flux_scan::Bool = false,
+                      nfactor::Int = 8, nefwid::Int = 8, nkyhat::Int = 4, k_max::Int = 4) where {T<:Real}
     # These are for testing purposes:
     #baseDirectory = "/Users/benagnew/TJLF.jl/outputs/tglfep_tests/input.MTGLF"
     #inputsPR = readMTGLF(baseDirectory)
 
-    nfactor = 8
-    nefwid = 8
-    nkyhat = 4
+    # Grid resolution / refinement depth (defaults reproduce the canonical scan).
+    # Exposed as kwargs so the factor-grid convergence of the marginal sfmin can be
+    # studied (e.g. nfactor ∈ {8,16,32,64}, k_max ∈ {4,6,8}).
     nkwf = nfactor*nefwid*nkyhat
-    k_max = 4
     l_write_out = true
 
     kyhat_min = 0.0

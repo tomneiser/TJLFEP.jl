@@ -36,7 +36,7 @@ function main()
         TJLFEP.mainsub(ep, deepcopy(prof), false; inner = :threads)
     end
     let ep = deepcopy(opts0)
-        critical_factor_grid(ep, prof; threaded = true)
+        critical_factor_grid(ep, prof; threaded = true, ae_band = true)
     end
 
     # ── Traditional brute-force scan ──
@@ -55,7 +55,7 @@ function main()
     ep_a = deepcopy(opts0)
     local res_a
     t_ad = @elapsed begin
-        res_a = critical_factor_grid(ep_a, prof; threaded = true)
+        res_a = critical_factor_grid(ep_a, prof; threaded = true, ae_band = true)
     end
 
     # ── Report ──

@@ -50,7 +50,7 @@ export expro_species_for_gacode_is_ep, read_gacode_scalar_field, read_gacode_ion
 export expro_bound_deriv, expro_log_gradients, read_expro_for_alpha, compute_alpha_crit_profiles
 export tjlfep_complete_output
 export runTHD, runTHD_from_gacode
-export gamma_dgamma_dfactor, marginal_factor, critical_factor_grid
+export gamma_dgamma_dfactor, marginal_factor, critical_factor_grid, gamma_input_sensitivities
 export MarginalQLData, extract_marginal_ql, build_alpha_ql_modes
 export ql_flux_scan_at_marginal, diff_star_from_D_W
 export populate_tjlfep_profile!

@@ -235,13 +235,62 @@ function gamma_dgamma_dfactor(inputsEP::Options{Float64}, inputsPR::profile{Floa
     )
 end
 
-# Leading growth rate γ_lead = max over modes, and its dγ_lead/d(factor), at a
-# given factor. In the EP single-ky path the most-unstable mode is the EP-driven
-# AE, so γ_lead(factor) is the instability indicator the marginal scan tracks.
-function _gamma_lead_dfactor(inputsEP::Options{Float64}, inputsPR::profile{Float64}, f::Float64; use_gpu::Bool = false)
+# AE-band upper frequency cut (FREQ_AE_UPPER = -|ω_GAM|): modes with freq below it
+# are in the Alfvén-eigenmode band. Read from inputsEP if set (the standard read
+# path sets it), else recomputed from the profile.
+function _ae_band_upper(inputsEP::Options{Float64}, inputsPR::profile{Float64})
+    fu = inputsEP.FREQ_AE_UPPER
+    if !(fu === missing) && fu isa Real && !isnan(fu)
+        return Float64(fu)
+    end
+    return -abs(inputsPR.omegaGAM[inputsEP.IR])
+end
+
+# Marginal growth-rate threshold γ* for the current radius, reproducing exactly
+# what kwscale_scan/TJLF_map set on inputsEP.GAMMA_THRESH:
+#   ROTATIONAL_SUPPRESSION_FLAG==1 : γ* = min(0.15·|γ_E/ŝ|, |γ_p|·2·min(1-r/a,r/a)/Rmaj)
+#                                    (Bass PoP 2017 flow-shear AE suppression) — a
+#                                    FINITE threshold ⇒ γ_keep(factor)=γ* is a smooth,
+#                                    grid-independent root suitable for AD-Newton.
+#   otherwise                      : γ* = 1e-7 (the "any positive AE growth" onset).
+function _gamma_thresh_for(inputsEP::Options{Float64}, inputsPR::profile{Float64})
+    ir = inputsEP.IR
+    if coalesce(inputsEP.ROTATIONAL_SUPPRESSION_FLAG, 0) == 1
+        r_over_a = inputsPR.RMIN[ir] / inputsPR.RMIN[end]
+        gthr_max = abs(inputsPR.gammap[ir]) * 2.0 * (min(1.0 - r_over_a, r_over_a) / inputsPR.RMAJ[ir])
+        gthr = 0.15 * abs(inputsPR.gammaE[ir] / inputsPR.SHEAR[ir])
+        return min(gthr, gthr_max)
+    else
+        return 1.0e-7
+    end
+end
+
+# Leading growth rate γ_lead and its dγ_lead/d(factor) at a given factor.
+#
+# `ae_band=false` (default): γ_lead = max over all modes — the raw indicator. This
+# is dominated by background ITG/TEM modes that are unstable even at tiny EP
+# factor and can be non-monotonic in factor, so it is unsuitable for an
+# endpoint-only stability test.
+#
+# `ae_band=true`: γ_lead = max over only the modes whose real frequency lies in
+# the AE band (freq < FREQ_AE_UPPER), mirroring the *primary* keep filter in
+# TJLFEP_ky. This isolates the EP-driven Alfvén eigenmode (the instability the
+# marginal scan actually tracks); if no mode is in-band the point is AE-stable and
+# γ_lead is reported as 0. Uses only eigenvalues/frequencies, so it is compatible
+# with the IFLUX=false fast path. (The secondary tearing/pinch/QL/θ² rejections
+# need the wavefunction/QL weights, i.e. IFLUX=true, and are not applied here.)
+function _gamma_lead_dfactor(inputsEP::Options{Float64}, inputsPR::profile{Float64}, f::Float64;
+                             use_gpu::Bool = false, ae_band::Bool = false)
     ep = deepcopy(inputsEP)
     ep.FACTOR_IN = f
     r = gamma_dgamma_dfactor(ep, inputsPR; use_gpu = use_gpu)
+    if ae_band
+        fu = _ae_band_upper(inputsEP, inputsPR)
+        cand = findall(<(fu), r.freq)
+        isempty(cand) && return 0.0, 0.0, r   # no AE-band mode → AE-stable
+        j = cand[argmax(@view r.gamma[cand])]
+        return r.gamma[j], r.dgamma_dfactor[j], r
+    end
     i = argmax(r.gamma)
     return r.gamma[i], r.dgamma_dfactor[i], r
 end
@@ -262,10 +311,14 @@ using the exact `dγ_lead/d(factor)` from `gamma_dgamma_dfactor`, so it converge
 quadratically and needs only a handful of TGLF eigensolves.
 
 Keywords:
-  - `gamma_thresh = 1e-7`           threshold (matches the default `GAMMA_THRESH`)
+  - `gamma_thresh = nothing`        threshold; `nothing` ⇒ the case's own
+                                    `GAMMA_THRESH` (rotational γ* if
+                                    `ROTATIONAL_SUPPRESSION_FLAG=1`, else 1e-7)
   - `bracket = nothing`             `(f_lo, f_hi)` bracketing the sign change of
                                     `g(f)=γ_lead(f)-gamma_thresh`; auto-found if `nothing`
   - `scan_lo=1e-3, scan_hi=10.0, nscan=8`  geometric samples used to auto-bracket
+  - `ae_band = false`               track only the AE-band-filtered γ (freq <
+                                    `FREQ_AE_UPPER`) instead of the raw max-over-modes γ
   - `tol = 1e-6`                    converged when `|g| < tol·(1+|γ_thresh|)` or step `< xtol`
   - `xtol = 1e-8`, `maxiter = 40`
   - `use_gpu = false`, `verbose = false`
@@ -273,14 +326,17 @@ Keywords:
 Returns `(; factor, gamma_lead, gamma, freq, iters, evals, converged, bracket)`.
 """
 function marginal_factor(inputsEP::Options{Float64}, inputsPR::profile{Float64};
-                         gamma_thresh::Float64 = 1.0e-7,
+                         gamma_thresh::Union{Nothing,Float64} = nothing,
                          bracket::Union{Nothing,Tuple{Float64,Float64}} = nothing,
                          scan_lo::Float64 = 1.0e-3, scan_hi::Float64 = 10.0, nscan::Int = 8,
+                         ae_band::Bool = false,
                          tol::Float64 = 1.0e-6, xtol::Float64 = 1.0e-8, maxiter::Int = 40,
                          use_gpu::Bool = false, verbose::Bool = false)
+    # nothing ⇒ use the case's own threshold (rotational γ* or 1e-7), matching kwscale_scan
+    gamma_thresh = gamma_thresh === nothing ? _gamma_thresh_for(inputsEP, inputsPR) : gamma_thresh
     evals = Ref(0)
     g(f) = begin
-        gl, dgl, r = _gamma_lead_dfactor(inputsEP, inputsPR, f; use_gpu = use_gpu)
+        gl, dgl, r = _gamma_lead_dfactor(inputsEP, inputsPR, f; use_gpu = use_gpu, ae_band = ae_band)
         evals[] += 1
         verbose && @info "eval" factor=f gamma_lead=gl gobj=(gl - gamma_thresh) dgdf=dgl
         (gl - gamma_thresh, dgl, gl, r)
@@ -365,9 +421,13 @@ is the per-grid-point table.
 """
 function critical_factor_grid(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                               nkyhat::Int = 4, nefwid::Int = 8,
-                              gamma_thresh::Float64 = 1.0e-7,
+                              gamma_thresh::Union{Nothing,Float64} = nothing,
                               scan_lo::Float64 = 1.0e-3, scan_hi::Union{Nothing,Float64} = nothing,
+                              ae_band::Bool = false,
                               threaded::Bool = true, use_gpu::Bool = false)
+    # nothing ⇒ use the case's own threshold (rotational γ* or 1e-7); IR-dependent only,
+    # so it is identical for every (kyhat,width) grid point.
+    gamma_thresh = gamma_thresh === nothing ? _gamma_thresh_for(inputsEP, inputsPR) : gamma_thresh
     w0 = Float64(inputsEP.WIDTH_MIN); w1 = Float64(inputsEP.WIDTH_MAX)
     kyhats = [(1.0 / nkyhat) * i for i in 1:nkyhat]
     widths = [w0 + (w1 - w0) / (nefwid - 1) * (i - 1) for i in 1:nefwid]
@@ -381,7 +441,7 @@ function critical_factor_grid(inputsEP::Options{Float64}, inputsPR::profile{Floa
         ky, w = pts[idx]
         ep = deepcopy(inputsEP); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
         r = marginal_factor(ep, inputsPR; gamma_thresh = gamma_thresh,
-                            scan_lo = scan_lo, scan_hi = shi, use_gpu = use_gpu)
+                            scan_lo = scan_lo, scan_hi = shi, ae_band = ae_band, use_gpu = use_gpu)
         out[idx] = (kyhat = ky, width = w, factor = r.factor, gamma = r.gamma,
                     converged = r.converged, evals = r.evals)
     end
@@ -408,4 +468,97 @@ function critical_factor_grid(inputsEP::Options{Float64}, inputsPR::profile{Floa
 
     return (; sfmin = best.factor, kyhat = best.kyhat, width = best.width,
             gamma = best.gamma, total_evals = total_evals, results = out)
+end
+
+# Default sensitivity knobs for a TGLF-EP operating point: the per-species inverse
+# scale lengths (density a/Ln = RLNS, temperature a/LT = RLTS) and densities (AS),
+# plus the local safety factor Q_LOC — the standard AE drive/damping parameters.
+# Species are labeled e/i1/i2/.../EP; the EP species (inputsEP.IS_EP) is the
+# primary Alfvén-eigenmode drive.
+function default_sensitivity_knobs(inputF)
+    ns = inputF.NS
+    knobs = Tuple{Symbol,Union{Int,Nothing}}[]
+    for is in 1:ns
+        push!(knobs, (:RLNS, is))
+        push!(knobs, (:RLTS, is))
+    end
+    for is in 1:ns
+        push!(knobs, (:AS, is))
+    end
+    push!(knobs, (:Q_LOC, nothing))
+    return knobs
+end
+
+function _knob_label(fld::Symbol, idx, is_ep::Int)
+    idx === nothing && return string(fld)
+    tag = idx == 1 ? "e" : (idx == is_ep ? "EP" : "i$(idx-1)")
+    return "$(fld)[$tag]"
+end
+
+"""
+    gamma_input_sensitivities(inputsEP, inputsPR; knobs=nothing, use_gpu=false) -> NamedTuple
+
+AD-exact sensitivities of the per-mode growth rate `γ` (and real frequency) to the
+local TGLF plasma inputs, at a **fixed** operating point `(IR, KYHAT_IN, WIDTH_IN,
+FACTOR_IN)`. This is the genuinely differentiable, grid-independent quantity the
+Fortran TGLF-EP cannot provide — unlike the critical factor `sfmin`, which sits at
+a discrete keep-flag transition and is not smoothly differentiable.
+
+The growth rate is differentiated through TGLF's eigensolve in a single forward
+pass by seeding multi-partial `ForwardDiff.Dual`s on the selected inputs of the
+`InputTJLF` produced by `TJLF_map` (so the eigenvalue rule in TJLF's
+`TJLFForwardDiffExt` provides exact `∂λ/∂input`). Uses `IFLUX=false` (eigenvalues
+only), so it is cheap.
+
+`knobs` is a vector of `(field::Symbol, idx)` pairs; `idx::Int` selects a species
+entry of a vector field (`:RLNS,:RLTS,:TAUS,:AS,:VPAR,:VPAR_SHEAR`) and `idx=nothing`
+a scalar field (`:Q_LOC,:Q_PRIME_LOC,:RMIN_LOC,...`). Defaults to per-species
+a/Ln, a/LT, density, plus Q_LOC.
+
+Returns `(; gamma, freq, dgamma, dfreq, logsens, knobs, labels, base)` where
+`dgamma`/`dfreq` are `NMODES × Nknob` Jacobians, `base` the knob base values, and
+`logsens[m,j] = base[j]·∂γ_m/∂knob_j` the dimensionless (logarithmic) sensitivity
+used to rank drive (>0) vs damping (<0) terms.
+"""
+function gamma_input_sensitivities(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+                                   knobs::Union{Nothing,AbstractVector} = nothing,
+                                   use_gpu::Bool = false)
+    inputF = TJLF_map(inputsEP, inputsPR)
+    inputF isa Integer && error("gamma_input_sensitivities: TJLF_map rejected IR=$(inputsEP.IR)")
+    _configure_inputTJLF_for_ky!(inputF, inputsEP)
+
+    ks = knobs === nothing ? default_sensitivity_knobs(inputF) : knobs
+    N = length(ks)
+    is_ep = Int(coalesce(inputsEP.IS_EP, 0))
+
+    Tag = typeof(ForwardDiff.Tag(gamma_input_sensitivities, Float64))
+    D   = ForwardDiff.Dual{Tag, Float64, N}
+    inputD = _to_dual_input(inputF, D)
+
+    base = zeros(Float64, N)
+    labels = String[]
+    for (i, (fld, idx)) in enumerate(ks)
+        v = idx === nothing ? getfield(inputF, fld) : getfield(inputF, fld)[idx]
+        base[i] = Float64(v)
+        seed = ForwardDiff.Dual{Tag}(base[i], ntuple(j -> j == i ? 1.0 : 0.0, N)...)
+        if idx === nothing
+            setfield!(inputD, fld, seed)
+        else
+            getfield(inputD, fld)[idx] = seed
+        end
+        push!(labels, _knob_label(fld, idx, is_ep))
+    end
+
+    res = _tjlf_run_dual(inputD, D; use_gpu = use_gpu)
+    g = res.eigenvalue[:, 1, 1]
+    f = res.eigenvalue[:, 1, 2]
+    NM = length(g)
+
+    gamma = ForwardDiff.value.(g)
+    freq  = ForwardDiff.value.(f)
+    dgamma = [ForwardDiff.partials(g[m], i) for m in 1:NM, i in 1:N]
+    dfreq  = [ForwardDiff.partials(f[m], i) for m in 1:NM, i in 1:N]
+    logsens = [base[i] * dgamma[m, i] for m in 1:NM, i in 1:N]
+
+    return (; gamma, freq, dgamma, dfreq, logsens, knobs = ks, labels, base)
 end
