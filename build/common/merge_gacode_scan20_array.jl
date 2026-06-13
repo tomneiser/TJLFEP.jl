@@ -11,11 +11,13 @@ using TJLFEP
 
 const ROOT = normpath(@__DIR__, "..", "..")
 const CASE = get(ENV, "CASE_DIR", joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1"))
-const GACODE = get(ENV, "GACODE_FILE", joinpath(CASE, "input.gacode"))
+# NB: `GACODE_PATH`, not `GACODE` — the generic GPU sysimage bakes the `GACODE` package module
+# into Main, so a top-level `const GACODE = ...` collides ("invalid redefinition of constant").
+const GACODE_PATH = get(ENV, "GACODE_FILE", joinpath(CASE, "input.gacode"))
 const TGLFEP = get(ENV, "TGLFEP_FILE", joinpath(CASE, "input_scan20_nb6.TGLFEP"))
 const OUT_DIR = get(() -> error("set OUT_DIR to gacode_scan20_<jobid>_tasks directory"), ENV, "OUT_DIR")
 
-@assert isfile(GACODE)
+@assert isfile(GACODE_PATH)
 @assert isfile(TGLFEP)
 @assert isdir(OUT_DIR)
 
@@ -23,6 +25,6 @@ println("=== finalize_gacode_scan ===")
 println("OUT_DIR=$OUT_DIR")
 
 t0 = time()
-width, kymark, SFmin, dpdr, dndr = finalize_gacode_scan(GACODE, TGLFEP, OUT_DIR; printout=true)
+width, kymark, SFmin, dpdr, dndr = finalize_gacode_scan(GACODE_PATH, TGLFEP, OUT_DIR; printout=true)
 println("SFmin = ", SFmin)
 println("done in $(round(time() - t0; digits=1)) s")

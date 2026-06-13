@@ -21,15 +21,31 @@ if !CUDA.functional()
 end
 @info "generic precompile workload GPU" name=CUDA.name(first(CUDA.devices()))
 
-const ROOT   = normpath(@__DIR__, "..", "..")
-const GACODE = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
-const TGLFEP = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input_singleradius_nb6.TGLFEP")   # N_BASIS=6, SCAN_N=1
+# NB: keep these as LOCALS inside a `let` (not top-level `const`). PackageCompiler runs this
+# file such that top-level Main bindings get baked into the image's Main; a baked `const GACODE`
+# then collides with the MPS task script's own `const GACODE = ENV[...]` ("invalid redefinition
+# of constant Main.GACODE" at run_gacode_scan20_mps_task.jl). The `let` keeps the compile trace
+# identical while leaking nothing into Main.
+let
+    ROOT   = normpath(@__DIR__, "..", "..")
+    GACODE = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
+    TGLFEP = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input_singleradius_nb6.TGLFEP")   # N_BASIS=6, SCAN_N=1
 
-@assert isfile(GACODE) "missing $GACODE"
-@assert isfile(TGLFEP) "missing $TGLFEP"
+    @assert isfile(GACODE) "missing $GACODE"
+    @assert isfile(TGLFEP) "missing $TGLFEP"
 
-mktempdir() do tmp
-    res = run_gacode_scan_task(GACODE, TGLFEP, 1;
-        out_dir=tmp, use_gpu=true, printout=false, inner=:threads, team=nothing)
-    @info "generic precompile workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
+    mktempdir() do tmp
+        res = run_gacode_scan_task(GACODE, TGLFEP, 1;
+            out_dir=tmp, use_gpu=true, printout=false, inner=:threads, team=nothing)
+        @info "generic precompile workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
+    end
+
+    # Also bake the autodiff (solver=:ad) path on GPU: critical_factor_optimize with use_gpu=true
+    # (Float64 keep_at evals on the GPU, Dual eigensolves on the GPU), reached via mainsub's
+    # solver=:ad branch. Bakes runTHD/run_gacode_scan_task(solver=:ad) so AD runs don't JIT per task.
+    mktempdir() do tmp
+        res = run_gacode_scan_task(GACODE, TGLFEP, 1;
+            out_dir=tmp, use_gpu=true, printout=false, inner=:threads, team=nothing, solver=:ad)
+        @info "generic precompile AD workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
+    end
 end

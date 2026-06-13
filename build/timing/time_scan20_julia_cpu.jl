@@ -87,14 +87,16 @@ mkpath(outdir)
 logmsg("workers=", nworkers(), " FILE_DIR=", FILE_DIR)
 logmsg("output -> ", outdir)
 
+solver = Symbol(get(ENV, "SOLVER", "grid"))
+
 tc = time()
 cd(outdir) do
-    runTHD(tglfep, mtglf, expro; printout=false, use_gpu=use_gpu, parallel=:distributed)
+    runTHD(tglfep, mtglf, expro; printout=false, use_gpu=use_gpu, parallel=:distributed, solver=solver)
 end
 compute_s = time() - tc
 total_s = time() - job_t0
 
-logmsg(@sprintf("TIMING_RESULT backend=julia device=cpu path=distributed phase=compute seconds=%.3f SCAN_N=%d N_BASIS=%d workers=%d threads_per_worker=%d",
-    compute_s, SCAN_N, N_BASIS, nworkers(), THREADS_PER_WORKER))
-logmsg(@sprintf("TIMING_RESULT backend=julia device=cpu path=distributed phase=total_job seconds=%.3f SCAN_N=%d N_BASIS=%d nodes=%s",
-    total_s, SCAN_N, N_BASIS, get(ENV, "SLURM_NNODES", "?")))
+logmsg(@sprintf("TIMING_RESULT backend=julia device=cpu solver=%s path=distributed phase=compute seconds=%.3f SCAN_N=%d N_BASIS=%d workers=%d threads_per_worker=%d",
+    solver, compute_s, SCAN_N, N_BASIS, nworkers(), THREADS_PER_WORKER))
+logmsg(@sprintf("TIMING_RESULT backend=julia device=cpu solver=%s path=distributed phase=total_job seconds=%.3f SCAN_N=%d N_BASIS=%d nodes=%s",
+    solver, total_s, SCAN_N, N_BASIS, get(ENV, "SLURM_NNODES", "?")))

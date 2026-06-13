@@ -77,10 +77,13 @@ sbatch run/submit_tjlfep_gpu_5N_example.sh
 ## 4. Timing vs N_BASIS (`timing/`)
 
 Sweeps `N_BASIS` (`NB` env) over Fortran CPU, Julia CPU, and Julia GPU and
-collects `TIMING_RESULT` markers into a CSV + plot.
+collects `TIMING_RESULT` markers into a CSV + plot. Each `TIMING_RESULT` line
+carries a `solver=` token (`grid` or `ad`), so grid and AD runs coexist in one
+CSV (columns `julia_{cpu,gpu}_ad_s`, `julia_gpu_ad_mps_s`).
 
 ```bash
-./timing/submit_timing_vs_nbasis.sh           # submits the GPU + CPU sweep (from build/)
+./timing/submit_timing_vs_nbasis.sh           # grid solver: GPU (MPS) + CPU sweep (from build/)
+./timing/submit_timing_vs_nbasis_ad.sh        # ad solver:  GPU (threads) + CPU sweep
 # after jobs finish:
 julia --project=. timing/collect_scan20_timing.jl   # -> timing_runs/scan20_timing.csv
 ./timing/plot_scan20_timing.sh                       # -> timing_runs/scan20_timing_*.png
@@ -89,6 +92,29 @@ julia --project=. timing/collect_scan20_timing.jl   # -> timing_runs/scan20_timi
 Per-backend jobs: `timing/batch_time_scan20_fortran.sh`, `timing/batch_time_scan20_julia_cpu.sh`,
 `timing/batch_time_scan20_julia_gpu.sh` (drivers `time_scan20_julia_cpu.jl` for CPU,
 reuses the capability-3 MPS driver for GPU).
+
+### Solver (`SOLVER`) and within-radius parallelism (`INNER`)
+
+Both timing drivers honor two env toggles, forwarded to `mainsub`:
+
+- `SOLVER=grid` (default) — Fortran-equivalent `kwscale_scan` `(kyhat × width ×
+  factor)` sweep. The verified reference; **`sfmin` matches Fortran**.
+- `SOLVER=ad` — autodiff AE-onset Newton + implicit-function-theorem descent.
+  **Grid-independent: its `sfmin` can differ from (and is more accurate than) the
+  grid value** — it resolves the smooth instability/keep onset instead of
+  quantizing to the coarse factor grid.
+- `INNER=mps_team` — distribute a radius's independent eigensolves across an MPS
+  worker team (separate CUDA contexts, Hyper-Q overlap). `INNER=threads` — run
+  them in-process with Julia threads.
+
+Measured rule of thumb (DIII-D, SCAN_N=20): **`grid` → `mps_team`, `ad` →
+`threads`.** The grid path has thousands of independent combos per radius, so the
+MPS team amortizes well (≈3× over threads). The AD path has few per-radius evals
+and a sequential Newton descent, so the team only adds spawn/round-trip overhead
+— at `N_BASIS=32`, AD on GPU threads is ≈43 s vs ≈4.5 min on an MPS team. AD
+batch scripts: `batch_time_scan20_julia_gpu_ad.sh` (threads, the fast one),
+`batch_time_scan20_julia_cpu_ad.sh`, and `batch_time_scan20_julia_gpu_ad_mps.sh`
+(kept only to populate the MPS-AD plot series; not recommended for production).
 
 ## 5. Sysimage build + run (`sysimage/`)
 

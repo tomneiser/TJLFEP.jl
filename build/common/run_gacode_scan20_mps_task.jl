@@ -35,6 +35,9 @@ const THREADS_PER_WORKER = parse(Int, get(ENV, "JULIA_WORKER_THREADS", "2"))
 # INNER selects the within-radius parallelism: :mps_team (default; addproc'd MPS clients) or
 # :threads (single-process threaded baseline on this task's GPU, for speedup/timing comparison).
 const INNER = Symbol(get(ENV, "INNER", "mps_team"))
+# SOLVER selects the critical-factor engine: :grid (Fortran-equivalent kwscale_scan) or :ad
+# (autodiff AE-onset Newton + IFT descent). Default :grid preserves prior behavior.
+const SOLVER = Symbol(get(ENV, "SOLVER", "grid"))
 # Optional GPU pin list for the team workers, e.g. "0,1" to spread a radius across 2 GPUs.
 # Defaults to this task's CUDA_VISIBLE_DEVICES (one GPU). Workers are round-robined over it.
 const TEAM_GPUS = let s = get(ENV, "TEAM_GPUS", get(ENV, "CUDA_VISIBLE_DEVICES", "0"))
@@ -83,15 +86,18 @@ using TJLF
 using LinearAlgebra
 BLAS.set_num_threads(1)
 
+# NB: `GACODE_PATH`, not `GACODE` — the generic GPU sysimage bakes the `GACODE` *package*
+# module into Main (it is listed in create_sysimage), so a top-level `const GACODE = ...`
+# here collides with it ("invalid redefinition of constant Main.GACODE").
 const CASE   = get(ENV, "CASE_DIR", joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1"))
-const GACODE = get(ENV, "GACODE_FILE", joinpath(CASE, "input.gacode"))
+const GACODE_PATH = get(ENV, "GACODE_FILE", joinpath(CASE, "input.gacode"))
 const TGLFEP = get(ENV, "TGLFEP_FILE", joinpath(CASE, "input_scan20_nb32.TGLFEP"))
 const OUT_DIR = get(ENV, "OUT_DIR", joinpath(ROOT, "build", "gacode_scan20_mps_$(get(ENV, "SLURM_JOB_ID", "local"))_tasks"))
 
-@assert isfile(GACODE) "missing $GACODE"
+@assert isfile(GACODE_PATH) "missing $GACODE_PATH"
 @assert isfile(TGLFEP) "missing $TGLFEP"
 
-opts, _, _ = preprocess_gacode_inputs(GACODE, TGLFEP)
+opts, _, _ = preprocess_gacode_inputs(GACODE_PATH, TGLFEP)
 scan_n = opts.SCAN_N
 
 scan_index = haskey(ENV, "SCAN_INDEX") ? parse(Int, ENV["SCAN_INDEX"]) : slurm_array_task_id() + 1
@@ -100,7 +106,7 @@ scan_index = haskey(ENV, "SCAN_INDEX") ? parse(Int, ENV["SCAN_INDEX"]) : slurm_a
 printout = get(ENV, "TJLFEP_PRINTOUT", "0") == "1"
 
 const TEAM = INNER === :mps_team ? workers() : nothing
-println("=== gacode scan task (inner=$INNER) ===")
+println("=== gacode scan task (inner=$INNER solver=$SOLVER) ===")
 println("worker sysimage=", isempty(_SYSIMG_FLAGS.exec) ? "<none, JIT>" : GPU_SYSIMAGE)
 println("scan_index=$scan_index / $scan_n  team=$(INNER === :mps_team ? nworkers() : 0) workers  " *
         "threads/worker=$THREADS_PER_WORKER  team_gpus=$(join(TEAM_GPUS, ','))")
@@ -111,12 +117,13 @@ flush(stdout)
 
 t0 = time()
 result = run_gacode_scan_task(
-    GACODE, TGLFEP, scan_index;
+    GACODE_PATH, TGLFEP, scan_index;
     out_dir=OUT_DIR,
     use_gpu=true,
     printout=printout,
     inner=INNER,
     team=TEAM,
+    solver=SOLVER,
 )
 println("OK scan_index=$(result.scan_index) ir=$(result.ir) sfmin=$(result.sfmin) in $(round(time() - t0; digits=1)) s")
 flush(stdout)
