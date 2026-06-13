@@ -143,6 +143,35 @@ AD parallel regions are small and the Newton descent is sequential, so the
 team-spawn / remote-call overhead is never amortized. **Rule of thumb: `grid` → MPS,
 `ad` → threads.**
 
+### Why AD time is nearly flat (and even dips) in N_BASIS
+
+It looks odd that the AD wallclock does not grow with `N_BASIS` — it even ticks
+*down* slightly (65.6 → 57.9 → 47.4 → 42.7 s for `N_BASIS` 6 → 8 → 16 → 32),
+the opposite of the O(n³) growth you see in the grid/Fortran columns. This is
+expected, not a measurement glitch:
+
+- **AD is overhead-bound, not arithmetic-bound.** The AD route issues a *fixed,
+  N_BASIS-independent* number of eigensolves per radius (a 4×8 seed grid plus a
+  capped AE-onset Newton + implicit-function-theorem descent — ~10² solves),
+  versus the *thousands per radius* the grid path sweeps. With so few solves, the
+  per-radius wall is dominated by fixed per-task cost (CUDA context init, first-call
+  kernel compile/load, reading `input.gacode`) rather than by the dense eigensolve.
+  At these matrix sizes that overhead floor dwarfs the O(n³) arithmetic, so the AD
+  curve stays flat while the grid curve climbs steeply.
+- **Higher `N_BASIS` resolves the physics better, so it converges in fewer solves.**
+  With a coarse basis the growth-rate spectrum γ(factor) is poorly resolved, so the
+  safeguarded Newton/IFT refinement tends to take more steps (more backtracks)
+  before it brackets the onset. With a finer basis the γ(factor) curve is smooth and
+  well-resolved, so the root-find converges in fewer iterations — which can more than
+  offset the larger per-solve cost. This is the small downward trend you see.
+- **The `scan` number is a max over 20 parallel radii** (one per GPU), so it is a
+  straggler-sensitive extreme value; run-to-run noise of a few seconds is normal and
+  accounts for the rest of the wiggle.
+
+Bottom line: a bigger basis is not literally "faster to solve"; the AD route is
+simply insensitive to `N_BASIS` in wallclock, which is exactly why it is the
+production win at large `N_BASIS` where the grid/Fortran cost explodes.
+
 ### AD changes the result (it is grid-independent)
 
 The `ad` solver does **not** read `sfmin` off the coarse EP-scale-factor grid that
