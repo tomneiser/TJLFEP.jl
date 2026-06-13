@@ -20,9 +20,11 @@ const KNOWN_SCAN20 = Dict(
 # spawn, sysimage load, compute, and merge. The Fortran binary compile and the Julia sysimage
 # build are the equivalent one-time costs and are EXCLUDED from both (neither is in total_job).
 # Falls back to scan/compute for older logs that lack a total_job line.
+# Returns (fort, cpu, gpu, cpu_ad, gpu_ad) seconds. The `solver` token (solver=grid|ad)
+# distinguishes the autodiff series; lines without it are treated as solver=grid (back-compat).
 function parse_timing_log(path::String)
-    isfile(path) || return nothing, nothing, nothing
-    vals = Dict{String,Float64}()   # "backend|device|phase" => seconds
+    isfile(path) || return nothing, nothing, nothing, nothing, nothing
+    vals = Dict{String,Float64}()   # "backend|device|solver|phase" => seconds
     for line in readlines(path)
         occursin("TIMING_RESULT", line) || continue
         s = replace(line, " " => "")
@@ -33,17 +35,20 @@ function parse_timing_log(path::String)
               occursin("backend=julia", s)   ? "julia"   : ""
         dev = occursin("device=gpu", s) ? "gpu" :
               occursin("device=cpu", s) ? "cpu" : ""
+        sol = occursin("solver=ad", s) ? "ad" : "grid"
         ph  = occursin("phase=total_job", s) ? "total"   :
               occursin("phase=scan", s)      ? "scan"    :
               occursin("phase=compute", s)   ? "compute" : ""
         (isempty(be) || isempty(ph)) && continue
-        vals["$be|$dev|$ph"] = t
+        vals["$be|$dev|$sol|$ph"] = t
     end
     pick(ks...) = (for k in ks; haskey(vals, k) && return vals[k]; end; nothing)
-    fort = pick("fortran|cpu|total", "fortran|cpu|scan")
-    cpu  = pick("julia|cpu|total", "julia|cpu|compute", "julia|cpu|scan")
-    gpu  = pick("julia|gpu|total", "julia|gpu|scan")
-    return fort, cpu, gpu
+    fort   = pick("fortran|cpu|grid|total", "fortran|cpu|grid|scan")
+    cpu    = pick("julia|cpu|grid|total", "julia|cpu|grid|compute", "julia|cpu|grid|scan")
+    gpu    = pick("julia|gpu|grid|total", "julia|gpu|grid|scan")
+    cpu_ad = pick("julia|cpu|ad|total", "julia|cpu|ad|compute", "julia|cpu|ad|scan")
+    gpu_ad = pick("julia|gpu|ad|total", "julia|gpu|ad|scan")
+    return fort, cpu, gpu, cpu_ad, gpu_ad
 end
 
 function parse_ok_in(path::String)
@@ -89,13 +94,14 @@ function newest(pattern::String)
 end
 
 function collect_nb(nb::Int)
-    fort = cpu = gpu = nothing
+    fort = cpu = gpu = cpu_ad = gpu_ad = gpu_ad_mps = nothing
 
     # Timing harness logs (preferred -- these are the fresh per-nbasis runs). Take these
     # FIRST so a fresh nb6 run wins over the legacy no-nbasis logs / NB6_FALLBACK below.
-    f_time = newest("time_scan20_nb$(nb)_fortran_*.out")
-    j_time = newest("time_scan20_nb$(nb)_julia_cpu_*.out")
-    g_time = newest("time_scan20_nb$(nb)_julia_gpu_*.out")
+    # Grid globs use _[0-9]* so they do NOT match the autodiff _ad_ logs below.
+    f_time = newest("time_scan20_nb$(nb)_fortran_[0-9]*.out")
+    j_time = newest("time_scan20_nb$(nb)_julia_cpu_[0-9]*.out")
+    g_time = newest("time_scan20_nb$(nb)_julia_gpu_[0-9]*.out")
     if fort === nothing && f_time !== nothing
         ft, _, _ = parse_timing_log(f_time)
         fort = ft
@@ -107,6 +113,22 @@ function collect_nb(nb::Int)
     if gpu === nothing && g_time !== nothing
         _, _, gt = parse_timing_log(g_time)
         gpu = gt
+    end
+
+    # Autodiff (solver=:ad) harness logs. The MPS-AD log (_gpu_ad_mps_) carries the SAME
+    # device=gpu solver=ad TIMING_RESULT tokens as the baseline AD-GPU log, so they are
+    # disambiguated only by filename: the baseline globs use _[0-9]* to exclude _mps_.
+    ja_time  = newest("time_scan20_nb$(nb)_julia_cpu_ad_[0-9]*.out")
+    ga_time  = newest("time_scan20_nb$(nb)_julia_gpu_ad_[0-9]*.out")
+    gam_time = newest("time_scan20_nb$(nb)_julia_gpu_ad_mps_*.out")
+    if ja_time !== nothing
+        cpu_ad = parse_timing_log(ja_time)[4]
+    end
+    if ga_time !== nothing
+        gpu_ad = parse_timing_log(ga_time)[5]
+    end
+    if gam_time !== nothing
+        gpu_ad_mps = parse_timing_log(gam_time)[5]
     end
 
     f_dbg = newest("debug_nb$(nb)_fortran20_10n_*.out")
@@ -172,22 +194,28 @@ function collect_nb(nb::Int)
         gpu = gpu === nothing ? NB6_FALLBACK.julia_gpu : gpu
     end
 
-    return fort, cpu, gpu
+    return fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps
 end
 
 function collect_scan20_timing!()
-    rows = ["n_basis,fortran_s,julia_cpu_s,julia_gpu_s,notes"]
+    rows = ["n_basis,fortran_s,julia_cpu_s,julia_gpu_s,julia_cpu_ad_s,julia_gpu_ad_s,julia_gpu_ad_mps_s,notes"]
     for nb in BASIS
-        fort, cpu, gpu = collect_nb(nb)
+        fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps = collect_nb(nb)
         notes = String[]
         fort === nothing && push!(notes, "fortran_missing")
         cpu === nothing && push!(notes, "julia_cpu_missing")
         gpu === nothing && push!(notes, "julia_gpu_missing")
+        cpu_ad === nothing && push!(notes, "julia_cpu_ad_missing")
+        gpu_ad === nothing && push!(notes, "julia_gpu_ad_missing")
+        # gpu_ad_mps is Phase B (pending the GPU/MPS AD kernel); absence is expected, not flagged.
         note = isempty(notes) ? "ok" : join(notes, ";")
         fs = fort === nothing ? "" : string(fort)
         cs = cpu === nothing ? "" : string(cpu)
         gs = gpu === nothing ? "" : string(gpu)
-        push!(rows, "$nb,$fs,$cs,$gs,$note")
+        cas = cpu_ad === nothing ? "" : string(cpu_ad)
+        gas = gpu_ad === nothing ? "" : string(gpu_ad)
+        gams = gpu_ad_mps === nothing ? "" : string(gpu_ad_mps)
+        push!(rows, "$nb,$fs,$cs,$gs,$cas,$gas,$gams,$note")
     end
     mkpath(dirname(OUT_CSV))
     write(OUT_CSV, join(rows, "\n") * "\n")

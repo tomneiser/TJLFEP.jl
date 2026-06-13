@@ -13,22 +13,32 @@ function read_timing_csv(path::String)
     lines = filter(!isempty, strip.(readlines(path)))
     basis = Int[]
     fort, cpu, gpu = Float64[], Float64[], Float64[]
+    cpu_ad, gpu_ad, gpu_ad_mps = Float64[], Float64[], Float64[]
+    num(p, i) = (length(p) >= i && !isempty(strip(p[i]))) ? parse(Float64, p[i]) : NaN
     for line in lines[2:end]
         p = split(line, ",")
         length(p) < 4 && continue
         push!(basis, parse(Int, p[1]))
-        push!(fort, isempty(strip(p[2])) ? NaN : parse(Float64, p[2]))
-        push!(cpu, isempty(strip(p[3])) ? NaN : parse(Float64, p[3]))
-        push!(gpu, isempty(strip(p[4])) ? NaN : parse(Float64, p[4]))
+        push!(fort, num(p, 2))
+        push!(cpu, num(p, 3))
+        push!(gpu, num(p, 4))
+        # Schema versions: 5 cols (no AD; notes@5), 7 cols (AD@5,6; notes@7),
+        # 8 cols (+gpu_ad_mps@7; notes@8). Guard by field count so notes is never parsed.
+        push!(cpu_ad,     length(p) >= 7 ? num(p, 5) : NaN)
+        push!(gpu_ad,     length(p) >= 7 ? num(p, 6) : NaN)
+        push!(gpu_ad_mps, length(p) >= 8 ? num(p, 7) : NaN)
     end
-    return basis, fort, cpu, gpu
+    return basis, fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps
 end
 
 csv_path, _ = collect_scan20_timing!()
-basis, fort, cpu, gpu = read_timing_csv(csv_path)
+basis, fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps = read_timing_csv(csv_path)
 fort ./= 60
 cpu ./= 60
 gpu ./= 60
+cpu_ad ./= 60
+gpu_ad ./= 60
+gpu_ad_mps ./= 60
 
 # The Julia CPU sysimage runs may still be pending; the collector then backfills STALE
 # pre-optimization numbers. Set SKIP_JULIA_CPU=1 to omit the Julia CPU series entirely
@@ -39,7 +49,17 @@ default(legendfontsize=10, guidefontsize=11, tickfontsize=9, dpi=200,
         fontfamily="Computer Modern")
 mkpath(OUTDIR)
 
-ymax = maximum(filter(!isnan, SHOW_CPU ? vcat(fort, cpu, gpu) : vcat(fort, gpu)); init=0.0)
+# AD series (line plot only). Simplified to show ONLY the fastest AD route (GPU in-process
+# threads); AD-CPU and AD-GPU+MPS are measured but hidden to keep the plot readable.
+const SHOW_AD_CPU = false
+const SHOW_AD_GPU = any(!isnan, gpu_ad)
+const SHOW_AD_GPU_MPS = false
+
+ymax_series = SHOW_CPU ? vcat(fort, cpu, gpu) : vcat(fort, gpu)
+SHOW_AD_CPU && (ymax_series = vcat(ymax_series, cpu_ad))
+SHOW_AD_GPU && (ymax_series = vcat(ymax_series, gpu_ad))
+SHOW_AD_GPU_MPS && (ymax_series = vcat(ymax_series, gpu_ad_mps))
+ymax = maximum(filter(!isnan, ymax_series); init=0.0)
 ymax = ymax > 0 ? ymax * 1.12 : 30.0
 
 bw = 0.22
@@ -72,15 +92,21 @@ p2 = plot(
     xlabel="N_BASIS", ylabel="Total wallclock (min)", title="SCAN_N=20 timing vs N_BASIS",
     xticks=basis, legend=:topleft, ylim=(0, ymax),
 )
-SHOW_CPU && plot!(p2, basis, cpu; label="Julia (10 CPU nodes)", marker=:square, linewidth=2, markersize=6)
-plot!(p2, basis, gpu; label="Julia (5 GPU nodes)", marker=:diamond, linewidth=2, markersize=6)
+SHOW_CPU && plot!(p2, basis, cpu; label="Julia grid (10 CPU nodes)", marker=:square, linewidth=2, markersize=6)
+plot!(p2, basis, gpu; label="Julia grid MPS (5 GPU nodes)", marker=:diamond, linewidth=2, markersize=6)
+SHOW_AD_CPU && plot!(p2, basis, cpu_ad; label="Julia AD (10 CPU nodes)", marker=:utriangle, linewidth=2, markersize=6, linestyle=:dash)
+SHOW_AD_GPU && plot!(p2, basis, gpu_ad; label="Julia AD threads (5 GPU nodes)", marker=:star5, linewidth=2, markersize=7, linestyle=:dash)
+SHOW_AD_GPU_MPS && plot!(p2, basis, gpu_ad_mps; label="Julia AD GPU+MPS (5 nodes)", marker=:hexagon, linewidth=2, markersize=6, linestyle=:dot)
 out2 = joinpath(OUTDIR, "scan20_timing_lines.png")
 savefig(p2, out2)
 println("Wrote ", out2)
 
 println("\nData ($csv_path), times in minutes", SHOW_CPU ? "" : " (Julia CPU omitted: SKIP_JULIA_CPU=1)", ":")
 for i in eachindex(basis)
-    @printf("  N_BASIS=%d: Fortran=%.2f  JuliaCPU=%s  JuliaGPU=%s\n", basis[i], fort[i],
+    @printf("  N_BASIS=%d: Fortran=%.2f  JuliaCPU=%s  JuliaGPU=%s  AD-CPU=%s  AD-GPU=%s  AD-GPU+MPS=%s\n", basis[i], fort[i],
         (!SHOW_CPU || isnan(cpu[i])) ? "—" : @sprintf("%.2f", cpu[i]),
-        isnan(gpu[i]) ? "—" : @sprintf("%.2f", gpu[i]))
+        isnan(gpu[i]) ? "—" : @sprintf("%.2f", gpu[i]),
+        isnan(cpu_ad[i]) ? "—" : @sprintf("%.2f", cpu_ad[i]),
+        isnan(gpu_ad[i]) ? "—" : @sprintf("%.2f", gpu_ad[i]),
+        isnan(gpu_ad_mps[i]) ? "—" : @sprintf("%.2f", gpu_ad_mps[i]))
 end

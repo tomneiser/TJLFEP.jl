@@ -9,7 +9,11 @@ density/pressure gradients used for EP transport and stability studies.
 It is a close, jointly-maintained translation of the Fortran GACODE add-on
 `TGLF-EP` — verified against it bit-for-bit — and adds a CUDA GPU eigensolver path
 that is **~6.8× faster than the Fortran CPU reference** at production basis size
-(`N_BASIS=32`).
+(`N_BASIS=32`). A Julia-native **autodiff (`ad`) solver** pushes this to **~36×**
+by replacing the brute-force scale-factor grid with a gradient-based Newton
+root-find (see the benchmark below); because it is grid-independent, the AD
+solver also *changes the result* — its `sfmin` is the smooth, more accurate
+marginal factor rather than a value quantized to the coarse factor grid.
 
 ## Capabilities
 
@@ -17,7 +21,8 @@ that is **~6.8× faster than the Fortran CPU reference** at production basis siz
    canonical Fortran `TGLFEP_driver` and Julia and overlay the results.
 2. **Run + validate** on an `input.gacode` + `input.TGLFEP` pair.
 3. **Database generation** on GPU (NVIDIA MPS, 1 radius/worker).
-4. **Timing vs `N_BASIS`** benchmark (Fortran CPU / Julia CPU / Julia GPU).
+4. **Timing vs `N_BASIS`** benchmark (Fortran CPU / Julia CPU / Julia GPU), for
+   both the `grid` and autodiff (`ad`) solvers.
 5. **Sysimage** build + run (removes JIT cost for production).
 6. **FUSE-native IMAS `dd`** path — run from an IMAS data dictionary using the
    same preprocessing/`runTHD` routines as the `input.gacode` path.
@@ -96,22 +101,62 @@ one radius against the archived Fortran golden output. Full steps:
 
 ## Benchmark: wallclock vs N_BASIS (DIII-D, SCAN_N=20)
 
-20-radius scan on Perlmutter; Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
-SlurmClusterManager) vs Julia GPU (5 A100 nodes, MPS team), all with sysimages.
+20-radius scan on Perlmutter, all with sysimages. Two critical-factor **solvers**
+are compared, each on its fastest parallel layout:
+
+- **`grid`** (default, the verified reference) — the Fortran-equivalent
+  `(kyhat × width × factor)` sweep. Thousands of independent eigensolves per
+  radius, so it is fastest with an **MPS team** (separate CUDA contexts that
+  overlap on each GPU via Hyper-Q).
+- **`ad`** — the autodiff route (AD-Newton AE-onset + implicit-function-theorem
+  `(kyhat,width)` descent). Far fewer eigensolves per radius, so it is fastest
+  **in-process (threads)**; an MPS team only adds overhead here (see below).
 
 ![Wallclock vs N_BASIS](docs/plots/scan20_timing_lines.png)
 
-| N_BASIS | Fortran CPU (s) | Julia CPU (s) | Julia GPU (s) | GPU speedup vs Fortran |
-|--------:|----------------:|--------------:|--------------:|-----------------------:|
+**Grid solver** — Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
+SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
+
+| N_BASIS | Fortran CPU (s) | Julia CPU (s) | Julia GPU MPS (s) | GPU speedup vs Fortran |
+|--------:|----------------:|--------------:|------------------:|-----------------------:|
 | 6  | 62.5   | 141.3   | 140.4 | 0.45× |
 | 8  | 97.5   | 148.4   | 149.0 | 0.65× |
 | 16 | 347.0  | 250.0   | 161.7 | 2.15× |
 | 32 | 1546.0 | 1029.2  | 226.3 | **6.83×** |
 
-The GPU eigensolver wins decisively as the basis (and therefore the dense
-eigenproblem) grows: at the production `N_BASIS=32` it is **6.8× faster** than the
-Fortran CPU reference. Data: `docs/plots/scan20_timing.csv`. Reproduce with
-`build/timing/submit_timing_vs_nbasis.sh` (capability 4).
+**Autodiff solver** — Julia GPU (5 A100 nodes, **in-process threads**), vs the
+grid GPU path above:
+
+| N_BASIS | Grid GPU MPS (s) | AD GPU threads (s) | AD vs grid-GPU | AD vs Fortran |
+|--------:|-----------------:|-------------------:|---------------:|--------------:|
+| 6  | 140.4 | 65.6 | 2.1× | 0.95× |
+| 8  | 149.0 | 57.9 | 2.6× | 1.7× |
+| 16 | 161.7 | 47.4 | 3.4× | 7.3× |
+| 32 | 226.3 | 42.7 | **5.3×** | **36×** |
+
+The grid GPU eigensolver wins decisively over Fortran as the dense eigenproblem
+grows (**6.8×** at `N_BASIS=32`). The AD solver then wins again on top of that:
+**~43 s for the full 20-radius profile at `N_BASIS=32` — 5.3× faster than grid-GPU
+and 36× faster than Fortran.** Running the AD path on an MPS team instead is
+*slower* (≈4.5 min at `N_BASIS=32`, and it worsens with `N_BASIS`): the per-radius
+AD parallel regions are small and the Newton descent is sequential, so the
+team-spawn / remote-call overhead is never amortized. **Rule of thumb: `grid` → MPS,
+`ad` → threads.**
+
+### AD changes the result (it is grid-independent)
+
+The `ad` solver does **not** read `sfmin` off the coarse EP-scale-factor grid that
+the Fortran/`grid` path quantizes to. It locates the smooth instability/keep
+**onset** directly with a Newton root-find using exact (forward-mode AD)
+derivatives, so its `sfmin` can **differ from the grid value** — it removes the
+factor-grid discretization error rather than reproducing it. On DIII-D the grid
+`sfmin` is effectively a coarse-grid / keep-flag-transition artifact, which the AD
+onset resolves continuously. Treat the AD `sfmin` as the more accurate marginal
+factor, not as a bit-for-bit match to the grid number.
+
+Data: `docs/plots/scan20_timing.csv`. Reproduce: grid sweep with
+`build/timing/submit_timing_vs_nbasis.sh`, AD sweep with
+`build/timing/submit_timing_vs_nbasis_ad.sh` (capability 4).
 
 ## Citation
 

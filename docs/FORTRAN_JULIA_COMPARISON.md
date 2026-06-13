@@ -2,6 +2,8 @@
 
 This document records verification outcomes from the detailed comparison plan. The Fortran reference is the shared build at `/global/cfs/cdirs/m3739/gacode_add_d3d/TGLF-EP` (a snapshot of the original `TGLF-EP/` subdir is archived under `attic/`); Julia lives in `TJLFEP/src/`.
 
+> **Scope: this verification covers the `grid` solver** (`mainsub(...; solver=:grid)`, the default `kwscale_scan` `(kyhat × width × factor)` sweep), which reproduces the Fortran `SFmin` to its printed precision. The autodiff **`ad` solver** (`solver=:ad`) is a deliberate, *grid-independent* departure: it finds the smooth instability/keep onset by a Newton root-find with exact AD derivatives instead of quantizing to the coarse EP-scale-factor grid, so its `sfmin` can differ from — and is more accurate than — the Fortran/grid value. The AD result is **not** expected to match Fortran bit-for-bit; on DIII-D the grid `sfmin` is effectively a coarse-grid / keep-flag-transition artifact that the AD onset resolves continuously. See the top-level `README.md` benchmark section.
+
 ## 1. RMIN_LOC normalization (`verify-rmin-norm`)
 
 | Code | Assignment |

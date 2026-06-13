@@ -17,16 +17,30 @@ using TJLFEP
 using LinearAlgebra
 BLAS.set_num_threads(1)
 
-const ROOT   = normpath(@__DIR__, "..", "..")
-const GACODE = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
-const TGLFEP = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input_singleradius_nb6.TGLFEP")   # N_BASIS=6, SCAN_N=1
+# NB: keep these as LOCALS inside a `let` (not top-level `const`) so PackageCompiler does not
+# bake a `Main.GACODE` constant into the image (which would collide with task scripts that
+# define their own `const GACODE = ENV[...]`). The `let` preserves the compile trace exactly.
+let
+    ROOT   = normpath(@__DIR__, "..", "..")
+    GACODE = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
+    TGLFEP = joinpath(ROOT, "examples", "DIIID_202017C42_500ms_v3.1", "input_singleradius_nb6.TGLFEP")   # N_BASIS=6, SCAN_N=1
 
-@assert isfile(GACODE) "missing $GACODE"
-@assert isfile(TGLFEP) "missing $TGLFEP"
+    @assert isfile(GACODE) "missing $GACODE"
+    @assert isfile(TGLFEP) "missing $TGLFEP"
 
-# Exercise the full CPU per-combo path once (SFmin value irrelevant; we only need the trace).
-mktempdir() do tmp
-    res = run_gacode_scan_task(GACODE, TGLFEP, 1;
-        out_dir=tmp, use_gpu=false, printout=false, inner=:threads, team=nothing)
-    @info "precompile workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
+    # Exercise the full CPU per-combo path once (SFmin value irrelevant; we only need the trace).
+    mktempdir() do tmp
+        res = run_gacode_scan_task(GACODE, TGLFEP, 1;
+            out_dir=tmp, use_gpu=false, printout=false, inner=:threads, team=nothing)
+        @info "precompile workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
+    end
+
+    # Also bake the autodiff (solver=:ad) path: critical_factor_optimize -> Dual eigensolves +
+    # IFT descent, reached via mainsub's solver=:ad branch. Without this trace the AD timing runs
+    # would pay a one-time per-task JIT that unfairly inflates the wallclock-vs-grid comparison.
+    mktempdir() do tmp
+        res = run_gacode_scan_task(GACODE, TGLFEP, 1;
+            out_dir=tmp, use_gpu=false, printout=false, inner=:threads, team=nothing, solver=:ad)
+        @info "precompile AD workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
+    end
 end

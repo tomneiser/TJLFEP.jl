@@ -165,6 +165,14 @@ function _to_dual_options(src::Options{Float64}, factor_seed::D, nr::Int) where 
     return _promote_struct_to_dual!(dst, src, D, Dict{Symbol,Any}(:FACTOR_IN => factor_seed))
 end
 
+# Options{Float64} → Options{D} with an arbitrary set of seeded Dual fields.
+# `seeds` maps EP field names (e.g. :FACTOR_IN, :KYHAT_IN, :WIDTH_IN) to the
+# multi-partial Dual to inject; every other field is widened as a constant.
+function _to_dual_options_seeded(src::Options{Float64}, seeds::AbstractDict, ::Type{D}, nr::Int) where {D<:ForwardDiff.Dual}
+    dst = Options{D}(src.SCAN_N, src.WIDTH_IN_FLAG, coalesce(src.NN, 1), nr, coalesce(src.JTSCALE_MAX, 1), src.NMODES)
+    return _promote_struct_to_dual!(dst, src, D, seeds)
+end
+
 # profile{Float64} → profile{D} (all entries are constants w.r.t. the factor).
 function _to_dual_profile(src::profile{Float64}, ::Type{D}) where {D<:ForwardDiff.Dual}
     nr, ns = size(src.AS)
@@ -233,6 +241,82 @@ function gamma_dgamma_dfactor(inputsEP::Options{Float64}, inputsPR::profile{Floa
         dfreq_dfactor  = [ForwardDiff.partials(x, 1) for x in f],
         factor         = fclamp,
     )
+end
+
+# Operating-point variables that gamma_grad can seed. Each reaches the eigensolve
+# through TJLF_map / _configure_inputTJLF_for_ky!:
+#   FACTOR_IN → EP density/gradient + P_PRIME_LOC (MHD-α) channels
+#   KYHAT_IN  → inputTJLF.KY  (TJLF_map KY_MODEL=3, line ~1092)
+#   WIDTH_IN  → inputTJLF.WIDTH / WIDTH_SPECTRUM (_configure_inputTJLF_for_ky!)
+const _GAMMA_GRAD_VARS = (:FACTOR_IN, :KYHAT_IN, :WIDTH_IN)
+
+"""
+    gamma_grad(inputsEP, inputsPR; vars=(:FACTOR_IN,:KYHAT_IN,:WIDTH_IN), use_gpu=false)
+
+Multi-variable generalization of [`gamma_dgamma_dfactor`](@ref): one forward-mode
+AD pass returning the per-mode growth rate `γ` and real frequency together with
+their exact partials w.r.t. each operating-point variable in `vars` — any subset
+of `(:FACTOR_IN, :KYHAT_IN, :WIDTH_IN)`. All partials are obtained in a single
+N-partial `ForwardDiff.Dual` solve (one eigensolve), which is the building block
+for the `(kyhat, width)` optimizer (Phase 3) and the freq/keep-condition root
+finds (Phase 2).
+
+Derivatives are taken *through `TJLF_map`* (by promoting `Options`/`profile` to
+the Dual element type and seeding the chosen EP fields), so every channel by which
+a variable reaches the TGLF input is captured automatically. `IFLUX=false`, so
+only the eigenvalue block runs.
+
+Returns a `NamedTuple`:
+  - `gamma`  :: Vector{Float64}          per-mode growth rate (length NMODES)
+  - `freq`   :: Vector{Float64}          per-mode real frequency
+  - `dgamma` :: Matrix{Float64}          `NMODES × length(vars)`, `∂γ_m/∂vars[k]`
+  - `dfreq`  :: Matrix{Float64}          `NMODES × length(vars)`, `∂freq_m/∂vars[k]`
+  - `vars`   :: NTuple                   the variable order matching the columns
+
+`inputsEP.IR`, `FACTOR_IN`, `KYHAT_IN`, `WIDTH_IN` must be set on entry (as the
+scan sets them). `inputsEP`/`inputsPR` are not mutated.
+"""
+function gamma_grad(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+                    vars::NTuple{N,Symbol} = _GAMMA_GRAD_VARS,
+                    use_gpu::Bool = false) where {N}
+    all(v -> v in _GAMMA_GRAD_VARS, vars) ||
+        error("gamma_grad: vars must be a subset of $_GAMMA_GRAD_VARS; got $vars")
+
+    Tag = typeof(ForwardDiff.Tag(gamma_grad, Float64))
+    D   = ForwardDiff.Dual{Tag, Float64, N}
+
+    seeds = Dict{Symbol,Any}()
+    for (i, v) in enumerate(vars)
+        x0 = Float64(getfield(inputsEP, v))
+        seeds[v] = ForwardDiff.Dual{Tag}(x0, ntuple(j -> j == i ? 1.0 : 0.0, N)...)
+    end
+
+    nr  = size(inputsPR.AS, 1)
+    epD = _to_dual_options_seeded(inputsEP, seeds, D, nr)
+    prD = _to_dual_profile(inputsPR, D)
+
+    inputD = TJLF_map(epD, prD)
+    inputD isa Integer && error("gamma_grad: TJLF_map rejected IR=$(inputsEP.IR) (out of range)")
+    _configure_inputTJLF_for_ky!(inputD, epD)
+
+    if :FACTOR_IN in vars
+        fclamp = ForwardDiff.value(epD.FACTOR_IN)
+        if fclamp <= 0 || fclamp >= ForwardDiff.value(epD.FACTOR_MAX)
+            @warn "gamma_grad: FACTOR_IN=$fclamp is at/over the clamp range [0, $(ForwardDiff.value(epD.FACTOR_MAX))]; ∂γ/∂FACTOR_IN assumes an interior point"
+        end
+    end
+
+    res = _tjlf_run_dual(inputD, D; use_gpu = use_gpu)
+    g = res.eigenvalue[:, 1, 1]
+    f = res.eigenvalue[:, 1, 2]
+    NM = length(g)
+
+    gamma  = ForwardDiff.value.(g)
+    freq   = ForwardDiff.value.(f)
+    dgamma = [ForwardDiff.partials(g[m], i) for m in 1:NM, i in 1:N]
+    dfreq  = [ForwardDiff.partials(f[m], i) for m in 1:NM, i in 1:N]
+
+    return (; gamma, freq, dgamma, dfreq, vars)
 end
 
 # AE-band upper frequency cut (FREQ_AE_UPPER = -|ω_GAM|): modes with freq below it
@@ -328,6 +412,7 @@ Returns `(; factor, gamma_lead, gamma, freq, iters, evals, converged, bracket)`.
 function marginal_factor(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                          gamma_thresh::Union{Nothing,Float64} = nothing,
                          bracket::Union{Nothing,Tuple{Float64,Float64}} = nothing,
+                         f_start::Union{Nothing,Float64} = nothing,
                          scan_lo::Float64 = 1.0e-3, scan_hi::Float64 = 10.0, nscan::Int = 8,
                          ae_band::Bool = false,
                          tol::Float64 = 1.0e-6, xtol::Float64 = 1.0e-8, maxiter::Int = 40,
@@ -344,27 +429,54 @@ function marginal_factor(inputsEP::Options{Float64}, inputsPR::profile{Float64};
 
     # ── Establish a bracket [a,b] with g(a) < 0 < g(b) ──
     local a, b, ga, gb
-    if bracket === nothing
-        fs = exp.(range(log(scan_lo), log(scan_hi); length = nscan))
-        prev_f = fs[1]; prev_g = g(prev_f)[1]
-        a = b = NaN
-        for f in fs[2:end]
-            gf = g(f)[1]
-            if prev_g < 0 && gf >= 0
-                a, ga, b, gb = prev_f, prev_g, f, gf
-                break
+    a = b = NaN
+    # Warm start: build a cheap LOCAL bracket by geometric expansion around f_start
+    # (the previous root in a continuation/optimizer), avoiding the nscan global scan.
+    if bracket === nothing && f_start !== nothing && scan_lo < f_start < scan_hi
+        gs = g(f_start)[1]
+        if gs >= 0           # at/above onset → step DOWN for a (g<0)
+            b, gb = f_start, gs
+            fa = f_start
+            for _ in 1:8
+                fa = max(scan_lo, fa / 1.5)
+                gfa = g(fa)[1]
+                if gfa < 0; a, ga = fa, gfa; break end
+                fa <= scan_lo && break
             end
-            prev_f, prev_g = f, gf
+        else                 # below onset → step UP for b (g≥0)
+            a, ga = f_start, gs
+            fb = f_start
+            for _ in 1:8
+                fb = min(scan_hi, fb * 1.5)
+                gfb = g(fb)[1]
+                if gfb >= 0; b, gb = fb, gfb; break end
+                fb >= scan_hi && break
+            end
         end
-        if isnan(a)
-            @warn "marginal_factor: no sign change of γ_lead-thresh in [$scan_lo, $scan_hi] (always stable or always unstable); returning best endpoint"
-            return (; factor = prev_g < 0 ? scan_hi : scan_lo, gamma_lead = prev_g + gamma_thresh,
-                    gamma = Float64[], freq = Float64[], iters = 0, evals = evals[], converged = false, bracket = (scan_lo, scan_hi))
+    end
+    if isnan(a) || isnan(b)
+        a = b = NaN
+        if bracket === nothing
+            fs = exp.(range(log(scan_lo), log(scan_hi); length = nscan))
+            prev_f = fs[1]; prev_g = g(prev_f)[1]
+            for f in fs[2:end]
+                gf = g(f)[1]
+                if prev_g < 0 && gf >= 0
+                    a, ga, b, gb = prev_f, prev_g, f, gf
+                    break
+                end
+                prev_f, prev_g = f, gf
+            end
+            if isnan(a)
+                @warn "marginal_factor: no sign change of γ_lead-thresh in [$scan_lo, $scan_hi] (always stable or always unstable); returning best endpoint"
+                return (; factor = prev_g < 0 ? scan_hi : scan_lo, gamma_lead = prev_g + gamma_thresh,
+                        gamma = Float64[], freq = Float64[], iters = 0, evals = evals[], converged = false, bracket = (scan_lo, scan_hi))
+            end
+        else
+            a, b = bracket
+            ga = g(a)[1]; gb = g(b)[1]
+            ga < 0 < gb || error("marginal_factor: provided bracket ($a,$b) does not satisfy g(a)<0<g(b): g(a)=$ga g(b)=$gb")
         end
-    else
-        a, b = bracket
-        ga = g(a)[1]; gb = g(b)[1]
-        ga < 0 < gb || error("marginal_factor: provided bracket ($a,$b) does not satisfy g(a)<0<g(b): g(a)=$ga g(b)=$gb")
     end
 
     # ── Safeguarded Newton (rtsafe) ──
@@ -468,6 +580,482 @@ function critical_factor_grid(inputsEP::Options{Float64}, inputsPR::profile{Floa
 
     return (; sfmin = best.factor, kyhat = best.kyhat, width = best.width,
             gamma = best.gamma, total_evals = total_evals, results = out)
+end
+
+# ── Faithful keep evaluation at one operating point ──────────────────────────
+# Runs the FULL production single-ky path (TJLFEP_ky, IFLUX=true) so every keep
+# filter is applied: band-entry (freq<FREQ_AE_UPPER) and growth (g>GAMMA_THRESH),
+# plus the wavefunction/QL secondary rejections (tearing, ion/elec/thermal/EP
+# pinch, QL-ratio, θ²). This is the SAME keep boolean kwscale_scan reduces to
+# `imark`/`sfmin`, so it is the ground-truth target the AD root must match.
+# (`inputsEP` is not mutated.)
+function keep_at(inputsEP::Options{Float64}, inputsPR::profile{Float64}, factor::Float64;
+                 kyhat::Float64 = Float64(inputsEP.KYHAT_IN),
+                 width::Float64 = Float64(inputsEP.WIDTH_IN),
+                 use_gpu::Bool = false)
+    ep = deepcopy(inputsEP)
+    ep.KYHAT_IN  = kyhat
+    ep.WIDTH_IN  = width
+    ep.FACTOR_IN = factor
+    g, f, = TJLFEP_ky(ep, inputsPR, "", 0; eigen_cache = nothing, use_gpu = use_gpu)
+    nm = ep.NMODES
+    keep = collect(@view ep.LKEEP[1:nm])
+    return (; factor, any_keep = any(keep), LKEEP = keep,
+            gamma = g[1:nm], freq = f[1:nm],
+            FREQ_AE_UPPER = Float64(ep.FREQ_AE_UPPER), GAMMA_THRESH = Float64(ep.GAMMA_THRESH),
+            LTEARING = collect(@view ep.LTEARING[1:nm]),
+            L_I_PINCH = collect(@view ep.L_I_PINCH[1:nm]),
+            L_E_PINCH = collect(@view ep.L_E_PINCH[1:nm]),
+            L_TH_PINCH = collect(@view ep.L_TH_PINCH[1:nm]),
+            L_EP_PINCH = collect(@view ep.L_EP_PINCH[1:nm]),
+            L_QL_RATIO = collect(@view ep.L_QL_RATIO[1:nm]),
+            L_THETA_SQ = collect(@view ep.L_THETA_SQ[1:nm]))
+end
+
+# Which keep sub-condition rejects mode `n` at a faithful keep evaluation `kf`
+# (the FIRST that fails, in TJLFEP_ky's evaluation order). Returns :kept if kept.
+function _why_rejected(kf, n::Int)
+    kf.LKEEP[n]                      && return :kept
+    !(kf.freq[n] < kf.FREQ_AE_UPPER) && return :band          # not in AE band
+    !(kf.gamma[n] > kf.GAMMA_THRESH) && return :below_thresh   # growth below γ*
+    kf.LTEARING[n]                   && return :tearing
+    kf.L_I_PINCH[n]                  && return :i_pinch
+    kf.L_E_PINCH[n]                  && return :e_pinch
+    kf.L_TH_PINCH[n]                 && return :th_pinch
+    kf.L_EP_PINCH[n]                 && return :ep_pinch
+    kf.L_QL_RATIO[n]                 && return :ql_ratio
+    kf.L_THETA_SQ[n]                 && return :theta_sq
+    return :unknown
+end
+
+# Parallel-map dispatcher for the AD path's independent-evaluation regions. With an MPS
+# team (`inner=:mps_team`, non-empty `team`) it reuses kwscale_scan's chunked remotecall
+# helper `_inner_team_map` (one round-trip per worker; each worker is a separate CUDA
+# context so GPU solves overlap via Hyper-Q). Otherwise it runs in-process with threads
+# (BLAS pinned to 1 so the dense LAPACK/CUSOLVER per-eval doesn't oversubscribe). Returns
+# results in index order, `f(i)` for `i in 1:n`.
+function _ad_pmap(f, n::Int; inner::Symbol = :threads,
+                  team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+    if inner === :mps_team && team !== nothing && !isempty(team)
+        return _inner_team_map(f, team, n)
+    end
+    res = Vector{Any}(undef, n)
+    TJLF.with_blas_threads(1) do
+        Threads.@threads for i in 1:n
+            res[i] = f(i)
+        end
+    end
+    return res
+end
+
+# AE-band unstable hull [f1,f2]: the factor range over which the leading AE-band
+# (freq<FREQ_AE_UPPER) growth rate exceeds γ*, from a cheap eigenvalue-only scan
+# (IFLUX=false). The keep window is a SUBSET of this (keep requires g>γ* and
+# in-band), so a faithful sweep restricted to [f1,f2] is complete — and the AE
+# γ(factor) is a narrow "bump", so an unbounded geometric sweep can step over the
+# kept window entirely. `f1` is Newton-refined (smooth, grid-independent onset of
+# instability) when the up-crossing is bracketed inside the scan; `f2` is padded
+# to the next stable sample above the bump. `pinned_lo=true` flags that γ_AE>γ*
+# already at scan_lo (no interior onset — the true edge is below the scan range).
+# Returns `(; f1, f2, evals, unstable, pinned_lo)`.
+function _ae_unstable_window(ep0::Options{Float64}, inputsPR::profile{Float64}, gth::Float64;
+                             scan_lo::Float64, scan_hi::Float64, n_eig::Int,
+                             threaded::Bool = true, use_gpu::Bool = false,
+                             inner::Symbol = :threads,
+                             team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+    fe  = exp.(range(log(scan_lo), log(scan_hi); length = n_eig))
+    gae = Vector{Float64}(undef, n_eig)
+    if threaded
+        vals = _ad_pmap(i -> _gamma_lead_dfactor(ep0, inputsPR, fe[i]; use_gpu = use_gpu, ae_band = true)[1],
+                        n_eig; inner = inner, team = team)
+        for i in 1:n_eig
+            gae[i] = vals[i]::Float64
+        end
+    else
+        for i in 1:n_eig
+            gae[i] = _gamma_lead_dfactor(ep0, inputsPR, fe[i]; use_gpu = use_gpu, ae_band = true)[1]
+        end
+    end
+    unst = findall(>(gth), gae)
+    isempty(unst) && return (; f1 = NaN, f2 = NaN, evals = n_eig, unstable = false, pinned_lo = false)
+    i1 = first(unst); i2 = last(unst)
+    evals = n_eig
+    # Newton-refine the lower up-crossing of γ_AE(f)=γ* within [fe[i1-1],fe[i1]].
+    f1 = fe[i1]
+    pinned_lo = (i1 == 1)
+    if i1 > 1
+        rm = marginal_factor(ep0, inputsPR; gamma_thresh = gth, ae_band = true,
+                             bracket = (fe[i1-1], fe[i1]), use_gpu = use_gpu)
+        f1 = rm.factor
+        evals += rm.evals
+    end
+    f2 = i2 < n_eig ? fe[i2+1] : fe[i2]   # pad to the next (stable) sample so the window brackets the bump
+    return (; f1 = f1, f2 = f2, evals = evals, unstable = true, pinned_lo = pinned_lo)
+end
+
+"""
+    marginal_factor_faithful(inputsEP, inputsPR; kwargs...) -> NamedTuple
+
+Ground-truth marginal EP scale factor at a fixed `(IR, kyhat, width)` point that
+matches the production keep definition (all secondary IFLUX=true filters), using
+cheap AD eigensolves to localize the search and full evals only where needed.
+
+Strategy:
+  1. Cheap eigenvalue-only scan (`IFLUX=false`) maps the AE-band UNSTABLE hull
+     `[f1,f2]` where `γ_AE(f) > γ*`, with `f1` Newton-refined. Because the keep
+     window is a subset of this hull (keep ⇒ `g>γ*`), and `γ_AE(f)` is typically
+     a narrow bump, restricting the expensive search to `[f1,f2]` is both
+     complete and immune to stepping over the window.
+  2. Faithful keep sweep (`IFLUX=true`) on a fine grid within `[f1,f2]`: the
+     lowest kept sample is bisected against its unkept neighbor to give the lower
+     edge of the kept window. The condition that fails just below that edge names
+     the binding filter (band-entry/growth for DIII-D; ion/thermal pinch or
+     QL-ratio for the rotational ITER case).
+
+Keywords: `kyhat`, `width` (default to the struct's), `gamma_thresh=nothing`
+(case γ*), `scan_lo=1e-3`, `scan_hi=10.0`, `n_eig=24` (eigenvalue scan points),
+`n_fine=28` (faithful samples within the hull), `xtol=1e-4`, `maxbisect=30`,
+`use_gpu=false`, `verbose=false`.
+
+Returns `(; factor_faithful, factor_fast, window, binding, kept_modes,
+evals_eig, evals_full, converged, keep)`. `factor_fast` is the cheap AD instability
+onset `f1`; `window=(f1,f2)`. `binding` ∈ {`:ae_band_growth`, `:tearing`,
+`:i_pinch`, `:e_pinch`, `:th_pinch`, `:ep_pinch`, `:ql_ratio`, `:theta_sq`,
+`:none`}.
+"""
+function marginal_factor_faithful(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+                                  kyhat::Float64 = Float64(inputsEP.KYHAT_IN),
+                                  width::Float64 = Float64(inputsEP.WIDTH_IN),
+                                  gamma_thresh::Union{Nothing,Float64} = nothing,
+                                  scan_lo::Float64 = 1.0e-3, scan_hi::Float64 = 10.0,
+                                  n_eig::Int = 24, n_fine::Int = 28,
+                                  xtol::Float64 = 1.0e-4, maxbisect::Int = 30,
+                                  threaded::Bool = true,
+                                  inner::Symbol = :threads,
+                                  team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                                  use_gpu::Bool = false, verbose::Bool = false)
+    ep0 = deepcopy(inputsEP); ep0.KYHAT_IN = kyhat; ep0.WIDTH_IN = width
+    gth = gamma_thresh === nothing ? _gamma_thresh_for(ep0, inputsPR) : gamma_thresh
+
+    # ── (1) cheap eigenvalue scan → AE-band unstable hull [f1,f2] ──
+    win = _ae_unstable_window(ep0, inputsPR, gth; scan_lo = scan_lo, scan_hi = scan_hi,
+                              n_eig = n_eig, threaded = threaded, use_gpu = use_gpu,
+                              inner = inner, team = team)
+    evals_eig = win.evals
+    if !win.unstable
+        verbose && @info "marginal_factor_faithful: AE-band γ never reaches γ* in [$scan_lo,$scan_hi]" gth
+        return (; factor_faithful = NaN, factor_fast = NaN, window = (NaN, NaN),
+                binding = :none, kept_modes = Int[], evals_eig, evals_full = 0,
+                converged = false, keep = nothing, pinned_lo = false)
+    end
+    f1, f2 = win.f1, win.f2
+    win.pinned_lo && verbose && @warn "marginal_factor_faithful: AE band already unstable at scan_lo=$scan_lo; the instability onset is below the scan range (true lower edge not bracketed)"
+    verbose && @info "AE-band unstable hull" f1 f2 gth pinned_lo=win.pinned_lo
+
+    nfull = Ref(0)
+    keepf = f -> (nfull[] += 1; keep_at(ep0, inputsPR, f; kyhat = kyhat, width = width, use_gpu = use_gpu))
+
+    # ── (2) faithful sweep within [f1,f2]: lowest kept sample + its unkept neighbor.
+    #        Threaded: evaluate all n_fine samples in parallel (the keep window can sit
+    #        anywhere in the hull), then locate the lowest kept index. ──
+    fs = collect(range(f1, f2; length = n_fine))
+    a = NaN; b = NaN; kept_b = nothing
+    if threaded
+        kfs = _ad_pmap(i -> keep_at(ep0, inputsPR, fs[i]; kyhat = kyhat, width = width, use_gpu = use_gpu),
+                       n_fine; inner = inner, team = team)
+        nfull[] += n_fine
+        j = findfirst(kf -> kf.any_keep, kfs)
+        if j !== nothing
+            b = fs[j]; kept_b = kfs[j]
+            a = j > 1 ? fs[j-1] : f1
+        end
+    else
+        prev_f = NaN
+        for (i, f) in enumerate(fs)
+            kf = keepf(f)
+            if kf.any_keep
+                b = f; kept_b = kf
+                a = i > 1 ? prev_f : f1
+                break
+            end
+            prev_f = f
+        end
+    end
+    if isnan(b)
+        verbose && @info "marginal_factor_faithful: AE band unstable but NO mode kept in [f1,f2] (all rejected by secondary filters)"
+        return (; factor_faithful = NaN, factor_fast = f1, window = (f1, f2),
+                binding = :none, kept_modes = Int[], evals_eig, evals_full = nfull[],
+                converged = false, keep = nothing, pinned_lo = win.pinned_lo)
+    end
+
+    # bisect [a (unkept), b (kept)] on any(LKEEP) for the lower edge
+    fa, fb = a, b
+    iters = 0
+    while (fb - fa) > xtol && iters < maxbisect
+        iters += 1
+        fm = 0.5 * (fa + fb)
+        kf = keepf(fm)
+        if kf.any_keep
+            fb = fm; kept_b = kf
+        else
+            fa = fm
+        end
+    end
+
+    # binding condition = what fails on the unkept side just below the edge
+    binding = :ae_band_growth
+    ka = keepf(fa)
+    for n in findall(kept_b.LKEEP)
+        r = _why_rejected(ka, n)
+        if r != :kept
+            binding = (r == :band || r == :below_thresh) ? :ae_band_growth : r
+            break
+        end
+    end
+
+    return (; factor_faithful = fb, factor_fast = f1, window = (f1, f2), binding = binding,
+            kept_modes = findall(kept_b.LKEEP), evals_eig, evals_full = nfull[],
+            converged = true, keep = kept_b, pinned_lo = win.pinned_lo)
+end
+
+# Per-point marginal factor f★(ky,w) (AE-band growth root γ_AE=γ*) AND its exact
+# gradient ∂f★/∂(ky,w) by the implicit function theorem. Differentiating
+# γ_AE(f★(ky,w), ky, w) = γ* gives ∂f★/∂ky = -(∂γ/∂ky)/(∂γ/∂f) and likewise for w,
+# with all three partials read from a SINGLE gamma_grad pass at (f★,ky,w). The
+# binding mode is the AE-band leading mode (max γ among freq<FREQ_AE_UPPER) that
+# defines the root. Returns `(; f, converged, grad, evals)`.
+function _marginal_and_grad(ep0::Options{Float64}, inputsPR::profile{Float64}, ky::Float64, w::Float64;
+                            gth::Float64, scan_lo::Float64, scan_hi::Float64, nscan::Int,
+                            f_start::Union{Nothing,Float64} = nothing, use_gpu::Bool)
+    ep = deepcopy(ep0); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
+    mf = marginal_factor(ep, inputsPR; gamma_thresh = gth, ae_band = true, f_start = f_start,
+                         scan_lo = scan_lo, scan_hi = scan_hi, nscan = nscan, use_gpu = use_gpu)
+    !mf.converged && return (; f = Inf, converged = false, grad = (0.0, 0.0), evals = mf.evals)
+    ep.FACTOR_IN = mf.factor
+    fu = _ae_band_upper(ep, inputsPR)
+    gg = gamma_grad(ep, inputsPR; vars = (:FACTOR_IN, :KYHAT_IN, :WIDTH_IN), use_gpu = use_gpu)
+    cand = findall(<(fu), gg.freq)
+    isempty(cand) && return (; f = mf.factor, converged = false, grad = (0.0, 0.0), evals = mf.evals + 1)
+    j = cand[argmax(@view gg.gamma[cand])]
+    dgdf, dgdky, dgdw = gg.dgamma[j, 1], gg.dgamma[j, 2], gg.dgamma[j, 3]
+    if abs(dgdf) < 1e-30
+        return (; f = mf.factor, converged = true, grad = (0.0, 0.0), evals = mf.evals + 1)
+    end
+    return (; f = mf.factor, converged = true, grad = (-dgdky / dgdf, -dgdw / dgdf), evals = mf.evals + 1)
+end
+
+_clamp_to(x, lo, hi) = min(max(x, lo), hi)
+
+"""
+    critical_factor_optimize(inputsEP, inputsPR; kwargs...) -> NamedTuple
+
+AD analogue of the inner `kwscale_scan`: find the critical EP scale factor
+`sfmin = min over (kyhat,width) of the marginal factor f★(kyhat,width)` by
+**projected-gradient descent with implicit-function-theorem gradients**.
+
+Each evaluated `(ky,w)` solves the AE-band growth root `f★` by AD-Newton
+([`marginal_factor`](@ref)) and gets the exact `∂f★/∂(ky,w)` from one extra
+`gamma_grad` pass (the implicit-function-theorem ratio `-(∂γ/∂x)/(∂γ/∂f)`). A
+coarse `nseed_ky × nseed_w` seed grid (or a caller-supplied `seed`) locates a
+feasible basin; descent then polishes it with backtracking line search,
+projecting `(ky,w)` to `ky∈ky_bounds`, `w∈[WIDTH_MIN,WIDTH_MAX]`.
+
+NOTE on cost: this yields the *continuous* optimum (more precise than any fixed
+grid), but it is NOT necessarily cheaper than a `(ky,w)` grid scan — the AE-band
+onset surface `f★(ky,w)` is bumpy/multimodal (the same narrow-bump physics the
+keep window shows in factor), so descent can need comparably many TGLF solves and
+warm seeds can land in a worse basin. The large AD win is per-evaluation
+(eigenvalue-only `IFLUX=false` Newton vs the production `IFLUX=true` factor grid),
+realized in [`marginal_factor`](@ref)/[`marginal_factor_faithful`](@ref), not in
+collapsing the `(ky,w)` grid.
+
+Keywords: `gamma_thresh=nothing` (case γ*), `nseed_ky=4`, `nseed_w=4`,
+`scan_lo=1e-3`, `scan_hi=nothing`(→FACTOR_IN), `nscan=8`, `ky_bounds=(1e-3,1.0)`,
+`w_bounds=nothing`(→struct), `maxiter=25`, `gtol=1e-4`, `xtol=1e-5`,
+`step0=0.25`, `nbacktrack=12`, `faithful_confirm=false`, `use_gpu=false`,
+`verbose=false`.
+
+Returns `(; sfmin, kyhat, width, f_seedmin, ky_seed, w_seed, iters, evals,
+converged, faithful)` where `faithful` is the [`marginal_factor_faithful`](@ref)
+result at the optimum (or `nothing`).
+"""
+function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+                                  gamma_thresh::Union{Nothing,Float64} = nothing,
+                                  seed::Union{Nothing,Tuple{Float64,Float64}} = nothing,
+                                  nseed_ky::Int = 4, nseed_w::Int = 4,
+                                  scan_lo::Float64 = 1.0e-3, scan_hi::Union{Nothing,Float64} = nothing,
+                                  nscan::Int = 8,
+                                  ky_bounds::Tuple{Float64,Float64} = (1.0e-3, 1.0),
+                                  w_bounds::Union{Nothing,Tuple{Float64,Float64}} = nothing,
+                                  maxiter::Int = 20, gtol::Float64 = 1.0e-4, xtol::Float64 = 1.0e-5,
+                                  step0::Float64 = 0.25, nbacktrack::Int = 8,
+                                  faithful_confirm::Bool = false,
+                                  inner::Symbol = :threads,
+                                  team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                                  use_gpu::Bool = false, verbose::Bool = false)
+    gth = gamma_thresh === nothing ? _gamma_thresh_for(inputsEP, inputsPR) : gamma_thresh
+    shi = scan_hi === nothing ? Float64(inputsEP.FACTOR_IN) : scan_hi
+    wlo, whi = w_bounds === nothing ? (Float64(inputsEP.WIDTH_MIN), Float64(inputsEP.WIDTH_MAX)) : w_bounds
+    kylo, kyhi = ky_bounds
+
+    evals = Ref(0)
+    fval = function (ky, w; f_start = nothing)
+        ep = deepcopy(inputsEP); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
+        mf = marginal_factor(ep, inputsPR; gamma_thresh = gth, ae_band = true, f_start = f_start,
+                             scan_lo = scan_lo, scan_hi = shi, nscan = nscan, use_gpu = use_gpu)
+        evals[] += mf.evals
+        mf.converged ? mf.factor : Inf
+    end
+    fgrad = function (ky, w; f_start = nothing)
+        r = _marginal_and_grad(inputsEP, inputsPR, ky, w; gth = gth, scan_lo = scan_lo,
+                               scan_hi = shi, nscan = nscan, f_start = f_start, use_gpu = use_gpu)
+        evals[] += r.evals
+        r
+    end
+
+    # ── seed: warm start from a caller-provided (ky,w) (e.g. neighbor radius), or
+    #    a coarse grid (mirrors kwscale_scan's first round). The grid is the robust
+    #    fallback if the warm seed is infeasible. ──
+    best_f = Inf; best_ky = NaN; best_w = NaN
+    if seed !== nothing
+        sky = _clamp_to(seed[1], kylo, kyhi); sw = _clamp_to(seed[2], wlo, whi)
+        f = fval(sky, sw)
+        if isfinite(f)
+            best_f = f; best_ky = sky; best_w = sw
+        end
+    end
+    if !isfinite(best_f)
+        kys = [kylo + (kyhi - kylo) * (i - 0.5) / nseed_ky for i in 1:nseed_ky]
+        ws  = nseed_w == 1 ? [0.5 * (wlo + whi)] : [wlo + (whi - wlo) * (i - 1) / (nseed_w - 1) for i in 1:nseed_w]
+        seedpts = [(ky, w) for ky in kys for w in ws]
+        # Each seed solve is independent → saturate the team/threads. The eval-counting
+        # `fval` closure mutates a coordinator-local Ref that remote workers can't update,
+        # so the seed solver returns (factor, n_evals) and we reduce on the coordinator.
+        seedsolve = function (idx)
+            ky, w = seedpts[idx]
+            ep = deepcopy(inputsEP); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
+            mf = marginal_factor(ep, inputsPR; gamma_thresh = gth, ae_band = true,
+                                 scan_lo = scan_lo, scan_hi = shi, nscan = nscan, use_gpu = use_gpu)
+            (mf.converged ? mf.factor : Inf, mf.evals)
+        end
+        seedres = _ad_pmap(seedsolve, length(seedpts); inner = inner, team = team)
+        for (idx, fr) in enumerate(seedres)
+            f, ne = fr
+            evals[] += ne
+            if f < best_f
+                best_f = f; best_ky = seedpts[idx][1]; best_w = seedpts[idx][2]
+            end
+        end
+    end
+    f_seedmin = best_f; ky_seed = best_ky; w_seed = best_w
+    if !isfinite(best_f)
+        verbose && @warn "critical_factor_optimize: no feasible (instability-bearing) seed"
+        return (; sfmin = Inf, kyhat = NaN, width = NaN, f_seedmin, ky_seed, w_seed,
+                iters = 0, evals = evals[], converged = false, faithful = nothing)
+    end
+
+    # ── projected-gradient descent with backtracking line search ──
+    ky, w = best_ky, best_w
+    f = best_f
+    iters = 0
+    converged = false
+    for it in 1:maxiter
+        iters = it
+        r = fgrad(ky, w; f_start = isfinite(f) ? f : nothing)
+        (!r.converged || !isfinite(r.f)) && break
+        gky, gw = r.grad
+        # scale step by the box so ky and w move comparably
+        sky = (kyhi - kylo); sw = (whi - wlo)
+        gnorm = sqrt((gky * sky)^2 + (gw * sw)^2)
+        gnorm < gtol && (converged = true; break)
+        α = step0
+        improved = false
+        f_cur = r.f
+        for _ in 1:nbacktrack
+            dky = -α * gky * sky^2 / max(gnorm, 1e-30)
+            dw  = -α * gw  * sw^2  / max(gnorm, 1e-30)
+            ky_t = _clamp_to(ky + dky, kylo, kyhi)
+            w_t  = _clamp_to(w  + dw,  wlo, whi)
+            # warm-start the trial solve from the first-order IFT prediction of f★
+            f_pred = f_cur + gky * (ky_t - ky) + gw * (w_t - w)
+            f_t = fval(ky_t, w_t; f_start = isfinite(f_pred) && f_pred > 0 ? f_pred : nothing)
+            if f_t < f_cur - 1e-10
+                if abs(ky_t - ky) + abs(w_t - w) < xtol
+                    ky, w, f = ky_t, w_t, f_t; improved = true; converged = true
+                    break
+                end
+                ky, w, f = ky_t, w_t, f_t; improved = true
+                break
+            end
+            α *= 0.5
+        end
+        verbose && @info "cfo" iter=it ky=ky w=w f=f grad=(gky, gw) gnorm=gnorm improved=improved
+        if !improved
+            converged = true   # no descent direction within the box → local min
+            break
+        end
+    end
+
+    faithful = nothing
+    if faithful_confirm
+        faithful = marginal_factor_faithful(inputsEP, inputsPR; kyhat = ky, width = w,
+                                            scan_lo = scan_lo, scan_hi = shi, use_gpu = use_gpu,
+                                            inner = inner, team = team)
+    end
+
+    return (; sfmin = f, kyhat = ky, width = w, f_seedmin, ky_seed, w_seed,
+            iters = iters, evals = evals[], converged = converged, faithful = faithful)
+end
+
+"""
+    critical_factor_profile(inputsEP, inputsPR; kwargs...) -> NamedTuple
+
+AD analogue of the radial driver loop (`tjlfep_driver` / `mainsub` over the
+`SCAN_N` radii): the critical EP scale factor `sfmin(IR)` versus radius, computed
+by [`critical_factor_optimize`](@ref) at each radius with **cross-radius
+continuation** — the optimum `(kyhat,width)` of one radius warm-starts the next.
+(Continuation skips the per-radius seed grid, but on the bumpy `f★(ky,w)` surface
+it does not reliably reduce total solves and can land in a worse local basin; see
+the cost note on `critical_factor_optimize`. It is most useful when the optimum
+moves smoothly with radius.)
+
+Keywords: `radii=nothing` (→ `Int.(IR_EXP[1:SCAN_N])`), `scan_lo=1e-3`,
+`scan_hi=10.0`, `faithful=false` (confirm each optimum with
+[`marginal_factor_faithful`](@ref)), `use_gpu=false`, `verbose=false`; remaining
+kwargs forwarded to `critical_factor_optimize`.
+
+Returns `(; radii, sfmin, kyhat, width, evals, converged, binding, total_evals)`.
+When `faithful=true`, `sfmin` holds the faithful (all-filter) onset and `binding`
+the per-radius binding condition; otherwise `sfmin` is the AE-band onset.
+"""
+function critical_factor_profile(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+                                 radii::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                                 scan_lo::Float64 = 1.0e-3, scan_hi::Float64 = 10.0,
+                                 faithful::Bool = false,
+                                 use_gpu::Bool = false, verbose::Bool = false, kwargs...)
+    rs = radii === nothing ? Int.(inputsEP.IR_EXP[1:inputsEP.SCAN_N]) : collect(radii)
+    n = length(rs)
+    sfmin = fill(Inf, n); kyhat = fill(NaN, n); width = fill(NaN, n)
+    evals = zeros(Int, n); conv = falses(n); binding = fill(:none, n)
+    prev_seed = nothing
+    for (i, ir) in enumerate(rs)
+        ep = deepcopy(inputsEP); ep.IR = ir
+        r = critical_factor_optimize(ep, inputsPR; seed = prev_seed, scan_lo = scan_lo, scan_hi = scan_hi,
+                                     faithful_confirm = faithful, use_gpu = use_gpu, verbose = verbose, kwargs...)
+        if faithful && r.faithful !== nothing
+            sfmin[i] = r.faithful.factor_faithful
+            binding[i] = r.faithful.binding
+        else
+            sfmin[i] = r.sfmin
+        end
+        kyhat[i] = r.kyhat; width[i] = r.width; evals[i] = r.evals; conv[i] = r.converged
+        verbose && @info "radius" i ir sfmin=sfmin[i] kyhat=kyhat[i] width=width[i] evals=evals[i] converged=conv[i] binding=binding[i]
+        # continuation: carry the optimum forward only if this radius converged
+        if r.converged && isfinite(r.sfmin)
+            prev_seed = (r.kyhat, r.width)
+        end
+    end
+    return (; radii = rs, sfmin, kyhat, width, evals, converged = conv, binding, total_evals = sum(evals))
 end
 
 # Default sensitivity knobs for a TGLF-EP operating point: the per-species inverse
