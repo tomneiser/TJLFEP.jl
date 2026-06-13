@@ -112,7 +112,7 @@ are compared, each on its fastest parallel layout:
   `(kyhat,width)` descent). Far fewer eigensolves per radius, so it is fastest
   **in-process (threads)**; an MPS team only adds overhead here (see below).
 
-![Wallclock vs N_BASIS](docs/plots/scan20_timing_lines.png?v=2)
+![Wallclock vs N_BASIS](docs/plots/scan20_timing_lines.png?v=3)
 
 **Grid solver** — Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
 SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):

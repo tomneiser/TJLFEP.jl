@@ -82,6 +82,9 @@ function parse_gpu_max_task(path::String)
     return isempty(times) ? nothing : maximum(times)
 end
 
+# Trailing SLURM job id from a log filename (…_<jobid>.out), or -1 if absent.
+_jobid(f::String) = (m = match(r"_(\d+)\.out$", basename(f)); m === nothing ? -1 : parse(Int, m.captures[1]))
+
 function newest(pattern::String)
     rx = Regex("^" * replace(pattern, "*" => ".*") * "\$")
     files = String[]
@@ -90,7 +93,11 @@ function newest(pattern::String)
         push!(files, joinpath(BUILD, f))
     end
     isempty(files) && return nothing
-    return first(sort(files, by=f -> mtime(f), rev=true))
+    # Rank by (jobid, mtime) descending: the highest SLURM job id is the latest submission,
+    # so the most recent re-run always wins. This is robust to mtime corruption from a bulk
+    # checkout/touch (which can leave an older contended run with a newer mtime). mtime only
+    # breaks ties among logs with no parseable job id.
+    return first(sort(files, by=f -> (_jobid(f), mtime(f)), rev=true))
 end
 
 function collect_nb(nb::Int)
