@@ -1008,6 +1008,116 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
 end
 
 """
+    critical_factor_faithful_grid(inputsEP, inputsPR; kwargs...) -> NamedTuple
+
+Robust, grid-faithful critical EP scale factor: the **global minimum over a
+`(kyhat, width)` grid of the FAITHFUL (all-filter) marginal factor**, mirroring
+exactly what the Fortran/`grid` `kwscale_scan` reduces to (`sfmin = min over
+(kyhat,width) of the kept-window lower edge`). Unlike [`critical_factor_optimize`](@ref),
+which gradient-descends the *bumpy/multimodal* AE-band onset surface `f★(ky,w)`
+and can land in a shallower local basin (or on a mode the keep filters later
+reject), this evaluates [`marginal_factor_faithful`](@ref) at **every** grid point
+and takes the global min — so it reproduces the grid `sfmin` to within the
+continuous-vs-discrete-factor difference, at the cost of scanning the full
+`(ky,w)` grid (no `(ky,w)` collapse). The inner *factor* root is still the cheap
+AD-Newton + faithful-bisect (`IFLUX=false` hull localization, `IFLUX=true` only
+inside the AE band), so each grid point is far cheaper than the production
+8-factor × 4-round brute force.
+
+The `(kyhat, width)` grid mirrors `kwscale_scan`'s first round:
+  - `kyhat[i] = (1/nkyhat)·i`, i=1..nkyhat
+  - `width[i] = WIDTH_MIN + (WIDTH_MAX-WIDTH_MIN)/(nefwid-1)·(i-1)`
+
+Keywords: `nkyhat=4, nefwid=8`, `gamma_thresh=nothing` (case γ*), `scan_lo=1e-3`,
+`scan_hi=nothing`(→`FACTOR_IN`), `inner=:threads`, `team=nothing`, `use_gpu=false`,
+`verbose=false`. The `(ky,w)` points are parallelized over the team/threads; each
+point's inner faithful sweep runs serially to avoid nested oversubscription.
+
+Returns `(; sfmin, kyhat, width, binding, total_evals_full, total_evals_eig,
+npts, results)`.
+"""
+function critical_factor_faithful_grid(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+                                       nkyhat::Int = 4, nefwid::Int = 8,
+                                       refine_rounds::Int = 1,
+                                       gamma_thresh::Union{Nothing,Float64} = nothing,
+                                       scan_lo::Union{Nothing,Float64} = nothing, scan_hi::Union{Nothing,Float64} = nothing,
+                                       inner::Symbol = :threads,
+                                       team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                                       use_gpu::Bool = false, verbose::Bool = false)
+    gth = gamma_thresh === nothing ? _gamma_thresh_for(inputsEP, inputsPR) : gamma_thresh
+    shi = scan_hi === nothing ? Float64(inputsEP.FACTOR_IN) : scan_hi
+    # Default scan_lo to the GRID's refinement floor so AD floors the same way the Fortran
+    # kwscale_scan does: its k_max=4 rounds of nfactor=8-point bracketing (f1←2·fmark, f0←0)
+    # bottom out at FACTOR_IN/(nfactor·4^(k_max-1)) = FACTOR_IN/512. A (ky,w) that is unstable
+    # to arbitrarily small factor is reported by the grid at that floor (a discretization
+    # artifact), so using the same floor keeps AD comparable instead of resolving below it.
+    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    wlo = Float64(inputsEP.WIDTH_MIN); whi = Float64(inputsEP.WIDTH_MAX)
+    kylo = 0.0; kyhi = 1.0
+
+    total_full = 0; total_eig = 0; npts_total = 0
+    all_res = Any[]
+    best_f = Inf; best_ky = NaN; best_w = NaN; best_bind = :none
+
+    # Evaluate the faithful onset on a (kyhat, width) grid spanning [kya,kyb]×[wa,wb] and
+    # fold the global min into the running best. Parallelize the points over the team/
+    # threads; each point's inner faithful sweep runs serially (`threaded=false`) to avoid
+    # nesting Threads.@threads / re-spawning the team.
+    function eval_grid!(kya, kyb, wa, wb)
+        kyhats = nkyhat == 1 ? [0.5 * (kya + kyb)] :
+                 (kya <= 0.0 ? [(kyb / nkyhat) * i for i in 1:nkyhat] :
+                  [kya + (kyb - kya) / (nkyhat - 1) * (i - 1) for i in 1:nkyhat])
+        widths = nefwid == 1 ? [0.5 * (wa + wb)] : [wa + (wb - wa) / (nefwid - 1) * (i - 1) for i in 1:nefwid]
+        pts = [(ky, w) for ky in kyhats for w in widths]
+        np = length(pts)
+        res = _ad_pmap(idx -> begin
+                ky, w = pts[idx]
+                marginal_factor_faithful(inputsEP, inputsPR; kyhat = ky, width = w,
+                                         gamma_thresh = gth, scan_lo = slo, scan_hi = shi,
+                                         threaded = false, use_gpu = use_gpu)
+            end, np; inner = inner, team = team)
+        for (idx, r) in enumerate(res)
+            total_full += r.evals_full; total_eig += r.evals_eig
+            push!(all_res, r)
+            if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
+                best_f = r.factor_faithful; best_ky = pts[idx][1]; best_w = pts[idx][2]; best_bind = r.binding
+            end
+            verbose && @info "faithful grid pt" ky=pts[idx][1] w=pts[idx][2] factor=r.factor_faithful binding=r.binding
+        end
+        npts_total += np
+        return nothing
+    end
+
+    # Coarse pass mirrors kwscale_scan's first round: kyhat∈(0,1], width∈[WIDTH_MIN,WIDTH_MAX].
+    eval_grid!(kylo, kyhi, wlo, whi)
+
+    # Refinement rounds mirror the Fortran (ky,w) window narrowing: re-grid a shrinking box
+    # around the current best (ky,w) so the binding point can be resolved off the coarse
+    # nodes (the grid path refines (ky,w) across its k rounds; a fixed coarse grid otherwise
+    # overestimates radii whose optimum lies between nodes, e.g. the plasma edge).
+    dky = nkyhat > 1 ? (kyhi - kylo) / (nkyhat - 1) : (kyhi - kylo)
+    dw  = nefwid > 1 ? (whi - wlo) / (nefwid - 1) : (whi - wlo)
+    for _ in 1:max(0, refine_rounds)
+        (best_bind === :none || !isfinite(best_f)) && break   # nothing to refine around
+        kya = max(kylo, best_ky - dky); kyb = min(kyhi, best_ky + dky)
+        wa  = max(wlo,  best_w  - dw);  wb  = min(whi,  best_w  + dw)
+        eval_grid!(kya, kyb, wa, wb)
+        dky *= 2.0 / max(nkyhat - 1, 1)   # window already spans ±dky; tighten node spacing
+        dw  *= 2.0 / max(nefwid - 1, 1)
+    end
+
+    # status: :ok (genuine interior onset), :no_onset (no (ky,w) had a kept window in
+    # [slo,shi]), or :cap (best onset sits at the search ceiling → likely no real onset
+    # below FACTOR_IN). Callers can fall back to the grid solver on :no_onset/:cap.
+    status = (best_bind === :none || !isfinite(best_f)) ? :no_onset :
+             (best_f >= 0.999 * shi ? :cap : :ok)
+
+    return (; sfmin = best_f, kyhat = best_ky, width = best_w, binding = best_bind,
+            status = status, scan_lo = slo, scan_hi = shi,
+            total_evals_full = total_full, total_evals_eig = total_eig, npts = npts_total, results = all_res)
+end
+
+"""
     critical_factor_profile(inputsEP, inputsPR; kwargs...) -> NamedTuple
 
 AD analogue of the radial driver loop (`tjlfep_driver` / `mainsub` over the
