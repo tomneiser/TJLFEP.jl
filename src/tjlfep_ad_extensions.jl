@@ -1008,7 +1008,168 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
 end
 
 """
-    critical_factor_faithful_grid(inputsEP, inputsPR; kwargs...) -> NamedTuple
+    critical_factor_ad_guarded(inputsEP, inputsPR; kwargs...) -> NamedTuple
+
+Globally-robust wrapper around the fast `:ad` path ([`critical_factor_optimize`](@ref))
+that keeps `:ad`'s near-constant speed on well-behaved radii while fixing its
+local-minimum **outliers** on the bumpy/multimodal `f★(ky,w)` surface. `:ad`
+descends from a single basin (the best seed), so at a few radii it can settle in a
+shallower basin than the true global min. This wrapper seeds descent from a coarse
+global grid and runs *multistart* descent, either always or only when the single
+descent looks untrustworthy:
+
+  - `guard=:adaptive` (default) — **detect-and-reseed.** Descend once from the best
+    seed; then descend from additional competitive basins ONLY if a trust signal
+    fires: the optimum sits on a `(ky,w)` **box edge** (`edge_tol`, minimum
+    unbracketed), descent did **not converge**, or the seed grid shows a **competing
+    basin** (another feasible seed with `f★ ≤ (1+rel_gap)·sfmin` that is farther than
+    `basin_sep` in the normalized box from where descent landed). On the ~majority of
+    radii nothing fires → cost ≈ one `:ad` descent.
+  - `guard=:always` — **global-seed `:ad`.** Descend from every feasible seed (up to
+    `max_starts`) and take the global min — maximally robust, ~`nstarts×` the descent
+    cost.
+
+The seed grid (`nseed_ky×nseed_w`, mirroring `kwscale_scan`'s first round) is the
+shared global bracket: it is evaluated once on the cheap AE-band onset
+(`marginal_factor`, IFLUX=false) and parallelized over the team/threads. Descents
+reuse [`critical_factor_optimize`](@ref) (seeded, so its internal seed grid is
+skipped). `faithful_confirm=true` confirms the global-best `(ky,w)` with the
+all-filter [`marginal_factor_faithful`](@ref).
+
+Keywords: `guard=:adaptive`, `nseed_ky=4`, `nseed_w=4`, `rel_gap=0.25`,
+`edge_tol=0.02`, `basin_sep=0.2`, `max_starts=8`, `gamma_thresh=nothing`,
+`scan_lo=1e-3`, `scan_hi=nothing`(→FACTOR_IN), `faithful_confirm=false`,
+`inner=:threads`, `team=nothing`, `use_gpu=false`, `verbose=false`; remaining
+kwargs forwarded to [`critical_factor_optimize`](@ref) (`nscan`, `maxiter`, …).
+
+Returns `(; sfmin, kyhat, width, status, binding, n_starts, flagged, on_edge,
+ambiguous, n_feasible_seeds, evals, faithful)`, where `status ∈ (:ok, :no_onset,
+:cap)`, `n_starts` is how many descents ran, and `flagged` records whether the
+adaptive guard triggered extra descents.
+"""
+function critical_factor_ad_guarded(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+                                    guard::Symbol = :adaptive,
+                                    nseed_ky::Int = 4, nseed_w::Int = 4,
+                                    rel_gap::Float64 = 0.25, edge_tol::Float64 = 0.02,
+                                    basin_sep::Float64 = 0.2, max_starts::Int = 8,
+                                    gamma_thresh::Union{Nothing,Float64} = nothing,
+                                    scan_lo::Float64 = 1.0e-3, scan_hi::Union{Nothing,Float64} = nothing,
+                                    ky_bounds::Tuple{Float64,Float64} = (1.0e-3, 1.0),
+                                    w_bounds::Union{Nothing,Tuple{Float64,Float64}} = nothing,
+                                    faithful_confirm::Bool = false,
+                                    inner::Symbol = :threads,
+                                    team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                                    use_gpu::Bool = false, verbose::Bool = false, kwargs...)
+    guard in (:adaptive, :always) || throw(ArgumentError("guard must be :adaptive or :always (got $guard)"))
+    gth = gamma_thresh === nothing ? _gamma_thresh_for(inputsEP, inputsPR) : gamma_thresh
+    shi = scan_hi === nothing ? Float64(inputsEP.FACTOR_IN) : scan_hi
+    wlo, whi = w_bounds === nothing ? (Float64(inputsEP.WIDTH_MIN), Float64(inputsEP.WIDTH_MAX)) : w_bounds
+    kylo, kyhi = ky_bounds
+    total_evals = Ref(0)
+
+    # ── (1) coarse global seed grid on the cheap AE-band onset (IFLUX=false), parallel ──
+    kys = [kylo + (kyhi - kylo) * (i - 0.5) / nseed_ky for i in 1:nseed_ky]
+    ws  = nseed_w == 1 ? [0.5 * (wlo + whi)] : [wlo + (whi - wlo) * (i - 1) / (nseed_w - 1) for i in 1:nseed_w]
+    seedpts = [(ky, w) for ky in kys for w in ws]
+    seedsolve = function (idx)
+        ky, w = seedpts[idx]
+        ep = deepcopy(inputsEP); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
+        mf = marginal_factor(ep, inputsPR; gamma_thresh = gth, ae_band = true,
+                             scan_lo = scan_lo, scan_hi = shi, use_gpu = use_gpu)
+        (mf.converged ? mf.factor : Inf, mf.evals)
+    end
+    seedres = _ad_pmap(seedsolve, length(seedpts); inner = inner, team = team)
+    seeds = NamedTuple[]   # (ky, w, f) for feasible seeds
+    for (idx, fr) in enumerate(seedres)
+        f, ne = fr
+        total_evals[] += ne
+        isfinite(f) && push!(seeds, (; ky = seedpts[idx][1], w = seedpts[idx][2], f = f))
+    end
+    n_feasible_seeds = length(seeds)
+    if n_feasible_seeds == 0
+        verbose && @warn "critical_factor_ad_guarded: no feasible seed"
+        return (; sfmin = Inf, kyhat = NaN, width = NaN, status = :no_onset, binding = :none,
+                n_starts = 0, flagged = false, on_edge = false, ambiguous = false,
+                n_feasible_seeds = 0, evals = total_evals[], faithful = nothing)
+    end
+    sort!(seeds, by = s -> s.f)
+
+    # descend from a given seed via the existing :ad projected-gradient path (seed feasible ⇒
+    # its internal seed grid is skipped). Returns the optimize() result; evals accrue here.
+    descend = function (sd)
+        r = critical_factor_optimize(inputsEP, inputsPR; gamma_thresh = gth,
+                seed = (sd.ky, sd.w), scan_lo = scan_lo, scan_hi = shi,
+                ky_bounds = ky_bounds, w_bounds = (wlo, whi),
+                inner = inner, team = team, use_gpu = use_gpu, kwargs...)
+        total_evals[] += r.evals
+        r
+    end
+
+    # normalized box distance between two (ky,w)
+    boxdist(a, b) = sqrt(((a[1] - b[1]) / max(kyhi - kylo, 1e-30))^2 +
+                         ((a[2] - b[2]) / max(whi - wlo, 1e-30))^2)
+    on_box_edge(ky, w) = (abs(ky - kylo) <= edge_tol * (kyhi - kylo) ||
+                          abs(ky - kyhi) <= edge_tol * (kyhi - kylo) ||
+                          abs(w  - wlo)  <= edge_tol * (whi - wlo)   ||
+                          abs(w  - whi)  <= edge_tol * (whi - wlo))
+
+    # ── (2) descend from the best seed ──
+    r1 = descend(seeds[1])
+    best_f = r1.sfmin; best_ky = r1.kyhat; best_w = r1.width
+    n_starts = 1
+    on_edge = isfinite(best_f) && on_box_edge(best_ky, best_w)
+
+    # ── (3) trust signals: competing basin in the seed grid? ──
+    ambiguous = false
+    if isfinite(best_f)
+        for s in seeds[2:end]
+            if s.f <= (1 + rel_gap) * best_f && boxdist((s.ky, s.w), (best_ky, best_w)) > basin_sep
+                ambiguous = true; break
+            end
+        end
+    end
+    flagged = on_edge || ambiguous || !r1.converged || !isfinite(best_f)
+
+    # ── (4) multistart: descend from additional seeds in DISTINCT basins (best-onset first,
+    #    capped at max_starts). :always always runs this; :adaptive runs it ONLY when flagged.
+    #    NOTE: we deliberately do NOT filter by seed onset — a higher-onset seed can descend into
+    #    a LOWER basin (seed f★ does not predict the basin's local min; that mismatch IS the :ad
+    #    failure mode). We only skip seeds whose START point is within basin_sep of a point already
+    #    explored, to avoid re-walking the same basin. ──
+    if guard === :always || (guard === :adaptive && flagged)
+        explored = [(best_ky, best_w), (seeds[1].ky, seeds[1].w)]
+        for s in seeds[2:end]
+            n_starts >= max_starts && break
+            any(p -> boxdist((s.ky, s.w), p) <= basin_sep, explored) && continue
+            r = descend(s)
+            n_starts += 1
+            push!(explored, (s.ky, s.w)); push!(explored, (r.kyhat, r.width))
+            if isfinite(r.sfmin) && r.sfmin < best_f
+                best_f = r.sfmin; best_ky = r.kyhat; best_w = r.width
+            end
+        end
+    end
+
+    # ── (5) optional faithful (all-filter) confirm at the global-best (ky,w) ──
+    faithful = nothing; binding = :ae_band_growth
+    if faithful_confirm && isfinite(best_f)
+        faithful = marginal_factor_faithful(inputsEP, inputsPR; kyhat = best_ky, width = best_w,
+                       gamma_thresh = gth, scan_lo = scan_lo, scan_hi = shi,
+                       inner = inner, team = team, use_gpu = use_gpu)
+        total_evals[] += faithful.evals_full + faithful.evals_eig
+        if faithful.binding !== :none && isfinite(faithful.factor_faithful)
+            best_f = faithful.factor_faithful; binding = faithful.binding
+        end
+    end
+
+    status = !isfinite(best_f) ? :no_onset : (best_f >= 0.999 * shi ? :cap : :ok)
+    return (; sfmin = best_f, kyhat = best_ky, width = best_w, status = status, binding = binding,
+            n_starts = n_starts, flagged = flagged, on_edge = on_edge, ambiguous = ambiguous,
+            n_feasible_seeds = n_feasible_seeds, evals = total_evals[], faithful = faithful)
+end
+
+"""
+    critical_factor_robust(inputsEP, inputsPR; kwargs...) -> NamedTuple
 
 Robust, grid-faithful critical EP scale factor: the **global minimum over a
 `(kyhat, width)` grid of the FAITHFUL (all-filter) marginal factor**, mirroring
@@ -1024,26 +1185,59 @@ AD-Newton + faithful-bisect (`IFLUX=false` hull localization, `IFLUX=true` only
 inside the AE band), so each grid point is far cheaper than the production
 8-factor × 4-round brute force.
 
-The `(kyhat, width)` grid mirrors `kwscale_scan`'s first round:
+The coarse `(kyhat, width)` grid mirrors `kwscale_scan`'s first round:
   - `kyhat[i] = (1/nkyhat)·i`, i=1..nkyhat
   - `width[i] = WIDTH_MIN + (WIDTH_MAX-WIDTH_MIN)/(nefwid-1)·(i-1)`
 
-Keywords: `nkyhat=4, nefwid=8`, `gamma_thresh=nothing` (case γ*), `scan_lo=1e-3`,
+`refine_rounds` then re-grids a shrinking `(ky,w)` box around the running best,
+mirroring the Fortran window narrowing so binding points that lie *between* coarse
+nodes (e.g. the plasma edge) are resolved rather than overestimated. With
+`adaptive=true` (default), `refine_rounds` is a per-radius **budget**: a round runs
+only when an a-priori trigger fires — the best is on a **box edge** (minimum
+unbracketed), the feasible region is **sparse** (`≤2` or `< feasible_frac` of nodes
+carried a kept mode), or the best onset is **near the cap** (`≥ cap_frac·scan_hi`) —
+and stops early once a round's relative improvement drops below `improve_tol` and the
+best is interior. So radii whose coarse min is already interior/dense/low spend **no**
+refinement, while edge/sparse radii get up to `refine_rounds` zoom rounds. With
+`adaptive=false`, exactly `refine_rounds` rounds always run.
+
+`outer` selects how the off-node minimum is resolved once the coarse grid has bracketed
+the basin:
+  - `:grid_zoom` (default) — re-grid a shrinking `(ky,w)` box (the `refine_rounds` loop above);
+  - `:hybrid` — when the zoom trigger is QUIET (best interior, feasibility dense, onset below
+    cap), replace the grid-zoom round with a LOCAL AD-IFT polish ([`critical_factor_optimize`](@ref)
+    seeded at the coarse best: projected-gradient on the cheap IFLUX=false AE-onset surface using
+    exact `∂f★/∂(ky,w)`) followed by a FAITHFUL confirm of the optimum. The coarse grid still does
+    the (multimodality-safe) global bracketing; AD only does the local descent it is good at. When
+    the trigger FIRES (untrustworthy bracket), `:hybrid` falls back to the grid-zoom loop. This aims
+    to recover the off-node accuracy of a refine round at a handful of solves instead of a full grid.
+
+Keywords: `nkyhat=4, nefwid=8`, `refine_rounds=1`, `adaptive=true`, `outer=:grid_zoom`,
+`feasible_frac=0.35`, `cap_frac=0.5`, `improve_tol=0.02`, `gamma_thresh=nothing`
+(case γ*), `scan_lo=nothing`(→`scan_hi/512`, the grid floor),
 `scan_hi=nothing`(→`FACTOR_IN`), `inner=:threads`, `team=nothing`, `use_gpu=false`,
 `verbose=false`. The `(ky,w)` points are parallelized over the team/threads; each
 point's inner faithful sweep runs serially to avoid nested oversubscription.
 
-Returns `(; sfmin, kyhat, width, binding, total_evals_full, total_evals_eig,
-npts, results)`.
+Returns `(; sfmin, kyhat, width, binding, status, scan_lo, scan_hi, refine_done,
+polished, n_feasible_coarse, npts_coarse, total_evals_full, total_evals_eig, npts,
+results)`, where `status ∈ (:ok, :no_onset, :cap)`, `refine_done` is the number of
+grid-zoom rounds performed, and `polished` is `true` when the `:hybrid` AD-IFT polish ran.
 """
-function critical_factor_faithful_grid(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                                        nkyhat::Int = 4, nefwid::Int = 8,
                                        refine_rounds::Int = 1,
+                                       adaptive::Bool = true,
+                                       outer::Symbol = :grid_zoom,
+                                       feasible_frac::Float64 = 0.35, cap_frac::Float64 = 0.5,
+                                       improve_tol::Float64 = 0.02,
                                        gamma_thresh::Union{Nothing,Float64} = nothing,
                                        scan_lo::Union{Nothing,Float64} = nothing, scan_hi::Union{Nothing,Float64} = nothing,
                                        inner::Symbol = :threads,
                                        team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
                                        use_gpu::Bool = false, verbose::Bool = false)
+    outer in (:grid_zoom, :hybrid) ||
+        error("critical_factor_robust: outer must be :grid_zoom or :hybrid (got $outer)")
     gth = gamma_thresh === nothing ? _gamma_thresh_for(inputsEP, inputsPR) : gamma_thresh
     shi = scan_hi === nothing ? Float64(inputsEP.FACTOR_IN) : scan_hi
     # Default scan_lo to the GRID's refinement floor so AD floors the same way the Fortran
@@ -1059,10 +1253,10 @@ function critical_factor_faithful_grid(inputsEP::Options{Float64}, inputsPR::pro
     all_res = Any[]
     best_f = Inf; best_ky = NaN; best_w = NaN; best_bind = :none
 
-    # Evaluate the faithful onset on a (kyhat, width) grid spanning [kya,kyb]×[wa,wb] and
-    # fold the global min into the running best. Parallelize the points over the team/
-    # threads; each point's inner faithful sweep runs serially (`threaded=false`) to avoid
-    # nesting Threads.@threads / re-spawning the team.
+    # Evaluate the faithful onset on a (kyhat, width) grid spanning [kya,kyb]×[wa,wb], fold the
+    # global min into the running best, and return per-pass stats used by the adaptive zoom
+    # trigger. Parallelize the points over the team/threads; each point's inner faithful sweep
+    # runs serially (`threaded=false`) to avoid nesting Threads.@threads / re-spawning the team.
     function eval_grid!(kya, kyb, wa, wb)
         kyhats = nkyhat == 1 ? [0.5 * (kya + kyb)] :
                  (kya <= 0.0 ? [(kyb / nkyhat) * i for i in 1:nkyhat] :
@@ -1076,34 +1270,107 @@ function critical_factor_faithful_grid(inputsEP::Options{Float64}, inputsPR::pro
                                          gamma_thresh = gth, scan_lo = slo, scan_hi = shi,
                                          threaded = false, use_gpu = use_gpu)
             end, np; inner = inner, team = team)
+        nfeasible = 0
         for (idx, r) in enumerate(res)
             total_full += r.evals_full; total_eig += r.evals_eig
             push!(all_res, r)
-            if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
-                best_f = r.factor_faithful; best_ky = pts[idx][1]; best_w = pts[idx][2]; best_bind = r.binding
+            if r.binding != :none && isfinite(r.factor_faithful)
+                nfeasible += 1
+                if r.factor_faithful < best_f
+                    best_f = r.factor_faithful; best_ky = pts[idx][1]; best_w = pts[idx][2]; best_bind = r.binding
+                end
             end
             verbose && @info "faithful grid pt" ky=pts[idx][1] w=pts[idx][2] factor=r.factor_faithful binding=r.binding
         end
         npts_total += np
-        return nothing
+        return (; nfeasible, np, kymin = minimum(kyhats), kymax = maximum(kyhats),
+                wmin = minimum(widths), wmax = maximum(widths))
+    end
+
+    # A-priori zoom trigger: decide whether re-gridding around the current best is likely to
+    # move the minimum, from cheap byproducts of the just-finished pass. Zoom when ANY of:
+    #   • boundary — best (ky,w) sits at an edge of the searched box, so the true minimum is
+    #     unbracketed / lies outside this box (the grid path keeps narrowing toward it);
+    #   • sparse   — few nodes carried an unstable, kept mode (≤2 or < feasible_frac of the
+    #     grid), so the feasible region is barely sampled and the off-node min is likely missed
+    #     (this is the plasma-edge failure mode);
+    #   • near-cap — the best onset is a large fraction of the search ceiling, a sign no
+    #     well-resolved interior onset was found.
+    # When none fire (interior best, densely feasible, low onset) the coarse min is already
+    # trustworthy and refinement is skipped — so the ~per-round cost is spent only where needed.
+    zoom_decision(bky, bw, st) = begin
+        boundary = (bky <= st.kymin + 1e-12) || (bky >= st.kymax - 1e-12) ||
+                   (bw  <= st.wmin  + 1e-12) || (bw  >= st.wmax  - 1e-12)
+        sparse   = st.np > 0 && (st.nfeasible <= 2 || st.nfeasible < feasible_frac * st.np)
+        nearcap  = isfinite(best_f) && best_f >= cap_frac * shi
+        (; zoom = boundary || sparse || nearcap, boundary, sparse, nearcap)
     end
 
     # Coarse pass mirrors kwscale_scan's first round: kyhat∈(0,1], width∈[WIDTH_MIN,WIDTH_MAX].
-    eval_grid!(kylo, kyhi, wlo, whi)
+    st = eval_grid!(kylo, kyhi, wlo, whi)
+    n_feasible_coarse = st.nfeasible
+
+    # ── Hybrid outer (outer=:hybrid) ─────────────────────────────────────────────
+    # The coarse grid is a robust GLOBAL bracket (it enumerates every basin and picks the
+    # winning (ky,w) node — the step local methods can't do safely on the multimodal f★).
+    # When the zoom trigger is QUIET (best is interior, feasibility dense, onset well below
+    # cap), the winning basin is bracketed, so pinpointing the off-node minimum is a LOCAL,
+    # ~unimodal problem — exactly what AD-IFT descent is good at. Polish it with
+    # `critical_factor_optimize` SEEDED at the coarse best (projected-gradient on the cheap
+    # IFLUX=false AE-onset surface using exact ∂f★/∂(ky,w)=-(∂γ/∂x)/(∂γ/∂f)), then FAITHFUL-
+    # confirm the optimum (keep filters can flip the binding off-node — gradient proposes,
+    # faithful disposes). This replaces a full grid-zoom round with a handful of solves.
+    # When the trigger FIRES (untrustworthy bracket: edge/sparse/near-cap), the basin is not
+    # bracketed, so skip the polish and fall back to the grid-zoom loop below.
+    polished = false
+    if outer === :hybrid && best_bind !== :none && isfinite(best_f) &&
+       !zoom_decision(best_ky, best_w, st).zoom
+        opt = critical_factor_optimize(inputsEP, inputsPR; gamma_thresh = gth,
+                seed = (best_ky, best_w), scan_lo = slo, scan_hi = shi,
+                ky_bounds = (max(kylo, 1.0e-6), kyhi), w_bounds = (wlo, whi),
+                faithful_confirm = true, inner = inner, team = team, use_gpu = use_gpu)
+        total_eig += opt.evals
+        if opt.faithful !== nothing
+            total_full += opt.faithful.evals_full
+            total_eig  += opt.faithful.evals_eig
+            if opt.faithful.binding !== :none && isfinite(opt.faithful.factor_faithful) &&
+               opt.faithful.factor_faithful < best_f
+                best_f  = opt.faithful.factor_faithful
+                best_ky = opt.kyhat; best_w = opt.width; best_bind = opt.faithful.binding
+            end
+        end
+        polished = true
+        verbose && @info "hybrid polish" ky=best_ky w=best_w sfmin=best_f binding=best_bind
+    end
 
     # Refinement rounds mirror the Fortran (ky,w) window narrowing: re-grid a shrinking box
-    # around the current best (ky,w) so the binding point can be resolved off the coarse
-    # nodes (the grid path refines (ky,w) across its k rounds; a fixed coarse grid otherwise
-    # overestimates radii whose optimum lies between nodes, e.g. the plasma edge).
+    # around the current best (ky,w) so the binding point can be resolved off the coarse nodes.
+    # With `adaptive`, `refine_rounds` is a per-radius *budget*: each round runs only while the
+    # zoom trigger fires, and stops early once a round barely improves the min (plateau) and the
+    # best is no longer on a box edge. With `adaptive=false`, exactly `refine_rounds` rounds run.
+    # outer=:hybrid skips grid-zoom entirely once it has polished a bracketed basin (budget 0).
     dky = nkyhat > 1 ? (kyhi - kylo) / (nkyhat - 1) : (kyhi - kylo)
     dw  = nefwid > 1 ? (whi - wlo) / (nefwid - 1) : (whi - wlo)
-    for _ in 1:max(0, refine_rounds)
+    refine_done = 0
+    budget = polished ? 0 : max(0, refine_rounds)
+    while refine_done < budget
         (best_bind === :none || !isfinite(best_f)) && break   # nothing to refine around
+        if adaptive
+            dec = zoom_decision(best_ky, best_w, st)
+            dec.zoom || break                                 # coarse/current min already trustworthy
+        end
+        prev = best_f
         kya = max(kylo, best_ky - dky); kyb = min(kyhi, best_ky + dky)
         wa  = max(wlo,  best_w  - dw);  wb  = min(whi,  best_w  + dw)
-        eval_grid!(kya, kyb, wa, wb)
+        st = eval_grid!(kya, kyb, wa, wb)
+        refine_done += 1
         dky *= 2.0 / max(nkyhat - 1, 1)   # window already spans ±dky; tighten node spacing
         dw  *= 2.0 / max(nefwid - 1, 1)
+        if adaptive
+            rel = (isfinite(prev) && prev > 0) ? (prev - best_f) / prev : 0.0
+            dec = zoom_decision(best_ky, best_w, st)
+            (rel < improve_tol && !dec.boundary) && break     # plateau and bracketed → done
+        end
     end
 
     # status: :ok (genuine interior onset), :no_onset (no (ky,w) had a kept window in
@@ -1113,8 +1380,105 @@ function critical_factor_faithful_grid(inputsEP::Options{Float64}, inputsPR::pro
              (best_f >= 0.999 * shi ? :cap : :ok)
 
     return (; sfmin = best_f, kyhat = best_ky, width = best_w, binding = best_bind,
-            status = status, scan_lo = slo, scan_hi = shi,
+            status = status, scan_lo = slo, scan_hi = shi, refine_done = refine_done,
+            polished = polished,
+            n_feasible_coarse = n_feasible_coarse, npts_coarse = nkyhat * nefwid,
             total_evals_full = total_full, total_evals_eig = total_eig, npts = npts_total, results = all_res)
+end
+
+"""
+    critical_factor_confirm(inputsEP, inputsPR; kwargs...) -> NamedTuple
+
+Cheap-search + few-confirm critical EP scale factor. Scans the `(kyhat, width)` grid on the
+CHEAP eigenvalue-only AE-band onset (`IFLUX=false`), then applies the expensive faithful keep
+filters (`IFLUX=true`, the tearing/pinch/QL-ratio/θ² block) at ONLY the few candidate nodes
+that could hold the global minimum.
+
+This is exact, not heuristic: the faithful keep onset at any `(ky,w)` is `≥` its AE-band onset
+(keep ⊆ AE-unstable, since keep requires `γ>γ*` AND in-band AND surviving the secondary
+filters). So candidates are confirmed in increasing cheap-onset order and the loop stops as
+soon as the next candidate's cheap onset exceeds the best *faithful* onset found — no remaining
+node can beat it. The result therefore EQUALS the faithful `(ky,w)`-grid minimum (the
+[`critical_factor_robust`](@ref) refine=0 answer), but pays `IFLUX=true` on only ~1–few nodes
+instead of all `nkyhat·nefwid`. The saving is large when the secondary filters rarely bind
+(e.g. DIII-D, where the binding is AE-band growth and the pinch flags are off); when they bind
+often (rotational ITER) more nodes are confirmed, degrading gracefully to the full faithful grid.
+
+The `(ky,w)` grid mirrors `kwscale_scan`'s first round (`kyhat[i]=(1/nkyhat)·i`,
+`width[i]=WIDTH_MIN+(WIDTH_MAX-WIDTH_MIN)/(nefwid-1)·(i-1)`). Keywords: `nkyhat=4, nefwid=8`,
+`gamma_thresh=nothing` (case γ*), `scan_lo=nothing`(→`scan_hi/512`, the grid floor),
+`scan_hi=nothing`(→`FACTOR_IN`), `inner=:threads`, `team=nothing`, `use_gpu=false`,
+`verbose=false`.
+
+Returns `(; sfmin, kyhat, width, binding, status, cheap_min, n_confirm, npts,
+total_evals_full, total_evals_eig, results)`, where `status ∈ (:ok, :no_onset, :cap)`,
+`cheap_min` is the lowest cheap AE-band onset over the grid, and `n_confirm` is the number of
+nodes that actually got the `IFLUX=true` confirm.
+"""
+function critical_factor_confirm(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+                                 nkyhat::Int = 4, nefwid::Int = 8,
+                                 gamma_thresh::Union{Nothing,Float64} = nothing,
+                                 scan_lo::Union{Nothing,Float64} = nothing, scan_hi::Union{Nothing,Float64} = nothing,
+                                 inner::Symbol = :threads,
+                                 team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                                 use_gpu::Bool = false, verbose::Bool = false)
+    gth = gamma_thresh === nothing ? _gamma_thresh_for(inputsEP, inputsPR) : gamma_thresh
+    shi = scan_hi === nothing ? Float64(inputsEP.FACTOR_IN) : scan_hi
+    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    wlo = Float64(inputsEP.WIDTH_MIN); whi = Float64(inputsEP.WIDTH_MAX)
+    kyhats = [(1.0 / nkyhat) * i for i in 1:nkyhat]
+    widths = nefwid == 1 ? [0.5 * (wlo + whi)] : [wlo + (whi - wlo) / (nefwid - 1) * (i - 1) for i in 1:nefwid]
+    pts = [(ky, w) for ky in kyhats for w in widths]
+    np = length(pts)
+
+    # (1) CHEAP eigenvalue-only AE-band lower edge at every (ky,w) node (IFLUX=false). Use the
+    #     AE-unstable hull lower edge f1 (NOT marginal_factor's root): a node that is AE-unstable
+    #     all the way down to the floor has no interior root (marginal_factor would report
+    #     non-converged) yet is a genuine — often the LOWEST — candidate; _ae_unstable_window
+    #     reports f1=scan_lo (pinned_lo) there. The faithful keep onset is >= f1 (keep ⊆ the
+    #     AE-unstable hull), so f1 is the correct lower bound to rank/early-stop on. Parallelized
+    #     over the team/threads; each node's hull scan runs serially.
+    cheap = _ad_pmap(idx -> begin
+            ky, w = pts[idx]
+            ep = deepcopy(inputsEP); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
+            win = _ae_unstable_window(ep, inputsPR, gth; scan_lo = slo, scan_hi = shi,
+                                      n_eig = 24, threaded = false, use_gpu = use_gpu)
+            (; ky = ky, w = w, f = (win.unstable ? win.f1 : Inf), evals = win.evals)
+        end, np; inner = inner, team = team)
+    total_eig = 0
+    for c in cheap
+        total_eig += c.evals
+    end
+
+    # (2) Confirm candidates in increasing cheap-onset order with the expensive faithful keep
+    #     sweep (IFLUX=true). Stop as soon as the next cheap onset >= the best faithful found:
+    #     since faithful >= cheap node-wise, no remaining node can yield a smaller faithful onset.
+    order = sortperm([c.f for c in cheap])
+    best_f = Inf; best_ky = NaN; best_w = NaN; best_bind = :none
+    total_full = 0; n_confirm = 0
+    results = Any[]
+    for i in order
+        c = cheap[i]
+        isfinite(c.f) || break          # remaining nodes are AE-stable (Inf) → nothing to confirm
+        c.f >= best_f && break          # bound: no remaining node can have faithful < best_f
+        r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = c.ky, width = c.w,
+                                     gamma_thresh = gth, scan_lo = slo, scan_hi = shi,
+                                     threaded = false, use_gpu = use_gpu)
+        n_confirm += 1
+        total_full += r.evals_full; total_eig += r.evals_eig
+        push!(results, (; ky = c.ky, w = c.w, cheap = c.f, faithful = r.factor_faithful, binding = r.binding))
+        if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
+            best_f = r.factor_faithful; best_ky = c.ky; best_w = c.w; best_bind = r.binding
+        end
+        verbose && @info "confirm" ky=c.ky w=c.w cheap=c.f faithful=r.factor_faithful binding=r.binding best=best_f
+    end
+
+    status = (best_bind === :none || !isfinite(best_f)) ? :no_onset :
+             (best_f >= 0.999 * shi ? :cap : :ok)
+    cheap_min = isempty(cheap) ? NaN : minimum(c.f for c in cheap)
+    return (; sfmin = best_f, kyhat = best_ky, width = best_w, binding = best_bind,
+            status = status, cheap_min = cheap_min, n_confirm = n_confirm, npts = np,
+            total_evals_full = total_full, total_evals_eig = total_eig, results = results)
 end
 
 """
@@ -1263,4 +1627,289 @@ function gamma_input_sensitivities(inputsEP::Options{Float64}, inputsPR::profile
     logsens = [base[i] * dgamma[m, i] for m in 1:NM, i in 1:N]
 
     return (; gamma, freq, dgamma, dfreq, logsens, knobs = ks, labels, base)
+end
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# Extended-box + separable-nbasis "truth" protocol for the critical EP scale factor.
+#
+# Near-marginal radii hide their true sfmin minimum at NARROW width (w≈0.1), BELOW the canonical
+# WIDTH_MIN=1.0, as an INTERIOR bowl (sfmin turns back up below w≈0.05); nbasis at that optimum
+# converges geometrically (limit by nb≈48, the basis being rank-singular by nb≈64). The canonical
+# w≥1 grid therefore biases sfmin high there (up to ~25× at the steep profile edge). The protocol:
+#   1. LOCATE over an extended LOG-spaced (ky,width) seed grid (width down to ~0.05, WIDTH_MIN/MAX
+#      anchored) via cheap AE-onset ranking → :ad polish → faithful confirm at a working nbasis.
+#   2. SEPARABLE nbasis convergence AT the fixed located optimum (nbasis shifts the value, not the
+#      location) — 3 evals + geometric extrapolation, capped nb≤56.
+# Validated on DIII-D n_scan=20 (jobs 54569487/extbox5, 54574360): recovers IR=95 truth 0.215 at
+# (ky=0.81,w=0.11) vs canonical 5.49 (25.6×); IR=48 0.0195 (2.8×); clean radii unchanged.
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+
+# Pinned-aware f1 seed grid → :ad descent on interior basins → early-stop few-confirm. The cheap front
+# end (the canonical fast solver): floor-pinned basins (onset at the scan floor) are SEEN via the
+# AE-unstable-window lower edge f1, while interior basins are slid off-node by the :ad descent. Returns
+# trust diagnostics (feasible_frac, cheap_gap) for the escalation gate. ky_lo=0.25 reproduces the
+# canonical kwscale_scan kyhat floor {0.25,..,1.0} for nseed_ky=4.
+function critical_factor_ad_f1seed(ep0, prof; gamma_thresh=nothing,
+                                   scan_lo=nothing, scan_hi=nothing,
+                                   nseed_ky::Int=4, nseed_w::Int=4, n_eig_seed::Int=12,
+                                   k_descend::Int=4, ky_lo::Float64=0.25,
+                                   inner::Symbol=:threads, team=nothing,
+                                   use_gpu::Bool=false, verbose::Bool=false, descent_kwargs...)
+    gth = gamma_thresh === nothing ? _gamma_thresh_for(ep0, prof) : gamma_thresh
+    shi = scan_hi === nothing ? Float64(ep0.FACTOR_IN) : scan_hi
+    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    wlo, whi = Float64(ep0.WIDTH_MIN), Float64(ep0.WIDTH_MAX)
+
+    kyhats = ky_lo <= 0.0 ? [(1.0/nseed_ky)*i for i in 1:nseed_ky] :
+             [ky_lo + (1.0 - ky_lo)/(nseed_ky - 1)*(i - 1) for i in 1:nseed_ky]
+    widths = nseed_w == 1 ? [0.5*(wlo+whi)] : [wlo + (whi-wlo)/(nseed_w-1)*(i-1) for i in 1:nseed_w]
+    pts = [(ky, w) for ky in kyhats for w in widths]
+    cheap = _ad_pmap(idx -> begin
+            ky, w = pts[idx]; ep = deepcopy(ep0); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
+            win = _ae_unstable_window(ep, prof, gth; scan_lo=slo, scan_hi=shi,
+                      n_eig=n_eig_seed, threaded=false, use_gpu=use_gpu)
+            (; ky=ky, w=w, f=(win.unstable ? win.f1 : Inf), pinned=win.pinned_lo, evals=win.evals)
+        end, length(pts); inner=inner, team=team)
+    total_eig = 0; for c in cheap; total_eig += c.evals; end
+    feas = [c for c in cheap if isfinite(c.f)]
+    if isempty(feas)
+        return (; sfmin=Inf, kyhat=NaN, width=NaN, binding=:none, status=:no_onset,
+                n_descend=0, n_confirm=0, feasible_frac=0.0, cheap_gap=Inf,
+                nfeasible=0, npts=length(pts), total_evals_full=0, total_evals_eig=total_eig)
+    end
+    sort!(feas, by = c -> c.f)
+
+    cands = Tuple{Float64,Float64,Float64}[]
+    n_desc = 0
+    for (j, c) in enumerate(feas)
+        if j <= k_descend && !c.pinned
+            r = critical_factor_optimize(ep0, prof; gamma_thresh=gth, seed=(c.ky, c.w),
+                    scan_lo=slo, scan_hi=shi, ky_bounds=(max(ky_lo, 1.0e-6), 1.0),
+                    inner=inner, team=team, use_gpu=use_gpu, descent_kwargs...)
+            total_eig += r.evals; n_desc += 1
+            if isfinite(r.sfmin)
+                push!(cands, (r.kyhat, r.width, r.sfmin))   # descended (possibly off-node) optimum
+                push!(cands, (c.ky, c.w, c.f))              # grid-floor guard: keep the original seed
+            else
+                push!(cands, (c.ky, c.w, c.f))              # descent failed → keep seed
+            end
+        else
+            push!(cands, (c.ky, c.w, c.f))                  # pinned, or beyond k_descend
+        end
+    end
+
+    sort!(cands, by = c -> c[3])
+    best_f = Inf; best_ky=NaN; best_w=NaN; best_bind=:none; best_cheap=NaN
+    total_full=0; n_confirm=0
+    for c in cands
+        c[3] >= best_f && break
+        r = marginal_factor_faithful(ep0, prof; kyhat=c[1], width=c[2], gamma_thresh=gth,
+                scan_lo=slo, scan_hi=shi, threaded=true, inner=inner, team=team, use_gpu=use_gpu)
+        n_confirm += 1; total_full += r.evals_full; total_eig += r.evals_eig
+        if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
+            best_f = r.factor_faithful; best_ky=c[1]; best_w=c[2]; best_bind=r.binding; best_cheap=c[3]
+        end
+    end
+    status = (best_bind===:none || !isfinite(best_f)) ? :no_onset : (best_f >= 0.999*shi ? :cap : :ok)
+    feasible_frac = length(pts) == 0 ? 0.0 : length(feas) / length(pts)
+    cheap_gap = (isfinite(best_f) && isfinite(best_cheap) && best_cheap > 0) ? best_f / best_cheap : Inf
+    return (; sfmin=best_f, kyhat=best_ky, width=best_w, binding=best_bind, status=status,
+            n_descend=n_desc, n_confirm=n_confirm, feasible_frac=feasible_frac, cheap_gap=cheap_gap,
+            nfeasible=length(feas), npts=length(pts),
+            total_evals_full=total_full, total_evals_eig=total_eig)
+end
+
+# Geometric (Aitken) extrapolation of a converging nbasis sequence. If the increments shrink
+# geometrically (0<r<1), extrapolate the nb→∞ limit; otherwise flag not-clearly-converged and fall
+# back to the finest valid value.
+function _nbasis_extrapolate(nbs::Vector{Int}, vals::Vector{Float64})
+    good = [(nbs[i], vals[i]) for i in eachindex(vals) if isfinite(vals[i])]
+    length(good) == 0 && return (; limit=NaN, ratio=NaN, converged=false, finest=NaN, nb_finest=0)
+    finest = good[end][2]; nb_finest = good[end][1]
+    length(good) < 3 && return (; limit=finest, ratio=NaN, converged=false, finest=finest, nb_finest=nb_finest)
+    v1, v2, v3 = good[end-2][2], good[end-1][2], good[end][2]
+    d1 = v2 - v1; d2 = v3 - v2
+    r = (d1 == 0.0) ? 0.0 : d2 / d1
+    if 0.0 < r < 1.0
+        lim = v3 + d2 * r / (1.0 - r)
+        return (; limit=lim, ratio=r, converged=true, finest=finest, nb_finest=nb_finest)
+    else
+        return (; limit=finest, ratio=r, converged=false, finest=finest, nb_finest=nb_finest)
+    end
+end
+
+# Extended-box locate: log-width cheap-rank seed grid → :ad polish → candidate list (confirmed by the
+# caller at nb_work). WIDTH_MIN/WIDTH_MAX are anchored into the grid so the canonical box (where
+# floor-pinned modes live near w=WIDTH_MIN) is always covered.
+function _locate_extended(ep0, prof; gth, slo, shi, ky_lo, w_lo, w_hi,
+                          nseed_ky, nseed_w, n_eig_seed, k_descend,
+                          inner, team, use_gpu)
+    kyhats = nseed_ky == 1 ? [0.5*(ky_lo+1.0)] :
+             [ky_lo + (1.0 - ky_lo)/(nseed_ky - 1)*(i - 1) for i in 1:nseed_ky]
+    logw = nseed_w == 1 ? [sqrt(w_lo*w_hi)] : collect(exp.(range(log(w_lo), log(w_hi), length=nseed_w)))
+    widths = sort(unique(vcat(logw, Float64(ep0.WIDTH_MIN), Float64(ep0.WIDTH_MAX))))
+    pts = [(ky, w) for ky in kyhats for w in widths]
+
+    cheap = _ad_pmap(idx -> begin
+            ky, w = pts[idx]; ep = deepcopy(ep0); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
+            win = _ae_unstable_window(ep, prof, gth; scan_lo=slo, scan_hi=shi,
+                      n_eig=n_eig_seed, threaded=false, use_gpu=use_gpu)
+            (; ky=ky, w=w, f=(win.unstable ? win.f1 : Inf), pinned=win.pinned_lo, evals=win.evals)
+        end, length(pts); inner=inner, team=team)
+    total_eig = 0; for c in cheap; total_eig += c.evals; end
+    feas = [c for c in cheap if isfinite(c.f)]
+    isempty(feas) && return (; cands=Tuple{Float64,Float64,Float64}[], feas=feas,
+                             npts=length(pts), n_desc=0, total_eig=total_eig)
+    sort!(feas, by = c -> c.f)
+
+    cands = Tuple{Float64,Float64,Float64}[]; n_desc = 0
+    for (j, c) in enumerate(feas)
+        if j <= k_descend && !c.pinned
+            r = critical_factor_optimize(ep0, prof; gamma_thresh=gth, seed=(c.ky, c.w),
+                    scan_lo=slo, scan_hi=shi, ky_bounds=(max(ky_lo, 1.0e-6), 1.0), w_bounds=(w_lo, w_hi),
+                    inner=inner, team=team, use_gpu=use_gpu)
+            total_eig += r.evals; n_desc += 1
+            isfinite(r.sfmin) && push!(cands, (r.kyhat, r.width, r.sfmin))   # descended interior optimum
+            push!(cands, (c.ky, c.w, c.f))                                   # grid-floor guard: keep seed
+        else
+            push!(cands, (c.ky, c.w, c.f))                                   # pinned / beyond k_descend
+        end
+    end
+    sort!(cands, by = c -> c[3])
+    return (; cands=cands, feas=feas, npts=length(pts), n_desc=n_desc, total_eig=total_eig)
+end
+
+"""
+    critical_factor_truth(inputsEP, inputsPR; ky_lo=0.05, w_lo=0.05, nseed_ky=6, nseed_w=10,
+                          nb_work=32, nb_steps=[32,40,48], inner=:threads, team=nothing,
+                          use_gpu=false) -> NamedTuple
+
+Robust critical EP scale factor `sfmin` including the narrow-width AE modes the canonical
+`w∈[WIDTH_MIN,WIDTH_MAX]` grid misses. Locates the global `(ky,w)` minimum over an extended
+log-spaced box (width down to `w_lo≈0.05`) via cheap AE-onset ranking → `:ad` polish → faithful
+confirm at `nb_work`, then converges the value in `nbasis` AT the fixed optimum (geometric
+extrapolation over `nb_steps`, capped ≤56). Returns
+`(; sfmin, sfmin_work, kyhat, width, binding, status, nb_limit, nb_ratio, nb_converged, nb_table,
+feasible_frac, n_confirm, n_descend, total_evals_full, total_evals_eig)` where `sfmin` is the
+nbasis-converged estimate and `sfmin_work` the value at `nb_work`.
+"""
+function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing, scan_hi=nothing,
+                               ky_lo::Float64=0.05, w_lo::Float64=0.05, w_hi=nothing,
+                               nseed_ky::Int=6, nseed_w::Int=10, n_eig_seed::Int=12, k_descend::Int=6,
+                               nb_work::Int=32, nb_steps::Vector{Int}=[32, 40, 48],
+                               inner::Symbol=:threads, team=nothing,
+                               use_gpu::Bool=false, verbose::Bool=false)
+    @assert all(nb -> nb <= 56, nb_steps) "nb_steps must stay ≤56 (nb≥64 Hermite overlap matrix is singular)"
+    gth = gamma_thresh === nothing ? _gamma_thresh_for(ep0, prof) : gamma_thresh
+    shi = scan_hi === nothing ? Float64(ep0.FACTOR_IN) : scan_hi
+    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    whi = w_hi === nothing ? Float64(ep0.WIDTH_MAX) : w_hi
+
+    epw = deepcopy(ep0); epw.N_BASIS = nb_work
+    loc = _locate_extended(epw, prof; gth=gth, slo=slo, shi=shi, ky_lo=ky_lo, w_lo=w_lo, w_hi=whi,
+            nseed_ky=nseed_ky, nseed_w=nseed_w, n_eig_seed=n_eig_seed, k_descend=k_descend,
+            inner=inner, team=team, use_gpu=use_gpu)
+    total_eig = loc.total_eig; total_full = 0; n_confirm = 0
+
+    best_f = Inf; best_ky = NaN; best_w = NaN; best_bind = :none
+    for c in loc.cands
+        c[3] >= best_f && break
+        r = marginal_factor_faithful(epw, prof; kyhat=c[1], width=c[2], gamma_thresh=gth,
+                scan_lo=slo, scan_hi=shi, threaded=true, inner=inner, team=team, use_gpu=use_gpu)
+        n_confirm += 1; total_full += r.evals_full; total_eig += r.evals_eig
+        if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
+            best_f = r.factor_faithful; best_ky = c[1]; best_w = c[2]; best_bind = r.binding
+        end
+    end
+    feasible_frac = loc.npts == 0 ? 0.0 : length(loc.feas) / loc.npts
+    if !isfinite(best_f)
+        return (; sfmin=Inf, sfmin_work=Inf, kyhat=NaN, width=NaN, binding=:none, status=:no_onset,
+                nb_limit=NaN, nb_ratio=NaN, nb_converged=false, nb_table=Int[]=>Float64[],
+                feasible_frac=feasible_frac, n_confirm=n_confirm, n_descend=loc.n_desc,
+                total_evals_full=total_full, total_evals_eig=total_eig)
+    end
+
+    # separable nbasis convergence AT THE FIXED located optimum (re-optimising per nb would corrupt the
+    # sequence by hopping basins); SingularException at high (nb,narrow-w) is logged as NaN, not fatal.
+    nbs = Int[]; vals = Float64[]
+    for nb in nb_steps
+        epn = deepcopy(ep0); epn.N_BASIS = nb
+        v = if nb == nb_work
+            best_f
+        else
+            try
+                r = marginal_factor_faithful(epn, prof; kyhat=best_ky, width=best_w, gamma_thresh=gth,
+                        scan_lo=slo, scan_hi=shi, threaded=true, inner=inner, team=team, use_gpu=use_gpu)
+                total_full += r.evals_full; total_eig += r.evals_eig
+                (r.binding !== :none && isfinite(r.factor_faithful)) ? r.factor_faithful : NaN
+            catch e
+                NaN
+            end
+        end
+        push!(nbs, nb); push!(vals, v)
+    end
+    ex = _nbasis_extrapolate(nbs, vals)
+    finite_vals = [v for v in vals if isfinite(v)]
+    sfmin_final = ex.converged ? ex.limit :
+                  (isempty(finite_vals) ? best_f : finite_vals[end])
+    verbose && @info "truth" ky=best_ky w=best_w sfmin_work=best_f nb_limit=ex.limit r=ex.ratio final=sfmin_final
+
+    return (; sfmin=sfmin_final, sfmin_work=best_f,
+            kyhat=best_ky, width=best_w, binding=best_bind, status=(best_f >= 0.999*shi ? :cap : :ok),
+            nb_limit=ex.limit, nb_ratio=ex.ratio, nb_converged=ex.converged, nb_table=(nbs => vals),
+            feasible_frac=feasible_frac, n_confirm=n_confirm, n_descend=loc.n_desc,
+            total_evals_full=total_full, total_evals_eig=total_eig)
+end
+
+"""
+    critical_factor_triggered(inputsEP, inputsPR; w_floor_tol=0.05, gap_thresh=1.5, feas_thresh=0.25,
+                              ky_lo=0.25, truth_kwargs=NamedTuple(), inner=:threads, team=nothing,
+                              use_gpu=false) -> NamedTuple
+
+Production policy: run the fast canonical [`critical_factor_ad_f1seed`](@ref) pass on
+`w∈[WIDTH_MIN,WIDTH_MAX]`, and escalate to [`critical_factor_truth`](@ref) only when the canonical
+optimum pins at the width floor (a narrow-width bowl likely lies below the box) or the trust gate
+fires (`sparse` feasible fraction, `cheap_gap` keep-filter divergence, `no_onset`, `cap`). When
+escalated, returns the lower (`min(canonical, truth)`) faithful onset. Returns
+`(; sfmin, kyhat, width, binding, status, escalated, reasons, source, base_sfmin, truth_sfmin, ...)`.
+
+Note: because narrower width is systematically more unstable, the canonical optimum pins at
+`WIDTH_MIN` at most radii, so the `:width_floor` trigger is broad. Use `truth_kwargs` to forward
+solver knobs (e.g. `nseed_w`, `nb_steps`) to the escalated search.
+"""
+function critical_factor_triggered(ep0, prof; gamma_thresh=nothing, scan_lo=nothing, scan_hi=nothing,
+                                   w_floor_tol::Float64=0.05, gap_thresh::Float64=1.5, feas_thresh::Float64=0.25,
+                                   ky_lo::Float64=0.25, nseed_ky::Int=4, nseed_w::Int=8, n_eig_seed::Int=12,
+                                   truth_kwargs=NamedTuple(),
+                                   inner::Symbol=:threads, team=nothing,
+                                   use_gpu::Bool=false, verbose::Bool=false)
+    base = critical_factor_ad_f1seed(ep0, prof; ky_lo=ky_lo, nseed_ky=nseed_ky, nseed_w=nseed_w,
+            n_eig_seed=n_eig_seed, gamma_thresh=gamma_thresh, scan_lo=scan_lo, scan_hi=scan_hi,
+            inner=inner, team=team, use_gpu=use_gpu)
+    wmin = Float64(ep0.WIDTH_MIN)
+    pinned = isfinite(base.width) && base.width <= wmin * (1.0 + w_floor_tol)
+    reasons = Symbol[]
+    pinned                            && push!(reasons, :width_floor)
+    (base.status === :no_onset)       && push!(reasons, :no_onset)
+    (base.status === :cap)            && push!(reasons, :cap)
+    (base.cheap_gap > gap_thresh)     && push!(reasons, :cheap_gap)
+    (base.feasible_frac < feas_thresh)&& push!(reasons, :sparse)
+    flagged = !isempty(reasons)
+    full = base.total_evals_full; eig = base.total_evals_eig
+    if !flagged
+        return (; sfmin=base.sfmin, kyhat=base.kyhat, width=base.width, binding=base.binding,
+                status=base.status, escalated=false, reasons=reasons, source=:canonical,
+                base_sfmin=base.sfmin, truth_sfmin=NaN, total_evals_full=full, total_evals_eig=eig)
+    end
+    t = critical_factor_truth(ep0, prof; gamma_thresh=gamma_thresh, scan_lo=scan_lo, scan_hi=scan_hi,
+            inner=inner, team=team, use_gpu=use_gpu, truth_kwargs...)
+    full += t.total_evals_full; eig += t.total_evals_eig
+    use_t = isfinite(t.sfmin) && (!isfinite(base.sfmin) || t.sfmin < base.sfmin)
+    verbose && @info "triggered" reasons=reasons base=base.sfmin truth=t.sfmin chosen=(use_t ? :truth : :canonical)
+    return (; sfmin=(use_t ? t.sfmin : base.sfmin), kyhat=(use_t ? t.kyhat : base.kyhat),
+            width=(use_t ? t.width : base.width), binding=(use_t ? t.binding : base.binding),
+            status=(use_t ? t.status : base.status), escalated=true, reasons=reasons,
+            source=(use_t ? :truth : :canonical), base_sfmin=base.sfmin, truth_sfmin=t.sfmin,
+            truth_nb_limit=t.nb_limit, truth_nb_converged=t.nb_converged, truth_width=t.width,
+            total_evals_full=full, total_evals_eig=eig)
 end

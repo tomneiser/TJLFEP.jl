@@ -35,9 +35,14 @@ const THREADS_PER_WORKER = parse(Int, get(ENV, "JULIA_WORKER_THREADS", "2"))
 # INNER selects the within-radius parallelism: :mps_team (default; addproc'd MPS clients) or
 # :threads (single-process threaded baseline on this task's GPU, for speedup/timing comparison).
 const INNER = Symbol(get(ENV, "INNER", "mps_team"))
-# SOLVER selects the critical-factor engine: :grid (Fortran-equivalent kwscale_scan) or :ad
-# (autodiff AE-onset Newton + IFT descent). Default :grid preserves prior behavior.
+# SOLVER selects the critical-factor engine: :grid (Fortran-equivalent kwscale_scan),
+# :ad (fast autodiff AE-onset Newton + IFT descent), or :robust_ad (robust autodiff
+# global-min over the (ky,w) grid). Default :grid preserves prior behavior.
 const SOLVER = Symbol(get(ENV, "SOLVER", "grid"))
+# REFINE_ROUNDS is the accuracy/speed knob for SOLVER=robust_ad: rounds of (ky,w)
+# window narrowing around the running best (0=coarse grid min; higher=better off-node
+# resolution at proportionally higher cost). Ignored by :grid and :ad.
+const REFINE_ROUNDS = parse(Int, get(ENV, "REFINE_ROUNDS", "1"))
 # Optional GPU pin list for the team workers, e.g. "0,1" to spread a radius across 2 GPUs.
 # Defaults to this task's CUDA_VISIBLE_DEVICES (one GPU). Workers are round-robined over it.
 const TEAM_GPUS = let s = get(ENV, "TEAM_GPUS", get(ENV, "CUDA_VISIBLE_DEVICES", "0"))
@@ -106,7 +111,7 @@ scan_index = haskey(ENV, "SCAN_INDEX") ? parse(Int, ENV["SCAN_INDEX"]) : slurm_a
 printout = get(ENV, "TJLFEP_PRINTOUT", "0") == "1"
 
 const TEAM = INNER === :mps_team ? workers() : nothing
-println("=== gacode scan task (inner=$INNER solver=$SOLVER) ===")
+println("=== gacode scan task (inner=$INNER solver=$SOLVER refine_rounds=$REFINE_ROUNDS) ===")
 println("worker sysimage=", isempty(_SYSIMG_FLAGS.exec) ? "<none, JIT>" : GPU_SYSIMAGE)
 println("scan_index=$scan_index / $scan_n  team=$(INNER === :mps_team ? nworkers() : 0) workers  " *
         "threads/worker=$THREADS_PER_WORKER  team_gpus=$(join(TEAM_GPUS, ','))")
@@ -124,6 +129,7 @@ result = run_gacode_scan_task(
     inner=INNER,
     team=TEAM,
     solver=SOLVER,
+    refine_rounds=REFINE_ROUNDS,
 )
 println("OK scan_index=$(result.scan_index) ir=$(result.ir) sfmin=$(result.sfmin) in $(round(time() - t0; digits=1)) s")
 flush(stdout)

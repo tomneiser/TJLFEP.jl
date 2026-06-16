@@ -48,4 +48,25 @@ let
             out_dir=tmp, use_gpu=true, printout=false, inner=:threads, team=nothing, solver=:ad)
         @info "generic precompile AD workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
     end
+
+    # Bake the robust autodiff (solver=:robust_ad) path on GPU: critical_factor_robust — the
+    # (ky,w) grid of faithful onsets + adaptive (ky,w) refinement — reached via mainsub's
+    # solver=:robust_ad branch. refine_rounds>0 exercises the refinement loop so the zoom/trigger
+    # code is baked too. Without this, robust_ad runs JIT ~15 min per task.
+    mktempdir() do tmp
+        res = run_gacode_scan_task(GACODE, TGLFEP, 1;
+            out_dir=tmp, use_gpu=true, printout=false, inner=:threads, team=nothing,
+            solver=:robust_ad, refine_rounds=1)
+        @info "generic precompile robust_ad workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
+    end
+
+    # Bake the physical-truth (solver=:truth) path on GPU: critical_factor_truth — the extended
+    # log-width (ky,w) locate (cheap AE-edge rank -> :ad polish -> faithful confirm) + separable
+    # nbasis convergence — reached via mainsub's solver=:truth branch. Without this the truth path
+    # JITs the locate + nbasis sweep per task.
+    mktempdir() do tmp
+        res = run_gacode_scan_task(GACODE, TGLFEP, 1;
+            out_dir=tmp, use_gpu=true, printout=false, inner=:threads, team=nothing, solver=:truth)
+        @info "generic precompile truth workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
+    end
 end

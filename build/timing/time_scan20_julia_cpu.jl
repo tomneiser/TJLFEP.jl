@@ -88,10 +88,12 @@ logmsg("workers=", nworkers(), " FILE_DIR=", FILE_DIR)
 logmsg("output -> ", outdir)
 
 solver = Symbol(get(ENV, "SOLVER", "grid"))
+refine_rounds = parse(Int, get(ENV, "REFINE_ROUNDS", "1"))
 
 tc = time()
 cd(outdir) do
-    runTHD(tglfep, mtglf, expro; printout=false, use_gpu=use_gpu, parallel=:distributed, solver=solver)
+    runTHD(tglfep, mtglf, expro; printout=false, use_gpu=use_gpu, parallel=:distributed,
+           solver=solver, refine_rounds=refine_rounds)
 end
 compute_s = time() - tc
 total_s = time() - job_t0

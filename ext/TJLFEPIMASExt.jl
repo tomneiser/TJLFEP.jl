@@ -151,7 +151,8 @@ Shared by `runTHD(::IMAS.dd)`'s in-process `pmap` and the SPMD per-radius task
 function _dd_radius_output(Options, profile, i::Int;
         use_gpu::Bool=false, inner::Symbol=:threads,
         team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
-        ql_flux_scan::Bool=false, printout::Bool=false, solver::Symbol=:grid)
+        ql_flux_scan::Bool=false, printout::Bool=false, solver::Symbol=:grid,
+        refine_rounds::Int=1)
     arrTGLFEP_i = deepcopy(Options)
     arrMTGLF_i = deepcopy(profile)
 
@@ -166,7 +167,7 @@ function _dd_radius_output(Options, profile, i::Int;
     println("=============================================================")
 
     return TJLFEP.mainsub(arrTGLFEP_i, arrMTGLF_i, printout; use_gpu=use_gpu, inner=inner,
-        team=team, ql_flux_scan=ql_flux_scan, solver=solver)
+        team=team, ql_flux_scan=ql_flux_scan, solver=solver, refine_rounds=refine_rounds)
 end
 
 """
@@ -183,6 +184,7 @@ cross-radius post-processing below is identical to the in-process path.
 function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any};
                 printout::Bool=false, saveFiles::Bool=false, dir::String="ddFiles", use_gpu::Bool=false,
                 ql_flux_scan::Bool=false, inner::Symbol=:threads, mps_team::Int=0, solver::Symbol=:grid,
+                refine_rounds::Int=1,
                 precomputed_dir::AbstractString=get(ENV, "TJLFEP_PRECOMPUTED_DIR", ""))
 
     Options, profile, extraEP, expro_state = preprocess_imas_inputs(dd, rho, OptionsDict; verbose=printout)
@@ -207,7 +209,7 @@ function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::D
         # SPMD layout (run_tjlfep inner=:mps_team -> runTHD_dd_radius per task + this merge).
         pmap_outputs = pmap(i -> _dd_radius_output(Options, profile, i;
             use_gpu=use_gpu, inner=:threads, team=nothing, ql_flux_scan=ql_flux_scan,
-            printout=printout, solver=solver), 1:n_ir)
+            printout=printout, solver=solver, refine_rounds=refine_rounds), 1:n_ir)
     else
         @info "runTHD(dd): loading precomputed per-radius results (SPMD merge)" precomputed_dir n_ir
         pmap_outputs = map(1:n_ir) do i
@@ -515,7 +517,8 @@ function TJLFEP.runTHD_dd_radius(dd::IMAS.dd, rho::AbstractVector{Float64},
         out_dir::AbstractString=".", use_gpu::Bool=false,
         inner::Symbol=:mps_team,
         team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
-        ql_flux_scan::Bool=false, printout::Bool=false, solver::Symbol=:grid)
+        ql_flux_scan::Bool=false, printout::Bool=false, solver::Symbol=:grid,
+        refine_rounds::Int=1)
     Options, profile, _, _ = preprocess_imas_inputs(dd, rho, OptionsDict; verbose=printout)
     1 <= scan_index <= Options.SCAN_N ||
         error("runTHD_dd_radius: scan_index=$scan_index out of range 1:$(Options.SCAN_N)")
@@ -524,7 +527,8 @@ function TJLFEP.runTHD_dd_radius(dd::IMAS.dd, rho::AbstractVector{Float64},
     @info "runTHD_dd_radius" scan_index ir=Options.IR_EXP[scan_index] inner team=(team === nothing ? 0 : length(team)) host=gethostname()
 
     output = _dd_radius_output(Options, profile, scan_index;
-        use_gpu=use_gpu, inner=inner, team=team, ql_flux_scan=ql_flux_scan, printout=printout, solver=solver)
+        use_gpu=use_gpu, inner=inner, team=team, ql_flux_scan=ql_flux_scan, printout=printout,
+        solver=solver, refine_rounds=refine_rounds)
 
     task_file = joinpath(out_dir, "task_$(scan_index).jls")
     open(task_file, "w") do io

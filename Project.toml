@@ -1,7 +1,7 @@
 name = "TJLFEP"
 uuid = "d079e620-cbd9-4d56-ad78-ffea50be2e33"
-version = "2.0.8"
 authors = ["Tom Neiser <neisert@fusion.gat.com>", "Eric Bass <bassem@fusion.gat.com>"]
+version = "2.0.8"
 
 [deps]
 Arpack = "7d9fca2a-8960-54d3-9f78-7d1dccf2cb97"
@@ -13,6 +13,7 @@ ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 KrylovKit = "0b1a1467-8014-51b9-945f-bf0ae24f4b77"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 LinearMaps = "7a12625a-238d-50fd-b39a-03d52299707e"
+NLopt = "76087f3c-5699-56af-9a33-bf431cd00edd"
 PackageCompiler = "9b87118b-4619-50d2-8e1e-99f35a4d4d9d"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
@@ -32,12 +33,6 @@ TurbulentTransport = "9bf5e8f4-5746-4003-bc69-ef83265c10ca"
 [extensions]
 TJLFEPIMASExt = ["GACODE", "IMAS", "TurbulentTransport"]
 
-[extras]
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["Test"]
-
 [compat]
 Arpack = "0.5.4"
 CUDA = "5.8.5"
@@ -50,6 +45,7 @@ IMAS = "6, 7"
 KrylovKit = "0.10.2"
 LinearAlgebra = "1.11.0"
 LinearMaps = "3.11.4"
+NLopt = "1.2.1"
 PackageCompiler = "2.2.5"
 Plots = "1.41.6"
 Printf = "1.11.0"
@@ -61,3 +57,9 @@ SparseArrays = "1.11.0"
 StaticArrays = "1.9.18"
 TJLF = "1.2.4"
 TurbulentTransport = "1.1.4"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
