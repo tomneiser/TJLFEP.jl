@@ -203,8 +203,66 @@ pins at `WIDTH_MIN` or the trust diagnostics (`feasible_frac`, `cheap_gap`) flag
 it, leaving clean/pinned radii on the fast path.
 
 Two reported quantities make the modeling choice explicit:
-- **`critical_factor_truth`** — the physical narrow-width minimum (no `w≥1` floor).
-- **`critical_factor_triggered`** — the production value, `min(Fortran-faithful canonical, truth)`.
+- **`critical_factor_truth`** — the production value `min(robust_ad, narrow-width truth)`: the
+  extended-`w` narrow-width minimum, floored by `robust_ad` (the refined `w≥1` grid-zoom, kwarg
+  `robust_floor=true`) so it never reports above the best refined-faithful threshold. The floor wins
+  in the deep core where the narrow-width sequence is still climbing; truth wins outward. Pass
+  `robust_floor=false` for the raw, unfloored narrow-width minimum.
+- **`critical_factor_triggered`** — the fast production wrapper: canonical `adf1` on `w≥1`, escalating
+  to the (floored) `critical_factor_truth` only at width-floor-pinned / trust-flagged radii.
+
+### 4.6 Validated full-profile result (DIII-D SCAN_N=20, nbasis=32)
+
+The full 20-radius `:truth` profile (job 54580579, 5 nodes × 4 GPUs, `MPS_TEAM=8`, JIT) reproduces
+the `extbox5` ground truth — most notably **IR=95: `sfmin=0.2147` at `(ky=0.81, w=0.113)`** — and the
+production `min(robust_ad, truth)` is **~2× below the grid on the median radius, up to ~12× at IR=95**:
+
+![grid vs robust_ad vs physical-truth sfmin profile](plots/sfmin_grid_vs_truth_nb32.png)
+
+Gray dotted = Fortran-faithful `kwscale_scan` on `w∈[1,2]` (reference); blue = `robust_ad`, the
+refined `w≥1` grid-zoom of the faithful onset (the production **floor**); orange =
+`critical_factor_truth` (raw, extended `w`); green dashed = the production `min(robust_ad, truth)`
+(`:truth`/`:triggered`). The min tracks truth at the outer radii and falls back to the `robust_ad`
+floor at the 6 deep-core radii where the raw narrow-width `:truth` sequence is still climbing and
+overshoots. (Job 54580579 predates the `robust_floor` baking, so here the floor is applied to that
+profile post-hoc from the `robust_ad` r1 run; the rebuilt sysimage applies it inline.)
+
+Per-radius optimum found by `critical_factor_truth` (`ky*`, `width*` = the located `(ky,w)`; `sfmin`
+at the nbasis-converged limit over `{32,40,48}`; `binding` = the keep filter that sets the threshold):
+
+| IR | ky* | width* | binding | sfmin (truth) | nb-converged | grid (w≥1) | grid/truth |
+|----|-----|--------|---------|---------------|--------------|------------|------------|
+| 2 | 0.43 | 0.881 | i_pinch | 1.3995 | false | 0.9374 | 0.7× |
+| 7 | 0.81 | 0.881 | i_pinch | 0.9229 | false | 0.6249 | 0.7× |
+| 12 | 0.43 | 0.585 | i_pinch | 0.2633 | false | 0.3125 | 1.2× |
+| 17 | 0.43 | 0.585 | ae_band_growth | 0.2050 | false | 0.2344 | 1.1× |
+| 22 | 0.24 | 0.585 | ae_band_growth | 0.1346 | false | 0.1758 | 1.3× |
+| 28 | 0.43 | 0.388 | ae_band_growth | 0.2397 | true | 0.1562 | 0.7× |
+| 33 | 0.31 | 0.438 | ae_band_growth | 0.0570 | false | 0.1172 | 2.1× |
+| 38 | 0.24 | 0.881 | ae_band_growth | 0.0195 | false | 0.0195 | 1.0× |
+| 43 | 0.24 | 0.585 | ae_band_growth | 0.0195 | false | 0.0195 | 1.0× |
+| 48 | 0.43 | 0.388 | ae_band_growth | 0.0195 | false | 0.0391 | 2.0× |
+| 54 | 0.43 | 0.388 | ae_band_growth | 0.0591 | false | 0.1172 | 2.0× |
+| 59 | 0.43 | 0.258 | ae_band_growth | 0.0575 | true | 0.1758 | 3.1× |
+| 64 | 0.43 | 0.258 | ae_band_growth | 0.0361 | false | 0.2344 | 6.5× |
+| 69 | 0.62 | 0.258 | ae_band_growth | 0.1368 | false | 0.4687 | 3.4× |
+| 74 | 0.81 | 0.258 | ae_band_growth | 0.2412 | false | 0.5273 | 2.2× |
+| 80 | 0.81 | 0.258 | ae_band_growth | 0.2993 | false | 1.2498 | 4.2× |
+| 85 | 1.00 | 0.171 | ae_band_growth | 0.2313 | false | 1.2497 | 5.4× |
+| 90 | 1.00 | 0.171 | ae_band_growth | 0.3223 | false | 1.8749 | 5.8× |
+| 95 | 0.81 | 0.113 | ae_band_growth | 0.2147 | false | 2.6367 | 12.3× |
+| 101 | 0.43 | 0.258 | ae_band_growth | 0.1763 | false | 0.2344 | 1.3× |
+
+Reading:
+- **All optima are at `width < 1`** (0.11–0.88), i.e. the threshold-setting AE is the narrow-width mode
+  the canonical `w≥1` box excludes — hence the systematic `grid/truth > 1` across the outer half.
+- **`nb-converged=false` at most radii** means the `sfmin({32,40,48})` sequence had not flattened to
+  tolerance, so the conservative finest-`nb` (extrapolated) limit is reported. At the **deep-core radii
+  IR=2/7/28** this overshoots (ratio < 1, truth *higher*); the `robust_floor` inside
+  `critical_factor_truth` takes `min(robust_ad, truth)` there, so those radii report the refined
+  `robust_ad` value instead (e.g. IR=2 → 0.890, IR=7 → 0.607).
+- **`binding`** is `ae_band_growth` (the EP-driven AE growth crossing) everywhere except the innermost
+  IR=2/7/12, where `i_pinch` (the ion-pinch keep filter) sets the threshold.
 
 ---
 

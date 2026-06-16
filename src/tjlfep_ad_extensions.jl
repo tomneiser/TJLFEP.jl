@@ -1558,10 +1558,18 @@ function critical_factor_ad_f1seed(ep0, prof; gamma_thresh=nothing,
             total_evals_full=total_full, total_evals_eig=total_eig)
 end
 
-# Geometric (Aitken) extrapolation of a converging nbasis sequence. If the increments shrink
-# geometrically (0<r<1), extrapolate the nb→∞ limit; otherwise flag not-clearly-converged and fall
-# back to the finest valid value.
-function _nbasis_extrapolate(nbs::Vector{Int}, vals::Vector{Float64})
+# Convergence test + (guarded) geometric extrapolation of an nbasis sequence at a FIXED optimum.
+# The reported `limit` is what the caller uses as the nbasis-converged sfmin; it must never wander
+# outside the measured envelope. Two guards keep the fragile Aitken formula `v3 + d2·r/(1-r)` from
+# overshooting:
+#   1. If the sequence is already flat to `rtol` (|d2|/|v3| ≤ rtol), it is CONVERGED — report the
+#      finest measured value directly. (Avoids the r→1 blow-up: e.g. a +5% sequence with r=0.97 has
+#      1/(1-r)≈36×, which would amplify a tiny increment into a 2× "limit".)
+#   2. Otherwise extrapolate ONLY when increments shrink fast (0 < r ≤ r_max, tail ≤ 1/(1-r_max)),
+#      and clamp the result into the measured band. r ≥ 1 (growing increments) ⇒ genuinely NOT
+#      converged ⇒ report finest and flag it (the caller's min(grid,truth) then keeps grid).
+function _nbasis_extrapolate(nbs::Vector{Int}, vals::Vector{Float64};
+                             rtol::Float64=0.03, r_max::Float64=0.6)
     good = [(nbs[i], vals[i]) for i in eachindex(vals) if isfinite(vals[i])]
     length(good) == 0 && return (; limit=NaN, ratio=NaN, converged=false, finest=NaN, nb_finest=0)
     finest = good[end][2]; nb_finest = good[end][1]
@@ -1569,12 +1577,19 @@ function _nbasis_extrapolate(nbs::Vector{Int}, vals::Vector{Float64})
     v1, v2, v3 = good[end-2][2], good[end-1][2], good[end][2]
     d1 = v2 - v1; d2 = v3 - v2
     r = (d1 == 0.0) ? 0.0 : d2 / d1
-    if 0.0 < r < 1.0
-        lim = v3 + d2 * r / (1.0 - r)
-        return (; limit=lim, ratio=r, converged=true, finest=finest, nb_finest=nb_finest)
-    else
-        return (; limit=finest, ratio=r, converged=false, finest=finest, nb_finest=nb_finest)
+    # (1) already flat: trust the finest measured value, no extrapolation
+    if abs(d2) <= rtol * max(abs(v3), eps())
+        return (; limit=finest, ratio=r, converged=true, finest=finest, nb_finest=nb_finest)
     end
+    # (2) fast geometric shrink: extrapolate with a bounded tail, clamped to the measured band
+    if 0.0 < r <= r_max
+        lim = v3 + d2 * r / (1.0 - r)
+        lo = min(v1, v2, v3) - abs(d2); hi = max(v1, v2, v3) + abs(d2)
+        if lo <= lim <= hi
+            return (; limit=lim, ratio=r, converged=true, finest=finest, nb_finest=nb_finest)
+        end
+    end
+    return (; limit=finest, ratio=r, converged=false, finest=finest, nb_finest=nb_finest)
 end
 
 # Extended-box locate: log-width cheap-rank seed grid → :ad polish → candidate list (confirmed by the
@@ -1627,15 +1642,22 @@ Robust critical EP scale factor `sfmin` including the narrow-width AE modes the 
 `w∈[WIDTH_MIN,WIDTH_MAX]` grid misses. Locates the global `(ky,w)` minimum over an extended
 log-spaced box (width down to `w_lo≈0.05`) via cheap AE-onset ranking → `:ad` polish → faithful
 confirm at `nb_work`, then converges the value in `nbasis` AT the fixed optimum (geometric
-extrapolation over `nb_steps`, capped ≤56). Returns
-`(; sfmin, sfmin_work, kyhat, width, binding, status, nb_limit, nb_ratio, nb_converged, nb_table,
-feasible_frac, n_confirm, n_descend, total_evals_full, total_evals_eig)` where `sfmin` is the
-nbasis-converged estimate and `sfmin_work` the value at `nb_work`.
+extrapolation over `nb_steps`, capped ≤56). When `robust_floor=true` (default) the result is
+floored by [`critical_factor_robust`](@ref) — a dense `(ky,w)` grid-zoom of the faithful marginal
+factor inside the canonical `w≥1` box — so `sfmin = min(extended/nbasis-converged, refined faithful)`.
+This guarantees the truth value never exceeds the best refined-faithful threshold (which beats the
+coarse grid and the extended-box gradient locate in the dense core), so the profile dominates both
+`grid` and `robust_ad` everywhere. Returns
+`(; sfmin, sfmin_work, sfmin_truth, robust_sfmin, floored, kyhat, width, binding, status, nb_limit,
+nb_ratio, nb_converged, nb_table, feasible_frac, n_confirm, n_descend, total_evals_full,
+total_evals_eig)` where `sfmin` is the production value, `sfmin_truth` the extended/nbasis-converged
+value before flooring, `robust_sfmin` the refined-faithful floor, and `floored` whether the floor won.
 """
 function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing, scan_hi=nothing,
                                ky_lo::Float64=0.05, w_lo::Float64=0.05, w_hi=nothing,
                                nseed_ky::Int=6, nseed_w::Int=10, n_eig_seed::Int=12, k_descend::Int=6,
                                nb_work::Int=32, nb_steps::Vector{Int}=[32, 40, 48],
+                               robust_floor::Bool=true,
                                inner::Symbol=:threads, team=nothing,
                                use_gpu::Bool=false, verbose::Bool=false)
     @assert all(nb -> nb <= 56, nb_steps) "nb_steps must stay ≤56 (nb≥64 Hermite overlap matrix is singular)"
@@ -1662,7 +1684,8 @@ function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing,
     end
     feasible_frac = loc.npts == 0 ? 0.0 : length(loc.feas) / loc.npts
     if !isfinite(best_f)
-        return (; sfmin=Inf, sfmin_work=Inf, kyhat=NaN, width=NaN, binding=:none, status=:no_onset,
+        return (; sfmin=Inf, sfmin_work=Inf, sfmin_truth=Inf, robust_sfmin=NaN, floored=false,
+                kyhat=NaN, width=NaN, binding=:none, status=:no_onset,
                 nb_limit=NaN, nb_ratio=NaN, nb_converged=false, nb_table=Int[]=>Float64[],
                 feasible_frac=feasible_frac, n_confirm=n_confirm, n_descend=loc.n_desc,
                 total_evals_full=total_full, total_evals_eig=total_eig)
@@ -1689,12 +1712,30 @@ function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing,
     end
     ex = _nbasis_extrapolate(nbs, vals)
     finite_vals = [v for v in vals if isfinite(v)]
-    sfmin_final = ex.converged ? ex.limit :
+    sfmin_truth = ex.converged ? ex.limit :
                   (isempty(finite_vals) ? best_f : finite_vals[end])
-    verbose && @info "truth" ky=best_ky w=best_w sfmin_work=best_f nb_limit=ex.limit r=ex.ratio final=sfmin_final
 
-    return (; sfmin=sfmin_final, sfmin_work=best_f,
-            kyhat=best_ky, width=best_w, binding=best_bind, status=(best_f >= 0.999*shi ? :cap : :ok),
+    # Refined Fortran-faithful FLOOR: a dense (ky,w) grid-zoom of the FAITHFUL marginal factor inside
+    # the canonical w≥1 box at nb_work. The coarse grid overestimates the (dense) core, and the
+    # extended-box gradient locate above can under-resolve the w≥1 core minimum, so the reported sfmin
+    # = min(extended/nbasis-converged truth, refined faithful). This makes the truth profile dominate
+    # both grid and robust_ad everywhere: robust wins only the deep core, truth wins outward.
+    sfmin_final = sfmin_truth; robust_sfmin = NaN; floored = false
+    if robust_floor
+        rob = critical_factor_robust(epw, prof; gamma_thresh=gth, scan_lo=slo, scan_hi=shi,
+                inner=inner, team=team, use_gpu=use_gpu)
+        total_full += rob.total_evals_full; total_eig += rob.total_evals_eig
+        robust_sfmin = rob.sfmin
+        if rob.binding !== :none && isfinite(rob.sfmin) && rob.sfmin < sfmin_final
+            sfmin_final = rob.sfmin; best_ky = rob.kyhat; best_w = rob.width; best_bind = rob.binding
+            floored = true
+        end
+    end
+    verbose && @info "truth" ky=best_ky w=best_w sfmin_work=best_f nb_limit=ex.limit r=ex.ratio truth=sfmin_truth robust=robust_sfmin final=sfmin_final floored
+
+    return (; sfmin=sfmin_final, sfmin_work=best_f, sfmin_truth=sfmin_truth,
+            robust_sfmin=robust_sfmin, floored=floored,
+            kyhat=best_ky, width=best_w, binding=best_bind, status=(sfmin_final >= 0.999*shi ? :cap : :ok),
             nb_limit=ex.limit, nb_ratio=ex.ratio, nb_converged=ex.converged, nb_table=(nbs => vals),
             feasible_frac=feasible_frac, n_confirm=n_confirm, n_descend=loc.n_desc,
             total_evals_full=total_full, total_evals_eig=total_eig)

@@ -215,7 +215,11 @@ genuine onset is found (`status ∈ (:no_onset,:cap)`), `FACTOR_IN` is left unto
 function _mainsub_truth(inputsEP::Options, inputsPR::profile, printout::Bool;
                         use_gpu::Bool = false, inner::Symbol = :threads,
                         team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
-    res = critical_factor_truth(inputsEP, inputsPR; use_gpu=use_gpu, inner=inner, team=team)
+    # Honor the requested working basis (N_BASIS); the nbasis-convergence sweep climbs from it.
+    # At the production nb=32 this is nb_steps=[32,40,48] (unchanged from the default).
+    nbw = Int(inputsEP.N_BASIS)
+    res = critical_factor_truth(inputsEP, inputsPR; use_gpu=use_gpu, inner=inner, team=team,
+                                nb_work=nbw, nb_steps=sort(unique([nbw, nbw + 8, nbw + 16])))
 
     sfmin  = res.sfmin
     kymark = res.kyhat
@@ -245,6 +249,8 @@ function _mainsub_truth(inputsEP::Options, inputsPR::profile, printout::Bool;
         push!(sf_buf, "binding = $(res.binding)")
         push!(sf_buf, "status = $(res.status)")
         push!(sf_buf, "nbasis = $(collect(nbs)) -> $(collect(vals))  (converged=$(res.nb_converged), limit=$(res.nb_limit))")
+        push!(sf_buf, "sfmin_truth = $(res.sfmin_truth)   # extended-box + nbasis (pre-floor)")
+        push!(sf_buf, "robust_floor = $(res.robust_sfmin)   # refined faithful w>=1 (floored=$(res.floored))")
         push!(sf_buf, "feasible_frac = $(res.feasible_frac)")
         push!(sf_buf, "n_confirm = $(res.n_confirm)  evals_full = $(res.total_evals_full)  evals_eig = $(res.total_evals_eig)")
     end

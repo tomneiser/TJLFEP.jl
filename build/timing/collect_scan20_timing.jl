@@ -20,10 +20,11 @@ const KNOWN_SCAN20 = Dict(
 # spawn, sysimage load, compute, and merge. The Fortran binary compile and the Julia sysimage
 # build are the equivalent one-time costs and are EXCLUDED from both (neither is in total_job).
 # Falls back to scan/compute for older logs that lack a total_job line.
-# Returns (fort, cpu, gpu, cpu_ad, gpu_ad) seconds. The `solver` token (solver=grid|ad)
-# distinguishes the autodiff series; lines without it are treated as solver=grid (back-compat).
+# Returns (fort, cpu, gpu, cpu_ad, gpu_ad, gpu_truth) seconds. The `solver` token
+# (solver=grid|ad|truth) distinguishes the autodiff / physical-truth series; lines without it are
+# treated as solver=grid (back-compat).
 function parse_timing_log(path::String)
-    isfile(path) || return nothing, nothing, nothing, nothing, nothing
+    isfile(path) || return nothing, nothing, nothing, nothing, nothing, nothing
     vals = Dict{String,Float64}()   # "backend|device|solver|phase" => seconds
     for line in readlines(path)
         occursin("TIMING_RESULT", line) || continue
@@ -35,7 +36,8 @@ function parse_timing_log(path::String)
               occursin("backend=julia", s)   ? "julia"   : ""
         dev = occursin("device=gpu", s) ? "gpu" :
               occursin("device=cpu", s) ? "cpu" : ""
-        sol = occursin("solver=ad", s) ? "ad" : "grid"
+        sol = occursin("solver=truth", s) ? "truth" :
+              occursin("solver=ad", s)    ? "ad"    : "grid"
         ph  = occursin("phase=total_job", s) ? "total"   :
               occursin("phase=scan", s)      ? "scan"    :
               occursin("phase=compute", s)   ? "compute" : ""
@@ -48,7 +50,8 @@ function parse_timing_log(path::String)
     gpu    = pick("julia|gpu|grid|total", "julia|gpu|grid|scan")
     cpu_ad = pick("julia|cpu|ad|total", "julia|cpu|ad|compute", "julia|cpu|ad|scan")
     gpu_ad = pick("julia|gpu|ad|total", "julia|gpu|ad|scan")
-    return fort, cpu, gpu, cpu_ad, gpu_ad
+    gpu_truth = pick("julia|gpu|truth|total", "julia|gpu|truth|scan")
+    return fort, cpu, gpu, cpu_ad, gpu_ad, gpu_truth
 end
 
 function parse_ok_in(path::String)
@@ -101,7 +104,7 @@ function newest(pattern::String)
 end
 
 function collect_nb(nb::Int)
-    fort = cpu = gpu = cpu_ad = gpu_ad = gpu_ad_mps = nothing
+    fort = cpu = gpu = cpu_ad = gpu_ad = gpu_ad_mps = gpu_truth = nothing
 
     # Timing harness logs (preferred -- these are the fresh per-nbasis runs). Take these
     # FIRST so a fresh nb6 run wins over the legacy no-nbasis logs / NB6_FALLBACK below.
@@ -136,6 +139,12 @@ function collect_nb(nb::Int)
     end
     if gam_time !== nothing
         gpu_ad_mps = parse_timing_log(gam_time)[5]
+    end
+
+    # Physical-truth (solver=:truth) GPU+MPS harness logs (device=gpu solver=truth tokens).
+    gt_time = newest("time_scan20_nb$(nb)_julia_gpu_truth_[0-9]*.out")
+    if gt_time !== nothing
+        gpu_truth = parse_timing_log(gt_time)[6]
     end
 
     f_dbg = newest("debug_nb$(nb)_fortran20_10n_*.out")
@@ -201,13 +210,13 @@ function collect_nb(nb::Int)
         gpu = gpu === nothing ? NB6_FALLBACK.julia_gpu : gpu
     end
 
-    return fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps
+    return fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps, gpu_truth
 end
 
 function collect_scan20_timing!()
-    rows = ["n_basis,fortran_s,julia_cpu_s,julia_gpu_s,julia_cpu_ad_s,julia_gpu_ad_s,julia_gpu_ad_mps_s,notes"]
+    rows = ["n_basis,fortran_s,julia_cpu_s,julia_gpu_s,julia_cpu_ad_s,julia_gpu_ad_s,julia_gpu_ad_mps_s,julia_gpu_truth_s,notes"]
     for nb in BASIS
-        fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps = collect_nb(nb)
+        fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps, gpu_truth = collect_nb(nb)
         notes = String[]
         fort === nothing && push!(notes, "fortran_missing")
         cpu === nothing && push!(notes, "julia_cpu_missing")
@@ -222,7 +231,8 @@ function collect_scan20_timing!()
         cas = cpu_ad === nothing ? "" : string(cpu_ad)
         gas = gpu_ad === nothing ? "" : string(gpu_ad)
         gams = gpu_ad_mps === nothing ? "" : string(gpu_ad_mps)
-        push!(rows, "$nb,$fs,$cs,$gs,$cas,$gas,$gams,$note")
+        gts = gpu_truth === nothing ? "" : string(gpu_truth)
+        push!(rows, "$nb,$fs,$cs,$gs,$cas,$gas,$gams,$gts,$note")
     end
     mkpath(dirname(OUT_CSV))
     write(OUT_CSV, join(rows, "\n") * "\n")
