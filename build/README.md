@@ -23,7 +23,7 @@ jobs and are gitignored.
 
 | Subdir | Contents |
 |--------|----------|
-| `common/` | Shared GPU/MPS driver (`run_gacode_scan20_mps_task.jl`), MPS launch wrapper (`mps-scan-wrapper.sh`), result merge (`merge_gacode_scan20_array.jl`), sysimage helper (`julia_sysimage.inc.sh`). |
+| `common/` | Shared GPU/MPS driver (`run_gacode_scan20_mps_task.jl`, one-radius-per-task or `QUEUE_MODE=1` backfill), MPS launch wrapper (`mps-scan-wrapper.sh`), result merge (`merge_gacode_scan20_array.jl`), sysimage helper (`julia_sysimage.inc.sh`). |
 | `verify/` | Fortran-vs-Julia verification (batch runners, distributed drivers, overlay plotters). |
 | `run/` | Smoke test, file-based validation, 5-node production scan, merge, self-contained submit template. |
 | `timing/` | Timing-vs-N_BASIS sweep (per-backend batch runners, driver, collector, plotter). |
@@ -78,15 +78,37 @@ sbatch run/submit_tjlfep_gpu_5N_example.sh
 
 Sweeps `N_BASIS` (`NB` env) over Fortran CPU, Julia CPU, and Julia GPU and
 collects `TIMING_RESULT` markers into a CSV + plot. Each `TIMING_RESULT` line
-carries a `solver=` token (`grid` or `ad`), so grid and AD runs coexist in one
-CSV (columns `julia_{cpu,gpu}_ad_s`, `julia_gpu_ad_mps_s`).
+carries a `solver=` token (`grid`, `ad`, `robust_ad`, or `truth`) plus a
+`nodes=` token, so every solver coexists in one CSV (columns `julia_{cpu,gpu}_ad_s`,
+`julia_gpu_ad_mps_s`, `julia_gpu_robust_ad_s`, `julia_gpu_truth_s`) and the
+collector can emit both raw `seconds` and `nodes·seconds/3600` **node-hours**
+(the `*_nh` columns) for each series.
 
 ```bash
 ./timing/submit_timing_vs_nbasis.sh           # grid solver: GPU (MPS) + CPU sweep (from build/)
 ./timing/submit_timing_vs_nbasis_ad.sh        # ad solver:  GPU (threads) + CPU sweep
+./timing/submit_timing_vs_nbasis_robust_ad.sh # robust_ad solver: 5-node MPS GPU sweep
 # after jobs finish:
 julia --project=. timing/collect_scan20_timing.jl   # -> timing_runs/scan20_timing.csv
 ./timing/plot_scan20_timing.sh                       # -> timing_runs/scan20_timing_*.png
+```
+
+### Node-hours (single-node backfill) sweep
+
+For an apples-to-apples *cost* comparison (and the NN-database-generation
+layout), `timing/submit_nodehours_vs_nbasis.sh` submits one **single node** per
+`N_BASIS` running `timing/batch_nndb_scan20_1node.sh` with `QUEUE_MODE=1`: its 4
+GPU-worker tasks share a directory-based atomic claim queue over all 20 radii,
+each spawning its MPS team once and reusing it across every radius it claims.
+This is the node-hours-minimal layout (1 node instead of 5, at the cost of
+~`SCAN_N/4` waves of wallclock) and stamps `nodes=1` on its `TIMING_RESULT`
+lines. Logs use the same per-solver filename tags as the 5-node runs, so the
+newest job id wins and a backfill run supersedes the 5-node number for that
+solver/`N_BASIS`. The line plot (`plot_scan20_timing.jl`) reports node-hours.
+
+```bash
+SOLVER=robust_ad ./timing/submit_nodehours_vs_nbasis.sh   # -> regular QoS, NB_LIST="6 8 16 32"
+SOLVER=truth     ./timing/submit_nodehours_vs_nbasis.sh
 ```
 
 Per-backend jobs: `timing/batch_time_scan20_fortran.sh`, `timing/batch_time_scan20_julia_cpu.sh`,
@@ -103,6 +125,13 @@ Both timing drivers honor two env toggles, forwarded to `mainsub`:
   **Grid-independent: its `sfmin` can differ from (and is more accurate than) the
   grid value** — it resolves the smooth instability/keep onset instead of
   quantizing to the coarse factor grid.
+- `SOLVER=robust_ad` — faithful `w≥1` grid-zoom plus an extended narrow-width
+  locate; reports `sfmin = min(w≥1 grid-zoom, extended narrow-width)` at the run's
+  `N_BASIS`. Captures the **width** component of the grid→production gap.
+- `SOLVER=truth` — `robust_ad` followed by an `N_BASIS` ladder at the located
+  optimum, with a final `min(N_BASIS-converged narrow, w≥1)` floor. Adds the
+  **`N_BASIS`** component on top of `robust_ad` to report the physical-truth
+  critical factor. See `docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`.
 - `INNER=mps_team` — distribute a radius's independent eigensolves across an MPS
   worker team (separate CUDA contexts, Hyper-Q overlap). `INNER=threads` — run
   them in-process with Julia threads.

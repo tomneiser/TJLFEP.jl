@@ -105,44 +105,86 @@ const OUT_DIR = get(ENV, "OUT_DIR", joinpath(ROOT, "build", "gacode_scan20_mps_$
 opts, _, _ = preprocess_gacode_inputs(GACODE_PATH, TGLFEP)
 scan_n = opts.SCAN_N
 
-scan_index = haskey(ENV, "SCAN_INDEX") ? parse(Int, ENV["SCAN_INDEX"]) : slurm_array_task_id() + 1
-@assert 1 <= scan_index <= scan_n "scan_index=$scan_index invalid for SCAN_N=$scan_n"
-
 printout = get(ENV, "TJLFEP_PRINTOUT", "0") == "1"
 
 const TEAM = INNER === :mps_team ? workers() : nothing
 println("=== gacode scan task (inner=$INNER solver=$SOLVER refine_rounds=$REFINE_ROUNDS) ===")
 println("worker sysimage=", isempty(_SYSIMG_FLAGS.exec) ? "<none, JIT>" : GPU_SYSIMAGE)
-println("scan_index=$scan_index / $scan_n  team=$(INNER === :mps_team ? nworkers() : 0) workers  " *
-        "threads/worker=$THREADS_PER_WORKER  team_gpus=$(join(TEAM_GPUS, ','))")
+println("team=$(INNER === :mps_team ? nworkers() : 0) workers  " *
+        "threads/worker=$THREADS_PER_WORKER  team_gpus=$(join(TEAM_GPUS, ','))  scan_n=$scan_n")
 println("OUT_DIR=$OUT_DIR")
 println("CUDA_VISIBLE_DEVICES=$(get(ENV, "CUDA_VISIBLE_DEVICES", "<unset>")) MPS=$(get(ENV, "CUDA_MPS_PIPE_DIRECTORY", "<none>"))")
 println("GPU=", CUDA.functional() ? CUDA.name(first(CUDA.devices())) : "n/a")
 flush(stdout)
 
-t0 = time()
-result = run_gacode_scan_task(
-    GACODE_PATH, TGLFEP, scan_index;
-    out_dir=OUT_DIR,
-    use_gpu=true,
-    printout=printout,
-    inner=INNER,
-    team=TEAM,
-    solver=SOLVER,
-    refine_rounds=REFINE_ROUNDS,
-)
-println("OK scan_index=$(result.scan_index) ir=$(result.ir) sfmin=$(result.sfmin) in $(round(time() - t0; digits=1)) s")
-flush(stdout)
-
-# Per-worker probe dump: each MPS team worker reports its own combo count and the time it
-# spent in TJLFEP_ky vs TJLF.run (eigensolve), so we can see whether the workers actually
-# overlapped on the GPU (high combo count per worker at low wall) or time-sliced/serialized.
-if INNER === :mps_team && get(ENV, "TJLFEP_PROBE", "0") == "1"
-    for w in workers()
-        n, tky, trun = remotecall_fetch(w) do
-            (TJLFEP._PROBE_N[], TJLFEP._PROBE_KY[], TJLFEP._PROBE_RUN[])
-        end
-        println("  [worker $w] combos=$n  sum(TJLFEP_ky)=$(round(tky; digits=1))s  sum(TJLF.run)=$(round(trun; digits=1))s")
-    end
+# Run ONE radius reusing the persistent MPS team, write its result, optional per-worker probe dump.
+# Hoisted into a function so QUEUE_MODE can call it repeatedly (team spawn/JIT paid once per GPU).
+function run_one(scan_index::Int)
+    @assert 1 <= scan_index <= scan_n "scan_index=$scan_index invalid for SCAN_N=$scan_n"
+    t0 = time()
+    result = run_gacode_scan_task(
+        GACODE_PATH, TGLFEP, scan_index;
+        out_dir=OUT_DIR,
+        use_gpu=true,
+        printout=printout,
+        inner=INNER,
+        team=TEAM,
+        solver=SOLVER,
+        refine_rounds=REFINE_ROUNDS,
+    )
+    println("OK scan_index=$(result.scan_index) ir=$(result.ir) sfmin=$(result.sfmin) in $(round(time() - t0; digits=1)) s")
     flush(stdout)
+    # Per-worker probe dump: each MPS team worker reports its own combo count and the time it
+    # spent in TJLFEP_ky vs TJLF.run (eigensolve), so we can see whether the workers actually
+    # overlapped on the GPU (high combo count per worker at low wall) or time-sliced/serialized.
+    if INNER === :mps_team && get(ENV, "TJLFEP_PROBE", "0") == "1"
+        for w in workers()
+            n, tky, trun = remotecall_fetch(w) do
+                (TJLFEP._PROBE_N[], TJLFEP._PROBE_KY[], TJLFEP._PROBE_RUN[])
+            end
+            println("  [worker $w] combos=$n  sum(TJLFEP_ky)=$(round(tky; digits=1))s  sum(TJLF.run)=$(round(trun; digits=1))s")
+        end
+        flush(stdout)
+    end
+    return result
+end
+
+# QUEUE_MODE (NN-DB / single-node backfill): the node's GPU-worker tasks share a directory-based
+# ATOMIC claim queue over ALL radii 1..scan_n, so each freed GPU pulls the next radius and the
+# team is REUSED across radii (spawn/JIT cost paid once per GPU). `mkdir` is atomic on POSIX/Lustre,
+# so the first task to create `<OUT_DIR>/.claims/r$i` owns radius i — no lock files, works across
+# tasks on the node (and across nodes if ever used multi-node). A radius whose run throws is logged
+# and SKIPPED (its claim stays, so it is not retried) and the task keeps draining the queue, so one
+# bad radius cannot abort the whole DB-gen job. Default (QUEUE_MODE!=1) preserves the legacy
+# one-task=one-radius behavior (SCAN_INDEX from the wrapper) — existing batch scripts are unchanged.
+# Wrapped in a function so the nrun/nfail counters live in hard (function) scope — at top-level
+# script scope a `for`-loop body is soft scope and `nrun += 1` would raise UndefVarError.
+function drain_queue(qdir::String)
+    mkpath(qdir)
+    nrun = 0; nfail = 0
+    for i in 1:scan_n
+        claimed = try
+            mkdir(joinpath(qdir, "r$i")); true
+        catch
+            false   # already claimed by a sibling GPU-worker task
+        end
+        claimed || continue
+        try
+            run_one(i); nrun += 1
+        catch e
+            nfail += 1
+            println("ERROR scan_index=$i failed: $(sprint(showerror, e))")
+            flush(stdout)
+        end
+    end
+    return nrun, nfail
+end
+
+if get(ENV, "QUEUE_MODE", "0") == "1"
+    nrun, nfail = drain_queue(joinpath(OUT_DIR, ".claims"))
+    println("QUEUE done: this task ran $nrun radius(es) of $scan_n ($nfail failed)")
+    flush(stdout)
+else
+    scan_index = haskey(ENV, "SCAN_INDEX") ? parse(Int, ENV["SCAN_INDEX"]) : slurm_array_task_id() + 1
+    run_one(scan_index)
 end

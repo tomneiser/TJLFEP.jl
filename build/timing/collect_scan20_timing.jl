@@ -20,38 +20,53 @@ const KNOWN_SCAN20 = Dict(
 # spawn, sysimage load, compute, and merge. The Fortran binary compile and the Julia sysimage
 # build are the equivalent one-time costs and are EXCLUDED from both (neither is in total_job).
 # Falls back to scan/compute for older logs that lack a total_job line.
-# Returns (fort, cpu, gpu, cpu_ad, gpu_ad, gpu_truth) seconds. The `solver` token
-# (solver=grid|ad|truth) distinguishes the autodiff / physical-truth series; lines without it are
-# treated as solver=grid (back-compat).
+# Returns (fort, cpu, gpu, cpu_ad, gpu_ad, gpu_truth, gpu_robust) seconds, FOLLOWED BY the matching
+# node counts (fort_n, cpu_n, gpu_n, cpu_ad_n, gpu_ad_n, gpu_truth_n, gpu_robust_n) parsed from the
+# `nodes=` token of the SAME picked line — so node-hours = nodes × seconds adapts automatically to a
+# 5-node wave run vs a 1-node backfill run. The seconds occupy positions 1..7 (existing callers index
+# those), node counts occupy 8..14. The `solver` token (grid|ad|robust_ad|truth) distinguishes the
+# series; lines without it are treated as solver=grid (back-compat).
 function parse_timing_log(path::String)
-    isfile(path) || return nothing, nothing, nothing, nothing, nothing, nothing
-    vals = Dict{String,Float64}()   # "backend|device|solver|phase" => seconds
+    if !isfile(path)
+        return ntuple(_ -> nothing, 14)
+    end
+    vals  = Dict{String,Float64}()   # "backend|device|solver|phase" => seconds
+    nodes = Dict{String,Float64}()   # same key => node count (from nodes= token)
     for line in readlines(path)
         occursin("TIMING_RESULT", line) || continue
         s = replace(line, " " => "")
         m = match(r"seconds=([0-9.]+)", s)
         m === nothing && continue
         t = parse(Float64, m.captures[1])
+        mn = match(r"nodes=([0-9]+)", s)
+        nn = mn === nothing ? NaN : parse(Float64, mn.captures[1])
         be  = occursin("backend=fortran", s) ? "fortran" :
               occursin("backend=julia", s)   ? "julia"   : ""
         dev = occursin("device=gpu", s) ? "gpu" :
               occursin("device=cpu", s) ? "cpu" : ""
-        sol = occursin("solver=truth", s) ? "truth" :
-              occursin("solver=ad", s)    ? "ad"    : "grid"
+        # NB: check solver=robust_ad BEFORE solver=ad ("solver=ad" is not a substring of
+        # "solver=robust_ad", but keep the explicit ordering for clarity).
+        sol = occursin("solver=robust_ad", s) ? "robust_ad" :
+              occursin("solver=truth", s)     ? "truth"     :
+              occursin("solver=ad", s)        ? "ad"        : "grid"
         ph  = occursin("phase=total_job", s) ? "total"   :
               occursin("phase=scan", s)      ? "scan"    :
               occursin("phase=compute", s)   ? "compute" : ""
         (isempty(be) || isempty(ph)) && continue
-        vals["$be|$dev|$sol|$ph"] = t
+        vals["$be|$dev|$sol|$ph"]  = t
+        nodes["$be|$dev|$sol|$ph"] = nn
     end
-    pick(ks...) = (for k in ks; haskey(vals, k) && return vals[k]; end; nothing)
-    fort   = pick("fortran|cpu|grid|total", "fortran|cpu|grid|scan")
-    cpu    = pick("julia|cpu|grid|total", "julia|cpu|grid|compute", "julia|cpu|grid|scan")
-    gpu    = pick("julia|gpu|grid|total", "julia|gpu|grid|scan")
-    cpu_ad = pick("julia|cpu|ad|total", "julia|cpu|ad|compute", "julia|cpu|ad|scan")
-    gpu_ad = pick("julia|gpu|ad|total", "julia|gpu|ad|scan")
-    gpu_truth = pick("julia|gpu|truth|total", "julia|gpu|truth|scan")
-    return fort, cpu, gpu, cpu_ad, gpu_ad, gpu_truth
+    # pick returns (seconds, nodes) for the first present key, preserving fallback order.
+    pick(ks...) = (for k in ks; haskey(vals, k) && return (vals[k], get(nodes, k, NaN)); end; (nothing, nothing))
+    fort,    fort_n    = pick("fortran|cpu|grid|total", "fortran|cpu|grid|scan")
+    cpu,     cpu_n     = pick("julia|cpu|grid|total", "julia|cpu|grid|compute", "julia|cpu|grid|scan")
+    gpu,     gpu_n     = pick("julia|gpu|grid|total", "julia|gpu|grid|scan")
+    cpu_ad,  cpu_ad_n  = pick("julia|cpu|ad|total", "julia|cpu|ad|compute", "julia|cpu|ad|scan")
+    gpu_ad,  gpu_ad_n  = pick("julia|gpu|ad|total", "julia|gpu|ad|scan")
+    gpu_truth, gpu_truth_n = pick("julia|gpu|truth|total", "julia|gpu|truth|scan")
+    gpu_robust, gpu_robust_n = pick("julia|gpu|robust_ad|total", "julia|gpu|robust_ad|scan")
+    return fort, cpu, gpu, cpu_ad, gpu_ad, gpu_truth, gpu_robust,
+           fort_n, cpu_n, gpu_n, cpu_ad_n, gpu_ad_n, gpu_truth_n, gpu_robust_n
 end
 
 function parse_ok_in(path::String)
@@ -104,7 +119,7 @@ function newest(pattern::String)
 end
 
 function collect_nb(nb::Int)
-    fort = cpu = gpu = cpu_ad = gpu_ad = gpu_ad_mps = gpu_truth = nothing
+    fort = cpu = gpu = cpu_ad = gpu_ad = gpu_ad_mps = gpu_truth = gpu_robust = nothing
 
     # Timing harness logs (preferred -- these are the fresh per-nbasis runs). Take these
     # FIRST so a fresh nb6 run wins over the legacy no-nbasis logs / NB6_FALLBACK below.
@@ -145,6 +160,13 @@ function collect_nb(nb::Int)
     gt_time = newest("time_scan20_nb$(nb)_julia_gpu_truth_[0-9]*.out")
     if gt_time !== nothing
         gpu_truth = parse_timing_log(gt_time)[6]
+    end
+
+    # Robust_ad (solver=:robust_ad, width-extended) GPU+MPS harness logs (device=gpu
+    # solver=robust_ad tokens) -- the WIDTH tier (no nbasis ladder).
+    gr_time = newest("time_scan20_nb$(nb)_julia_gpu_robust_ad_[0-9]*.out")
+    if gr_time !== nothing
+        gpu_robust = parse_timing_log(gr_time)[7]
     end
 
     f_dbg = newest("debug_nb$(nb)_fortran20_10n_*.out")
@@ -210,13 +232,41 @@ function collect_nb(nb::Int)
         gpu = gpu === nothing ? NB6_FALLBACK.julia_gpu : gpu
     end
 
-    return fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps, gpu_truth
+    # ── Node counts (for node-hours = nodes × seconds) ───────────────────────────
+    # Parse the nodes= token of the SAME chosen log so a 1-node backfill run reports nodes=1 and a
+    # 5/10-node wave run reports its real count. Fall back to the fixed batch layout when the value
+    # came from a constant/legacy/debug log without a nodes= token. node idx in parse_timing_log:
+    # 8=fort 9=cpu 10=gpu 11=cpu_ad 12=gpu_ad 13=gpu_truth 14=gpu_robust (gpu_ad_mps shares idx 12).
+    DEFAULT_N = (fortran=10.0, julia_cpu=10.0, julia_gpu=5.0,
+                 cpu_ad=10.0, gpu_ad=5.0, gpu_ad_mps=5.0, gpu_truth=5.0, gpu_robust=5.0)
+    node_or(default, log, idx) = begin
+        log === nothing && return default
+        v = parse_timing_log(log)[idx]
+        (v === nothing || (v isa Float64 && isnan(v))) ? default : v
+    end
+    fort_n       = node_or(DEFAULT_N.fortran,   f_time !== nothing ? f_time : f_dbg, 8)
+    cpu_n        = node_or(DEFAULT_N.julia_cpu,  j_time !== nothing ? j_time : j_dbg, 9)
+    gpu_n        = node_or(DEFAULT_N.julia_gpu,  g_time !== nothing ? g_time : g_dbg, 10)
+    cpu_ad_n     = node_or(DEFAULT_N.cpu_ad,     ja_time,  11)
+    gpu_ad_n     = node_or(DEFAULT_N.gpu_ad,     ga_time,  12)
+    gpu_ad_mps_n = node_or(DEFAULT_N.gpu_ad_mps, gam_time, 12)
+    gpu_truth_n  = node_or(DEFAULT_N.gpu_truth,  gt_time,  13)
+    gpu_robust_n = node_or(DEFAULT_N.gpu_robust, gr_time,  14)
+
+    return fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps, gpu_truth, gpu_robust,
+           fort_n, cpu_n, gpu_n, cpu_ad_n, gpu_ad_n, gpu_ad_mps_n, gpu_truth_n, gpu_robust_n
 end
 
 function collect_scan20_timing!()
-    rows = ["n_basis,fortran_s,julia_cpu_s,julia_gpu_s,julia_cpu_ad_s,julia_gpu_ad_s,julia_gpu_ad_mps_s,julia_gpu_truth_s,notes"]
+    # Schema: 8 wallclock-seconds columns, then 8 node-hours columns (nodes × seconds / 3600), then
+    # notes (always last). node-hours is the resource-cost metric for the node-hours-vs-nbasis plot.
+    rows = ["n_basis," *
+            "fortran_s,julia_cpu_s,julia_gpu_s,julia_cpu_ad_s,julia_gpu_ad_s,julia_gpu_ad_mps_s,julia_gpu_truth_s,julia_gpu_robust_ad_s," *
+            "fortran_nh,julia_cpu_nh,julia_gpu_nh,julia_cpu_ad_nh,julia_gpu_ad_nh,julia_gpu_ad_mps_nh,julia_gpu_truth_nh,julia_gpu_robust_ad_nh," *
+            "notes"]
     for nb in BASIS
-        fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps, gpu_truth = collect_nb(nb)
+        fort, cpu, gpu, cpu_ad, gpu_ad, gpu_ad_mps, gpu_truth, gpu_robust,
+            fort_n, cpu_n, gpu_n, cpu_ad_n, gpu_ad_n, gpu_ad_mps_n, gpu_truth_n, gpu_robust_n = collect_nb(nb)
         notes = String[]
         fort === nothing && push!(notes, "fortran_missing")
         cpu === nothing && push!(notes, "julia_cpu_missing")
@@ -225,14 +275,14 @@ function collect_scan20_timing!()
         gpu_ad === nothing && push!(notes, "julia_gpu_ad_missing")
         # gpu_ad_mps is Phase B (pending the GPU/MPS AD kernel); absence is expected, not flagged.
         note = isempty(notes) ? "ok" : join(notes, ";")
-        fs = fort === nothing ? "" : string(fort)
-        cs = cpu === nothing ? "" : string(cpu)
-        gs = gpu === nothing ? "" : string(gpu)
-        cas = cpu_ad === nothing ? "" : string(cpu_ad)
-        gas = gpu_ad === nothing ? "" : string(gpu_ad)
-        gams = gpu_ad_mps === nothing ? "" : string(gpu_ad_mps)
-        gts = gpu_truth === nothing ? "" : string(gpu_truth)
-        push!(rows, "$nb,$fs,$cs,$gs,$cas,$gas,$gams,$gts,$note")
+        cell(x) = x === nothing ? "" : string(x)
+        # node-hours = nodes × seconds / 3600 (blank when seconds missing).
+        nh(sec, n) = (sec === nothing || n === nothing) ? "" : string(sec * n / 3600.0)
+        push!(rows, join((nb,
+            cell(fort), cell(cpu), cell(gpu), cell(cpu_ad), cell(gpu_ad), cell(gpu_ad_mps), cell(gpu_truth), cell(gpu_robust),
+            nh(fort, fort_n), nh(cpu, cpu_n), nh(gpu, gpu_n), nh(cpu_ad, cpu_ad_n), nh(gpu_ad, gpu_ad_n),
+            nh(gpu_ad_mps, gpu_ad_mps_n), nh(gpu_truth, gpu_truth_n), nh(gpu_robust, gpu_robust_n),
+            note), ","))
     end
     mkpath(dirname(OUT_CSV))
     write(OUT_CSV, join(rows, "\n") * "\n")
