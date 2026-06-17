@@ -140,10 +140,13 @@ end
 Robust AD-solver branch of [`mainsub`](@ref) (PROCESS_IN==5). Runs
 [`critical_factor_robust`](@ref) — the global minimum of the all-filter
 marginal factor over a `(kyhat,width)` grid with `refine_rounds` of window
-narrowing — to obtain the critical EP scale factor and its marking
-`(kymark, width)`, writes them onto `inputsEP` (`FACTOR_IN`, `KYMARK`, `WIDTH_IN`)
-exactly like the grid path, and returns the `mainsub` tuple shape. `refine_rounds`
-is the user-facing accuracy/speed knob (see [`critical_factor_robust`](@ref)).
+narrowing, **width-extended** (`extend_width=true`) below `WIDTH_MIN` to capture the
+narrow EP-driven AE modes the canonical `w≥1` box misses — to obtain the critical EP
+scale factor and its marking `(kymark, width)`, writes them onto `inputsEP`
+(`FACTOR_IN`, `KYMARK`, `WIDTH_IN`) exactly like the grid path, and returns the
+`mainsub` tuple shape. This is the middle (`width-correct`, `nb=N_BASIS`) rung of the
+`grid → robust_ad → truth` ladder; the `nbasis`-converged tier is `:truth`.
+`refine_rounds` is the user-facing accuracy/speed knob (see [`critical_factor_robust`](@ref)).
 
 If the reduction reports no genuine interior onset (`status ∈ (:no_onset, :cap)`),
 `FACTOR_IN` is left at its incoming value (the grid path remains the fallback for
@@ -180,7 +183,7 @@ function _mainsub_robust_ad(inputsEP::Options, inputsPR::profile, printout::Bool
 
     sf_buf = String[]
     if printout
-        push!(sf_buf, "# TJLFEP AD solver (critical_factor_robust, refine_rounds=$(refine_rounds))")
+        push!(sf_buf, "# TJLFEP AD solver (critical_factor_robust width-extended, refine_rounds=$(refine_rounds))")
         push!(sf_buf, "ir = $(inputsEP.IR)")
         push!(sf_buf, "sfmin = $(sfmin)")
         push!(sf_buf, "kymark = $(kymark)")
@@ -188,6 +191,7 @@ function _mainsub_robust_ad(inputsEP::Options, inputsPR::profile, printout::Bool
         push!(sf_buf, "binding = $(res.binding)")
         push!(sf_buf, "status = $(res.status)")
         push!(sf_buf, "refine_done = $(res.refine_done)  (budget=$(refine_rounds), adaptive)")
+        push!(sf_buf, "extended = $(res.extended)  n_ext_confirm = $(res.n_ext_confirm)")
         push!(sf_buf, "n_feasible_coarse = $(res.n_feasible_coarse) / $(res.npts_coarse)")
         push!(sf_buf, "npts = $(res.npts)  evals_full = $(res.total_evals_full)  evals_eig = $(res.total_evals_eig)")
     end
@@ -215,11 +219,14 @@ genuine onset is found (`status ∈ (:no_onset,:cap)`), `FACTOR_IN` is left unto
 function _mainsub_truth(inputsEP::Options, inputsPR::profile, printout::Bool;
                         use_gpu::Bool = false, inner::Symbol = :threads,
                         team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
-    # Honor the requested working basis (N_BASIS); the nbasis-convergence sweep climbs from it.
-    # At the production nb=32 this is nb_steps=[32,40,48] (unchanged from the default).
+    # Honor the requested working basis (N_BASIS); the nbasis-convergence sweep climbs from it in
+    # +8 steps up to the max stable basis (nb=56; nb>=64 Hermite overlap is singular). At the
+    # production nb=32 this is nb_steps=[32,40,48,56] -- the 4th point (56) is the best convergence
+    # evidence available for the still-climbing outer radii and strengthens the geometric test.
     nbw = Int(inputsEP.N_BASIS)
+    nb_steps = sort(unique(filter(<=(56), [nbw, nbw + 8, nbw + 16, nbw + 24])))
     res = critical_factor_truth(inputsEP, inputsPR; use_gpu=use_gpu, inner=inner, team=team,
-                                nb_work=nbw, nb_steps=sort(unique([nbw, nbw + 8, nbw + 16])))
+                                nb_work=nbw, nb_steps=nb_steps)
 
     sfmin  = res.sfmin
     kymark = res.kyhat
@@ -240,17 +247,17 @@ function _mainsub_truth(inputsEP::Options, inputsPR::profile, printout::Bool;
     sf_buf = String[]
     if printout
         nbs, vals = res.nb_table
-        push!(sf_buf, "# TJLFEP AD solver (critical_factor_truth, extended-width + nbasis-converged)")
+        push!(sf_buf, "# TJLFEP AD solver (critical_factor_truth = robust_ad width-extended + nbasis-converged)")
         push!(sf_buf, "ir = $(inputsEP.IR)")
-        push!(sf_buf, "sfmin = $(sfmin)   # nbasis-converged")
-        push!(sf_buf, "sfmin_work = $(res.sfmin_work)   # at working nbasis")
+        push!(sf_buf, "sfmin = $(sfmin)   # nbasis-converged (production accuracy tier)")
+        push!(sf_buf, "sfmin_work = $(res.sfmin_work)   # robust_ad value at working nbasis ($(Int(inputsEP.N_BASIS)))")
         push!(sf_buf, "kymark = $(kymark)")
         push!(sf_buf, "width = $(wmark)")
         push!(sf_buf, "binding = $(res.binding)")
         push!(sf_buf, "status = $(res.status)")
         push!(sf_buf, "nbasis = $(collect(nbs)) -> $(collect(vals))  (converged=$(res.nb_converged), limit=$(res.nb_limit))")
-        push!(sf_buf, "sfmin_truth = $(res.sfmin_truth)   # extended-box + nbasis (pre-floor)")
-        push!(sf_buf, "robust_floor = $(res.robust_sfmin)   # refined faithful w>=1 (floored=$(res.floored))")
+        push!(sf_buf, "sfmin_conv = $(res.sfmin_conv)   # nbasis-converged narrow (pre-floor)")
+        push!(sf_buf, "sfmin_w1 = $(res.sfmin_w1)   # robust_ad w>=1 floor (floored=$(res.floored))")
         push!(sf_buf, "feasible_frac = $(res.feasible_frac)")
         push!(sf_buf, "n_confirm = $(res.n_confirm)  evals_full = $(res.total_evals_full)  evals_eig = $(res.total_evals_eig)")
     end

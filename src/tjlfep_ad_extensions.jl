@@ -1051,17 +1051,33 @@ the basin:
     the trigger FIRES (untrustworthy bracket), `:hybrid` falls back to the grid-zoom loop. This aims
     to recover the off-node accuracy of a refine round at a handful of solves instead of a full grid.
 
+`extend_width` (default `true`) extends the search BELOW the canonical box to capture the
+radially **narrow** EP-driven AE modes (`width ≪ WIDTH_MIN`) that `w∈[WIDTH_MIN,WIDTH_MAX]`
+structurally misses. After the canonical grid-zoom (which is kept as a robust FLOOR), it runs
+[`_locate_extended`](@ref) over a log-spaced width box down to `w_lo` — cheap `IFLUX=false`
+AE-onset ranking → `:ad` (AD-IFT) descent of the top seeds → FAITHFUL confirm — and folds any
+lower faithful onset into the global best. So `sfmin = min(canonical w≥1 grid-zoom, extended
+narrow-width locate)`. This is the **width component** of the `grid→truth` gap and, on the
+DIII-D edge, drops `sfmin` by 2–11× vs the `w≥1`-only value. Set `extend_width=false` to recover
+the pure faithful `w≥1` minimum (≈ the `:grid` reference). The `nbasis`-converged tier is
+[`critical_factor_truth`](@ref), which is this solver plus a `nbasis` ladder at the located optimum.
+
 Keywords: `nkyhat=4, nefwid=8`, `refine_rounds=1`, `adaptive=true`, `outer=:grid_zoom`,
-`feasible_frac=0.35`, `cap_frac=0.5`, `improve_tol=0.02`, `gamma_thresh=nothing`
+`feasible_frac=0.35`, `cap_frac=0.5`, `improve_tol=0.02`, `extend_width=true`, `ky_lo=0.05`,
+`w_lo=0.05`, `nseed_ky=6`, `nseed_w=10`, `n_eig_seed=12`, `k_descend=6`, `gamma_thresh=nothing`
 (case γ*), `scan_lo=nothing`(→`scan_hi/512`, the grid floor),
 `scan_hi=nothing`(→`FACTOR_IN`), `inner=:threads`, `team=nothing`, `use_gpu=false`,
 `verbose=false`. The `(ky,w)` points are parallelized over the team/threads; each
 point's inner faithful sweep runs serially to avoid nested oversubscription.
 
-Returns `(; sfmin, kyhat, width, binding, status, scan_lo, scan_hi, refine_done,
-polished, n_feasible_coarse, npts_coarse, total_evals_full, total_evals_eig, npts,
-results)`, where `status ∈ (:ok, :no_onset, :cap)`, `refine_done` is the number of
-grid-zoom rounds performed, and `polished` is `true` when the `:hybrid` AD-IFT polish ran.
+Returns `(; sfmin, sfmin_w1, kyhat, width, binding, status, scan_lo, scan_hi, refine_done,
+polished, extended, n_ext_confirm, n_feasible_coarse, npts_coarse, total_evals_full,
+total_evals_eig, npts, results)`, where `status ∈ (:ok, :no_onset, :cap)`, `sfmin_w1` is the
+canonical `w≥1` grid-zoom minimum *before* the width extension (the well-converged Fortran-faithful
+threshold, used by [`critical_factor_truth`](@ref) as a floor), `refine_done` is the number of
+grid-zoom rounds performed, `polished` is `true` when the `:hybrid` AD-IFT polish ran, `extended`
+reflects `extend_width`, and `n_ext_confirm` is the number of faithful confirms spent on the
+width extension.
 """
 function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                                        nkyhat::Int = 4, nefwid::Int = 8,
@@ -1070,6 +1086,10 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
                                        outer::Symbol = :grid_zoom,
                                        feasible_frac::Float64 = 0.35, cap_frac::Float64 = 0.5,
                                        improve_tol::Float64 = 0.02,
+                                       extend_width::Bool = true,
+                                       ky_lo::Float64 = 0.05, w_lo::Float64 = 0.05,
+                                       nseed_ky::Int = 6, nseed_w::Int = 10,
+                                       n_eig_seed::Int = 12, k_descend::Int = 6,
                                        gamma_thresh::Union{Nothing,Float64} = nothing,
                                        scan_lo::Union{Nothing,Float64} = nothing, scan_hi::Union{Nothing,Float64} = nothing,
                                        inner::Symbol = :threads,
@@ -1212,15 +1232,51 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
         end
     end
 
+    # ── Width extension (extend_width, default on) ───────────────────────────────
+    # The (ky,w) grid-zoom above resolves the dense canonical-box (w∈[WIDTH_MIN,WIDTH_MAX])
+    # minimum and serves as a robust FLOOR. But the genuine EP-driven AE modes are radially
+    # narrow (width ≪ WIDTH_MIN) and the canonical box misses them entirely — they are the
+    # whole width component of the grid→truth gap. Extend the search to a log-spaced width box
+    # down to `w_lo` via the cheap AE-onset rank → AD-IFT descent → faithful-confirm locator
+    # (`_locate_extended`; the cheap ranking is what makes the larger box affordable), and fold
+    # any LOWER faithful onset into the running best. Net: sfmin = min(canonical w≥1 grid-zoom,
+    # extended narrow-width locate). The w≥1 zoom is retained as a floor precisely because the
+    # AD descent can under-resolve the dense core min, so the two are complementary.
+    # Snapshot the canonical w≥1 grid-zoom minimum BEFORE the extension lowers `best_f`. This is the
+    # well-converged (at nb_work) Fortran-faithful threshold; `:truth` uses it as a final floor so a
+    # razor-thin narrow win at nb_work that flips ABOVE w≥1 after nbasis convergence cannot make the
+    # reported critical factor exceed the true min-over-modes value.
+    sfmin_w1 = best_f; ky_w1 = best_ky; w_w1 = best_w; bind_w1 = best_bind
+    n_ext_confirm = 0
+    if extend_width
+        loc = _locate_extended(inputsEP, inputsPR; gth = gth, slo = slo, shi = shi, ky_lo = ky_lo,
+                w_lo = w_lo, w_hi = whi, nseed_ky = nseed_ky, nseed_w = nseed_w,
+                n_eig_seed = n_eig_seed, k_descend = k_descend, inner = inner, team = team,
+                use_gpu = use_gpu)
+        total_eig += loc.total_eig
+        for c in loc.cands
+            c[3] >= best_f && break   # candidates are sorted by cheap/descended onset; none below can win
+            r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = c[1], width = c[2],
+                    gamma_thresh = gth, scan_lo = slo, scan_hi = shi, threaded = true,
+                    inner = inner, team = team, use_gpu = use_gpu)
+            n_ext_confirm += 1; total_full += r.evals_full; total_eig += r.evals_eig
+            if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
+                best_f = r.factor_faithful; best_ky = c[1]; best_w = c[2]; best_bind = r.binding
+            end
+        end
+        verbose && @info "width-extended" ky=best_ky w=best_w sfmin=best_f binding=best_bind n_ext_confirm
+    end
+
     # status: :ok (genuine interior onset), :no_onset (no (ky,w) had a kept window in
     # [slo,shi]), or :cap (best onset sits at the search ceiling → likely no real onset
     # below FACTOR_IN). Callers can fall back to the grid solver on :no_onset/:cap.
     status = (best_bind === :none || !isfinite(best_f)) ? :no_onset :
              (best_f >= 0.999 * shi ? :cap : :ok)
 
-    return (; sfmin = best_f, kyhat = best_ky, width = best_w, binding = best_bind,
+    return (; sfmin = best_f, sfmin_w1 = sfmin_w1, ky_w1 = ky_w1, w_w1 = w_w1, bind_w1 = bind_w1,
+            kyhat = best_ky, width = best_w, binding = best_bind,
             status = status, scan_lo = slo, scan_hi = shi, refine_done = refine_done,
-            polished = polished,
+            polished = polished, extended = extend_width, n_ext_confirm = n_ext_confirm,
             n_feasible_coarse = n_feasible_coarse, npts_coarse = nkyhat * nefwid,
             total_evals_full = total_full, total_evals_eig = total_eig, npts = npts_total, results = all_res)
 end
@@ -1635,70 +1691,69 @@ end
 
 """
     critical_factor_truth(inputsEP, inputsPR; ky_lo=0.05, w_lo=0.05, nseed_ky=6, nseed_w=10,
-                          nb_work=32, nb_steps=[32,40,48], inner=:threads, team=nothing,
+                          nb_work=32, nb_steps=[32,40,48,56], inner=:threads, team=nothing,
                           use_gpu=false) -> NamedTuple
 
-Robust critical EP scale factor `sfmin` including the narrow-width AE modes the canonical
-`w∈[WIDTH_MIN,WIDTH_MAX]` grid misses. Locates the global `(ky,w)` minimum over an extended
-log-spaced box (width down to `w_lo≈0.05`) via cheap AE-onset ranking → `:ad` polish → faithful
-confirm at `nb_work`, then converges the value in `nbasis` AT the fixed optimum (geometric
-extrapolation over `nb_steps`, capped ≤56). When `robust_floor=true` (default) the result is
-floored by [`critical_factor_robust`](@ref) — a dense `(ky,w)` grid-zoom of the faithful marginal
-factor inside the canonical `w≥1` box — so `sfmin = min(extended/nbasis-converged, refined faithful)`.
-This guarantees the truth value never exceeds the best refined-faithful threshold (which beats the
-coarse grid and the extended-box gradient locate in the dense core), so the profile dominates both
-`grid` and `robust_ad` everywhere. Returns
-`(; sfmin, sfmin_work, sfmin_truth, robust_sfmin, floored, kyhat, width, binding, status, nb_limit,
-nb_ratio, nb_converged, nb_table, feasible_frac, n_confirm, n_descend, total_evals_full,
-total_evals_eig)` where `sfmin` is the production value, `sfmin_truth` the extended/nbasis-converged
-value before flooring, `robust_sfmin` the refined-faithful floor, and `floored` whether the floor won.
+The `nbasis`-converged accuracy tier. This is **`critical_factor_robust(extend_width=true)` plus a
+`nbasis` ladder at the located optimum** — the third rung of the `grid → robust_ad → truth` cost/
+fidelity ladder. It first calls [`critical_factor_robust`](@ref) (width-extended: `min` of the
+canonical `w≥1` grid-zoom and the extended narrow-width locate) to find the production `(ky,w)` and
+its faithful `sfmin` at `nb_work`, then re-evaluates the FAITHFUL marginal factor at that FIXED
+optimum over `nb_steps` (geometric extrapolation, capped ≤56; `SingularException` at high
+`(nb,narrow-w)` → `NaN`, not fatal). The `nbasis` correction is *adverse* (raises the threshold) at
+the still-converging outer radii — exactly the `+nbasis` component of the `grid→truth` gap (the width
+component, the 2–11× reduction, is already captured by `robust_ad`). The reported `sfmin` is the
+`nbasis`-converged value **floored by `robust_ad`'s canonical `w≥1` minimum** (`sfmin_w1`): a
+razor-thin narrow win at `nb_work` can flip *above* the `w≥1` threshold once converged, and the true
+critical factor is the lowest threshold over ALL modes (the `w≥1` mode is already converged at
+`nb_work`), so `sfmin = min(nbasis-converged narrow, w≥1)`. On most radii the narrow mode stays well
+below `w≥1` and the floor is a no-op. Returns
+`(; sfmin, sfmin_work, sfmin_conv, sfmin_w1, floored, kyhat, width, binding, status, nb_limit,
+nb_ratio, nb_converged, nb_table, feasible_frac, n_confirm, total_evals_full, total_evals_eig)` where
+`sfmin` is the floored production value, `sfmin_conv` the raw `nbasis`-converged narrow value before
+the floor, `sfmin_work` the `robust_ad` value at `nb_work`, and `floored` whether the `w≥1` floor won.
 """
 function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing, scan_hi=nothing,
-                               ky_lo::Float64=0.05, w_lo::Float64=0.05, w_hi=nothing,
+                               ky_lo::Float64=0.05, w_lo::Float64=0.05,
                                nseed_ky::Int=6, nseed_w::Int=10, n_eig_seed::Int=12, k_descend::Int=6,
-                               nb_work::Int=32, nb_steps::Vector{Int}=[32, 40, 48],
-                               robust_floor::Bool=true,
+                               nb_work::Int=32, nb_steps::Vector{Int}=[32, 40, 48, 56],
                                inner::Symbol=:threads, team=nothing,
                                use_gpu::Bool=false, verbose::Bool=false)
     @assert all(nb -> nb <= 56, nb_steps) "nb_steps must stay ≤56 (nb≥64 Hermite overlap matrix is singular)"
     gth = gamma_thresh === nothing ? _gamma_thresh_for(ep0, prof) : gamma_thresh
     shi = scan_hi === nothing ? Float64(ep0.FACTOR_IN) : scan_hi
     slo = scan_lo === nothing ? shi / 512.0 : scan_lo
-    whi = w_hi === nothing ? Float64(ep0.WIDTH_MAX) : w_hi
 
+    # ── Tier-2: locate the production (ky,w) optimum with the width-extended robust solver at
+    # nb_work. This is the SAME object as solver=:robust_ad — min of the canonical w≥1 grid-zoom
+    # and the extended narrow-width locate — so truth differs from robust_ad ONLY by the nbasis
+    # ladder below. (The earlier separate _locate_extended + w≥1 floor now live inside robust.)
     epw = deepcopy(ep0); epw.N_BASIS = nb_work
-    loc = _locate_extended(epw, prof; gth=gth, slo=slo, shi=shi, ky_lo=ky_lo, w_lo=w_lo, w_hi=whi,
-            nseed_ky=nseed_ky, nseed_w=nseed_w, n_eig_seed=n_eig_seed, k_descend=k_descend,
-            inner=inner, team=team, use_gpu=use_gpu)
-    total_eig = loc.total_eig; total_full = 0; n_confirm = 0
-
-    best_f = Inf; best_ky = NaN; best_w = NaN; best_bind = :none
-    for c in loc.cands
-        c[3] >= best_f && break
-        r = marginal_factor_faithful(epw, prof; kyhat=c[1], width=c[2], gamma_thresh=gth,
-                scan_lo=slo, scan_hi=shi, threaded=true, inner=inner, team=team, use_gpu=use_gpu)
-        n_confirm += 1; total_full += r.evals_full; total_eig += r.evals_eig
-        if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
-            best_f = r.factor_faithful; best_ky = c[1]; best_w = c[2]; best_bind = r.binding
-        end
-    end
-    feasible_frac = loc.npts == 0 ? 0.0 : length(loc.feas) / loc.npts
-    if !isfinite(best_f)
-        return (; sfmin=Inf, sfmin_work=Inf, sfmin_truth=Inf, robust_sfmin=NaN, floored=false,
+    rob = critical_factor_robust(epw, prof; gamma_thresh=gth, scan_lo=slo, scan_hi=shi,
+            extend_width=true, ky_lo=ky_lo, w_lo=w_lo, nseed_ky=nseed_ky, nseed_w=nseed_w,
+            n_eig_seed=n_eig_seed, k_descend=k_descend, inner=inner, team=team, use_gpu=use_gpu)
+    total_full = rob.total_evals_full; total_eig = rob.total_evals_eig
+    best_f = rob.sfmin; best_ky = rob.kyhat; best_w = rob.width; best_bind = rob.binding
+    feasible_frac = rob.npts_coarse == 0 ? 0.0 : rob.n_feasible_coarse / rob.npts_coarse
+    if rob.status === :no_onset || !isfinite(best_f)
+        return (; sfmin=Inf, sfmin_work=Inf, sfmin_conv=Inf, sfmin_w1=rob.sfmin_w1, floored=false,
                 kyhat=NaN, width=NaN, binding=:none, status=:no_onset,
                 nb_limit=NaN, nb_ratio=NaN, nb_converged=false, nb_table=Int[]=>Float64[],
-                feasible_frac=feasible_frac, n_confirm=n_confirm, n_descend=loc.n_desc,
+                feasible_frac=feasible_frac, n_confirm=rob.n_ext_confirm,
                 total_evals_full=total_full, total_evals_eig=total_eig)
     end
 
-    # separable nbasis convergence AT THE FIXED located optimum (re-optimising per nb would corrupt the
-    # sequence by hopping basins); SingularException at high (nb,narrow-w) is logged as NaN, not fatal.
+    # ── Tier-3: separable nbasis convergence AT THE FIXED located optimum (re-optimising per nb
+    # would corrupt the sequence by hopping basins); SingularException at high (nb,narrow-w) is
+    # logged as NaN, not fatal. The converged value is the honest, conservative threshold — it can
+    # exceed the nb_work robust_ad value (the nbasis correction is adverse at the outer edge); truth
+    # reports it as-is (no flooring), which is exactly the +nbasis component of the grid→truth gap.
     nbs = Int[]; vals = Float64[]
     for nb in nb_steps
-        epn = deepcopy(ep0); epn.N_BASIS = nb
         v = if nb == nb_work
             best_f
         else
+            epn = deepcopy(ep0); epn.N_BASIS = nb
             try
                 r = marginal_factor_faithful(epn, prof; kyhat=best_ky, width=best_w, gamma_thresh=gth,
                         scan_lo=slo, scan_hi=shi, threaded=true, inner=inner, team=team, use_gpu=use_gpu)
@@ -1712,32 +1767,26 @@ function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing,
     end
     ex = _nbasis_extrapolate(nbs, vals)
     finite_vals = [v for v in vals if isfinite(v)]
-    sfmin_truth = ex.converged ? ex.limit :
-                  (isempty(finite_vals) ? best_f : finite_vals[end])
+    sfmin_conv = ex.converged ? ex.limit : (isempty(finite_vals) ? best_f : finite_vals[end])
 
-    # Refined Fortran-faithful FLOOR: a dense (ky,w) grid-zoom of the FAITHFUL marginal factor inside
-    # the canonical w≥1 box at nb_work. The coarse grid overestimates the (dense) core, and the
-    # extended-box gradient locate above can under-resolve the w≥1 core minimum, so the reported sfmin
-    # = min(extended/nbasis-converged truth, refined faithful). This makes the truth profile dominate
-    # both grid and robust_ad everywhere: robust wins only the deep core, truth wins outward.
-    sfmin_final = sfmin_truth; robust_sfmin = NaN; floored = false
-    if robust_floor
-        rob = critical_factor_robust(epw, prof; gamma_thresh=gth, scan_lo=slo, scan_hi=shi,
-                inner=inner, team=team, use_gpu=use_gpu)
-        total_full += rob.total_evals_full; total_eig += rob.total_evals_eig
-        robust_sfmin = rob.sfmin
-        if rob.binding !== :none && isfinite(rob.sfmin) && rob.sfmin < sfmin_final
-            sfmin_final = rob.sfmin; best_ky = rob.kyhat; best_w = rob.width; best_bind = rob.binding
-            floored = true
-        end
-    end
-    verbose && @info "truth" ky=best_ky w=best_w sfmin_work=best_f nb_limit=ex.limit r=ex.ratio truth=sfmin_truth robust=robust_sfmin final=sfmin_final floored
+    # Final w≥1 floor (min-over-modes): a razor-thin narrow win at nb_work can flip ABOVE the
+    # canonical w≥1 threshold once nbasis-converged (the nbasis correction is adverse). The true
+    # critical factor is the lowest threshold over ALL modes, and the w≥1 mode is already converged at
+    # nb_work, so cap the reported value at robust_ad's w≥1 grid-zoom min. When the floor wins, adopt
+    # its (ky,w) too. (On most radii the narrow mode stays well below w≥1, so this is a no-op.)
+    floored = isfinite(rob.sfmin_w1) && rob.sfmin_w1 < sfmin_conv
+    sfmin = floored ? rob.sfmin_w1 : sfmin_conv
+    out_ky  = floored ? rob.ky_w1   : best_ky
+    out_w   = floored ? rob.w_w1    : best_w
+    out_bind = floored ? rob.bind_w1 : best_bind
 
-    return (; sfmin=sfmin_final, sfmin_work=best_f, sfmin_truth=sfmin_truth,
-            robust_sfmin=robust_sfmin, floored=floored,
-            kyhat=best_ky, width=best_w, binding=best_bind, status=(sfmin_final >= 0.999*shi ? :cap : :ok),
+    verbose && @info "truth" ky=best_ky w=best_w sfmin_work=best_f w1=rob.sfmin_w1 nb_limit=ex.limit r=ex.ratio converged=ex.converged conv=sfmin_conv final=sfmin floored
+
+    return (; sfmin=sfmin, sfmin_work=best_f, sfmin_conv=sfmin_conv, sfmin_w1=rob.sfmin_w1, floored=floored,
+            kyhat=out_ky, width=out_w, binding=out_bind,
+            status=(sfmin >= 0.999*shi ? :cap : :ok),
             nb_limit=ex.limit, nb_ratio=ex.ratio, nb_converged=ex.converged, nb_table=(nbs => vals),
-            feasible_frac=feasible_frac, n_confirm=n_confirm, n_descend=loc.n_desc,
+            feasible_frac=feasible_frac, n_confirm=rob.n_ext_confirm,
             total_evals_full=total_full, total_evals_eig=total_eig)
 end
 

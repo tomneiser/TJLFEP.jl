@@ -101,7 +101,7 @@ one radius against the archived Fortran golden output. Full steps:
 
 ## Benchmark: wallclock vs N_BASIS (DIII-D, SCAN_N=20)
 
-20-radius scan on Perlmutter, all with sysimages. Two critical-factor **solvers**
+20-radius scan on Perlmutter, all with sysimages. Three critical-factor **solvers**
 are compared, each on its fastest parallel layout:
 
 - **`grid`** (default, the verified reference) — the Fortran-equivalent
@@ -111,8 +111,16 @@ are compared, each on its fastest parallel layout:
 - **`ad`** — the autodiff route (AD-Newton AE-onset + implicit-function-theorem
   `(kyhat,width)` descent). Far fewer eigensolves per radius, so it is fastest
   **in-process (threads)**; an MPS team only adds overhead here (see below).
+- **`truth`** — the physical-truth route, the top of a `grid → robust_ad → truth`
+  cost/fidelity ladder. **`robust_ad`** (`critical_factor_robust`, width-extended) finds
+  the narrow-width EP-driven modes the Fortran `w≥1` box excludes — the *entire* `sfmin`
+  reduction (up to ~11× below grid at the edge), at `nb=N_BASIS`. **`truth`** then adds a
+  separable `nbasis` convergence sweep `{32,40,48,56}` at the located optimum — a small,
+  conservative correction that only matters at the ~5 outer narrow-AE radii. Use
+  `robust_ad` for production scans and `truth` (on an **MPS team**) for validation. See
+  [`docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`](docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md).
 
-![Wallclock vs N_BASIS](docs/plots/scan20_timing_lines.png?v=3)
+![Wallclock vs N_BASIS](docs/plots/scan20_timing_lines.png?v=4)
 
 **Grid solver** — Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
 SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
@@ -142,6 +150,22 @@ and 36× faster than Fortran.** Running the AD path on an MPS team instead is
 AD parallel regions are small and the Newton descent is sequential, so the
 team-spawn / remote-call overhead is never amortized. **Rule of thumb: `grid` → MPS,
 `ad` → threads.**
+
+**Physical-truth solver** — Julia GPU (5 A100 nodes, **MPS team**); the accuracy tier,
+not the speed tier:
+
+| N_BASIS | Grid GPU MPS (s) | AD GPU threads (s) | Truth GPU MPS (s) |
+|--------:|-----------------:|-------------------:|------------------:|
+| 6  | 140.4 | 65.6 | 397.7 |
+| 8  | 149.0 | 57.9 | 429.5 |
+| 16 | 161.7 | 47.4 | 667.0 |
+| 32 | 226.3 | 42.7 | **2039.3** |
+
+`truth` costs ~34 min for the full profile at `N_BASIS=32` (vs ~3.8 min `grid` MPS and
+~0.7 min `ad` threads), because per radius it runs an extended-width `(ky,w)` search plus a
+4-point `nbasis` convergence sweep `{32,40,48,56}`. Use it when the true narrow-width EP
+threshold is required (it is ~1.9× below grid on the median radius, up to ~11× at the edge);
+otherwise the `:triggered` policy pays this cost only at the flagged near-marginal radii.
 
 ### Why AD time is nearly flat (and even dips) in N_BASIS
 
