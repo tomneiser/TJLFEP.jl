@@ -1062,7 +1062,17 @@ DIII-D edge, drops `sfmin` by 2–11× vs the `w≥1`-only value. Set `extend_wi
 the pure faithful `w≥1` minimum (≈ the `:grid` reference). The `nbasis`-converged tier is
 [`critical_factor_truth`](@ref), which is this solver plus a `nbasis` ladder at the located optimum.
 
-Keywords: `nkyhat=4, nefwid=8`, `refine_rounds=1`, `adaptive=true`, `outer=:grid_zoom`,
+`confirm_grid` (default `false`) is an OPT-IN cheap-rank→few-confirm scheme for the `w≥1` grid
+passes: rank every `(ky,w)` node on the cheap `IFLUX=false` AE-band onset and faithful-confirm only
+the few that can still hold the minimum (the [`critical_factor_confirm`](@ref) logic, shared via
+`_rank_confirm`). It is EXACT for a fixed node set (verified bitwise with `adaptive=false`) and cuts
+`IFLUX=true` evals, but is kept OFF by default because on the GPU/MPS production route it is measurably
+SLOWER (the early-stop confirm is serial — one GPU — while the brute path fans all nodes across the MPS
+team; the keep filter is not the per-node bottleneck the eigensolve is) and, with `adaptive=true`, its
+cheap (over-counted) feasibility count shifts the `sparse` zoom trigger so `sfmin` can differ from the
+brute path at near-degenerate radii. Prefer it for CPU/serial runs or with `adaptive=false`.
+
+Keywords: `nkyhat=4, nefwid=8`, `refine_rounds=1`, `adaptive=true`, `confirm_grid=false`, `outer=:grid_zoom`,
 `feasible_frac=0.35`, `cap_frac=0.5`, `improve_tol=0.02`, `extend_width=true`, `ky_lo=0.05`,
 `w_lo=0.05`, `nseed_ky=6`, `nseed_w=10`, `n_eig_seed=12`, `k_descend=6`, `gamma_thresh=nothing`
 (case γ*), `scan_lo=nothing`(→`scan_hi/512`, the grid floor),
@@ -1083,6 +1093,7 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
                                        nkyhat::Int = 4, nefwid::Int = 8,
                                        refine_rounds::Int = 1,
                                        adaptive::Bool = true,
+                                       confirm_grid::Bool = false,
                                        outer::Symbol = :grid_zoom,
                                        feasible_frac::Float64 = 0.35, cap_frac::Float64 = 0.5,
                                        improve_tol::Float64 = 0.02,
@@ -1123,23 +1134,55 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
         widths = nefwid == 1 ? [0.5 * (wa + wb)] : [wa + (wb - wa) / (nefwid - 1) * (i - 1) for i in 1:nefwid]
         pts = [(ky, w) for ky in kyhats for w in widths]
         np = length(pts)
-        res = _ad_pmap(idx -> begin
-                ky, w = pts[idx]
-                marginal_factor_faithful(inputsEP, inputsPR; kyhat = ky, width = w,
-                                         gamma_thresh = gth, scan_lo = slo, scan_hi = shi,
-                                         threaded = false, use_gpu = use_gpu)
-            end, np; inner = inner, team = team)
-        nfeasible = 0
-        for (idx, r) in enumerate(res)
-            total_full += r.evals_full; total_eig += r.evals_eig
-            push!(all_res, r)
-            if r.binding != :none && isfinite(r.factor_faithful)
-                nfeasible += 1
-                if r.factor_faithful < best_f
-                    best_f = r.factor_faithful; best_ky = pts[idx][1]; best_w = pts[idx][2]; best_bind = r.binding
-                end
+        if confirm_grid
+            # OPT-IN cheap-rank → few-confirm (confirm_grid=true; NOT the default — see below): rank all
+            # nodes on the cheap AE-band edge and faithful-confirm only those that can still beat the
+            # current GLOBAL incumbent `best_f`. EXACT for a FIXED node set (faithful ≥ cheap node-wise;
+            # §5) — verified bitwise vs the brute path with `adaptive=false`. Two empirically-measured
+            # caveats keep this OFF by default on the GPU/MPS production route:
+            #   • SPEED: the early-stop confirm loop is inherently SERIAL (each confirm depends on the
+            #     running incumbent), so on a multi-GPU MPS team it confirms on ONE GPU while the brute
+            #     path fans all nkyhat·nefwid faithful solves across the whole team. Plus the cheap rank
+            #     adds a full extra eigen-scan pass. Net on the 20-radius DIII-D 1-node sweep: ~7–18%
+            #     SLOWER at nb=6..32 (the IFLUX=true keep filter is NOT the per-node bottleneck the GPU
+            #     eigensolve is). It can still win on CPU/serial runs where the keep filter dominates.
+            #   • ADAPTIVE PARITY: `nfeasible` below is the CHEAP AE-unstable count (over-counts vs
+            #     faithful feasibility), fed to the `sparse` zoom trigger (§4.3). With `adaptive=true`
+            #     this shifts which refine boxes are explored, so sfmin can differ from the brute path at
+            #     near-degenerate radii (observed ~3–10% at a couple of nb<32 DIII-D radii). Use with
+            #     `adaptive=false` for exact parity.
+            rc = _rank_confirm(inputsEP, inputsPR, pts; gth = gth, slo = slo, shi = shi,
+                    incumbent_f = best_f, n_eig = 24, inner = inner, team = team,
+                    use_gpu = use_gpu, verbose = verbose)
+            total_full += rc.total_evals_full; total_eig += rc.total_evals_eig
+            append!(all_res, rc.confirmed)
+            if rc.best_bind !== :none && isfinite(rc.best_f) && rc.best_f < best_f
+                best_f = rc.best_f; best_ky = rc.best_ky; best_w = rc.best_w; best_bind = rc.best_bind
             end
-            verbose && @info "faithful grid pt" ky=pts[idx][1] w=pts[idx][2] factor=r.factor_faithful binding=r.binding
+            nfeasible = rc.n_cheap_feasible
+            verbose && @info "confirm grid pass" np n_confirm=rc.n_confirm n_cheap_feasible=nfeasible sfmin=best_f
+        else
+            # DEFAULT brute-faithful path: confirm EVERY node faithfully, fanned across the team by
+            # `_ad_pmap`. `nfeasible` is the confirmed-binding (faithful-feasible) count used by the
+            # `sparse` zoom trigger. This is the production GPU/MPS route (fastest here; see above).
+            res = _ad_pmap(idx -> begin
+                    ky, w = pts[idx]
+                    marginal_factor_faithful(inputsEP, inputsPR; kyhat = ky, width = w,
+                                             gamma_thresh = gth, scan_lo = slo, scan_hi = shi,
+                                             threaded = false, use_gpu = use_gpu)
+                end, np; inner = inner, team = team)
+            nfeasible = 0
+            for (idx, r) in enumerate(res)
+                total_full += r.evals_full; total_eig += r.evals_eig
+                push!(all_res, r)
+                if r.binding != :none && isfinite(r.factor_faithful)
+                    nfeasible += 1
+                    if r.factor_faithful < best_f
+                        best_f = r.factor_faithful; best_ky = pts[idx][1]; best_w = pts[idx][2]; best_bind = r.binding
+                    end
+                end
+                verbose && @info "faithful grid pt" ky=pts[idx][1] w=pts[idx][2] factor=r.factor_faithful binding=r.binding
+            end
         end
         npts_total += np
         return (; nfeasible, np, kymin = minimum(kyhats), kymax = maximum(kyhats),
@@ -1281,6 +1324,55 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
             total_evals_full = total_full, total_evals_eig = total_eig, npts = npts_total, results = all_res)
 end
 
+# Cheap-rank → few-confirm over a FIXED (ky,w) point list. Ranks every node on the CHEAP
+# eigenvalue-only AE-band lower edge (`_ae_unstable_window`, IFLUX=false), then faithful-confirms
+# (`marginal_factor_faithful`, IFLUX=true) in increasing cheap order, early-stopping as soon as the
+# next cheap onset ≥ the best faithful found. EXACT: the faithful keep onset f★ at any node is ≥ its
+# cheap AE-band edge f1 (keep ⊆ AE-unstable hull), so no skipped node can hold a smaller f★ than the
+# incumbent. Returns the updated incumbent + stats; shared by `critical_factor_confirm` and
+# `critical_factor_robust`'s `eval_grid!`. `incumbent_f` lets a caller seed the early-stop bound with
+# an already-found global best so even fewer nodes get the expensive confirm.
+function _rank_confirm(ep0::Options{Float64}, prof::profile{Float64}, pts::Vector{Tuple{Float64,Float64}};
+                       gth::Float64, slo::Float64, shi::Float64, incumbent_f::Float64,
+                       n_eig::Int = 24, inner::Symbol = :threads,
+                       team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                       use_gpu::Bool = false, verbose::Bool = false)
+    # (1) cheap AE-band lower edge f1 at every node (IFLUX=false), parallel over team/threads
+    cheap = _ad_pmap(idx -> begin
+            ky, w = pts[idx]; ep = deepcopy(ep0); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
+            win = _ae_unstable_window(ep, prof, gth; scan_lo = slo, scan_hi = shi,
+                      n_eig = n_eig, threaded = false, use_gpu = use_gpu)
+            (; ky = ky, w = w, f = (win.unstable ? win.f1 : Inf), evals = win.evals)
+        end, length(pts); inner = inner, team = team)
+    total_eig = sum(c.evals for c in cheap; init = 0)
+    # (2) confirm in increasing cheap order, early stop when cheap ≥ best faithful
+    best_f = incumbent_f; best_ky = NaN; best_w = NaN; best_bind = :none
+    total_full = 0; n_confirm = 0; n_cheap_feasible = 0
+    confirmed = Any[]
+    for i in sortperm([c.f for c in cheap])
+        c = cheap[i]
+        isfinite(c.f) || break          # remaining nodes are AE-stable (Inf) → nothing to confirm
+        n_cheap_feasible += 1           # cheap AE-unstable count (heuristic; over-counts vs faithful)
+        c.f >= best_f && break          # bound: no remaining node can have faithful < best_f
+        # Pin BLAS to 1 thread so this serial faithful confirm is BITWISE-identical to the brute
+        # `eval_grid!` path, where the same call runs inside `_ad_pmap`'s `with_blas_threads(1)`
+        # block (LAPACK reduction order is BLAS-thread-count dependent → ~1e-13 drift otherwise).
+        r = TJLF.with_blas_threads(1) do
+            marginal_factor_faithful(ep0, prof; kyhat = c.ky, width = c.w, gamma_thresh = gth,
+                    scan_lo = slo, scan_hi = shi, threaded = false, use_gpu = use_gpu)
+        end
+        n_confirm += 1; total_full += r.evals_full; total_eig += r.evals_eig
+        push!(confirmed, (; ky = c.ky, w = c.w, cheap = c.f, faithful = r.factor_faithful, binding = r.binding))
+        if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
+            best_f = r.factor_faithful; best_ky = c.ky; best_w = c.w; best_bind = r.binding
+        end
+        verbose && @info "rank_confirm" ky=c.ky w=c.w cheap=c.f faithful=r.factor_faithful binding=r.binding best=best_f
+    end
+    cheap_min = isempty(cheap) ? NaN : minimum(c.f for c in cheap)
+    return (; best_f, best_ky, best_w, best_bind, n_confirm, n_cheap_feasible, cheap_min,
+            total_evals_full = total_full, total_evals_eig = total_eig, confirmed)
+end
+
 """
     critical_factor_confirm(inputsEP, inputsPR; kwargs...) -> NamedTuple
 
@@ -1326,54 +1418,21 @@ function critical_factor_confirm(inputsEP::Options{Float64}, inputsPR::profile{F
     pts = [(ky, w) for ky in kyhats for w in widths]
     np = length(pts)
 
-    # (1) CHEAP eigenvalue-only AE-band lower edge at every (ky,w) node (IFLUX=false). Use the
-    #     AE-unstable hull lower edge f1 (NOT marginal_factor's root): a node that is AE-unstable
-    #     all the way down to the floor has no interior root (marginal_factor would report
-    #     non-converged) yet is a genuine — often the LOWEST — candidate; _ae_unstable_window
-    #     reports f1=scan_lo (pinned_lo) there. The faithful keep onset is >= f1 (keep ⊆ the
-    #     AE-unstable hull), so f1 is the correct lower bound to rank/early-stop on. Parallelized
-    #     over the team/threads; each node's hull scan runs serially.
-    cheap = _ad_pmap(idx -> begin
-            ky, w = pts[idx]
-            ep = deepcopy(inputsEP); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
-            win = _ae_unstable_window(ep, inputsPR, gth; scan_lo = slo, scan_hi = shi,
-                                      n_eig = 24, threaded = false, use_gpu = use_gpu)
-            (; ky = ky, w = w, f = (win.unstable ? win.f1 : Inf), evals = win.evals)
-        end, np; inner = inner, team = team)
-    total_eig = 0
-    for c in cheap
-        total_eig += c.evals
-    end
+    # Cheap-rank → few-confirm over the whole canonical grid, seeding the early-stop bound with no
+    # incumbent (Inf). The shared `_rank_confirm` (1) computes the cheap AE-band lower edge f1 at
+    # every node (IFLUX=false; the AE-unstable hull edge, the correct lower bound since the faithful
+    # keep onset is ≥ f1 node-wise), then (2) confirms candidates in increasing cheap order with the
+    # expensive faithful keep sweep (IFLUX=true), stopping once the next cheap onset ≥ the best
+    # faithful found. This is the same logic now reused inside `critical_factor_robust`.
+    rc = _rank_confirm(inputsEP, inputsPR, pts; gth = gth, slo = slo, shi = shi,
+            incumbent_f = Inf, n_eig = 24, inner = inner, team = team,
+            use_gpu = use_gpu, verbose = verbose)
 
-    # (2) Confirm candidates in increasing cheap-onset order with the expensive faithful keep
-    #     sweep (IFLUX=true). Stop as soon as the next cheap onset >= the best faithful found:
-    #     since faithful >= cheap node-wise, no remaining node can yield a smaller faithful onset.
-    order = sortperm([c.f for c in cheap])
-    best_f = Inf; best_ky = NaN; best_w = NaN; best_bind = :none
-    total_full = 0; n_confirm = 0
-    results = Any[]
-    for i in order
-        c = cheap[i]
-        isfinite(c.f) || break          # remaining nodes are AE-stable (Inf) → nothing to confirm
-        c.f >= best_f && break          # bound: no remaining node can have faithful < best_f
-        r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = c.ky, width = c.w,
-                                     gamma_thresh = gth, scan_lo = slo, scan_hi = shi,
-                                     threaded = false, use_gpu = use_gpu)
-        n_confirm += 1
-        total_full += r.evals_full; total_eig += r.evals_eig
-        push!(results, (; ky = c.ky, w = c.w, cheap = c.f, faithful = r.factor_faithful, binding = r.binding))
-        if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
-            best_f = r.factor_faithful; best_ky = c.ky; best_w = c.w; best_bind = r.binding
-        end
-        verbose && @info "confirm" ky=c.ky w=c.w cheap=c.f faithful=r.factor_faithful binding=r.binding best=best_f
-    end
-
-    status = (best_bind === :none || !isfinite(best_f)) ? :no_onset :
-             (best_f >= 0.999 * shi ? :cap : :ok)
-    cheap_min = isempty(cheap) ? NaN : minimum(c.f for c in cheap)
-    return (; sfmin = best_f, kyhat = best_ky, width = best_w, binding = best_bind,
-            status = status, cheap_min = cheap_min, n_confirm = n_confirm, npts = np,
-            total_evals_full = total_full, total_evals_eig = total_eig, results = results)
+    status = (rc.best_bind === :none || !isfinite(rc.best_f)) ? :no_onset :
+             (rc.best_f >= 0.999 * shi ? :cap : :ok)
+    return (; sfmin = rc.best_f, kyhat = rc.best_ky, width = rc.best_w, binding = rc.best_bind,
+            status = status, cheap_min = rc.cheap_min, n_confirm = rc.n_confirm, npts = np,
+            total_evals_full = rc.total_evals_full, total_evals_eig = rc.total_evals_eig, results = rc.confirmed)
 end
 
 """
@@ -1716,6 +1775,7 @@ the floor, `sfmin_work` the `robust_ad` value at `nb_work`, and `floored` whethe
 function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing, scan_hi=nothing,
                                ky_lo::Float64=0.05, w_lo::Float64=0.05,
                                nseed_ky::Int=6, nseed_w::Int=10, n_eig_seed::Int=12, k_descend::Int=6,
+                               confirm_grid::Bool=false,
                                nb_work::Int=32, nb_steps::Vector{Int}=[32, 40, 48, 56],
                                inner::Symbol=:threads, team=nothing,
                                use_gpu::Bool=false, verbose::Bool=false)
@@ -1730,7 +1790,7 @@ function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing,
     # ladder below. (The earlier separate _locate_extended + w≥1 floor now live inside robust.)
     epw = deepcopy(ep0); epw.N_BASIS = nb_work
     rob = critical_factor_robust(epw, prof; gamma_thresh=gth, scan_lo=slo, scan_hi=shi,
-            extend_width=true, ky_lo=ky_lo, w_lo=w_lo, nseed_ky=nseed_ky, nseed_w=nseed_w,
+            extend_width=true, confirm_grid=confirm_grid, ky_lo=ky_lo, w_lo=w_lo, nseed_ky=nseed_ky, nseed_w=nseed_w,
             n_eig_seed=n_eig_seed, k_descend=k_descend, inner=inner, team=team, use_gpu=use_gpu)
     total_full = rob.total_evals_full; total_eig = rob.total_evals_eig
     best_f = rob.sfmin; best_ky = rob.kyhat; best_w = rob.width; best_bind = rob.binding

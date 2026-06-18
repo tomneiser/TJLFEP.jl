@@ -32,7 +32,7 @@ leading AE-band growth crosses `γ*` and passes the TGLF-EP keep filters — ove
 | `:grid` | Fortran `kwscale_scan` `(kyhat × width × factor)` sweep | reference; bit-faithful to Fortran (`w≥1`) |
 | `:ad` (`critical_factor_optimize`) | 1 seed → projected-gradient/IFT descent on the cheap AE-onset surface | fastest; **blind to floor-pinned basins**, single-basin fragile |
 | **`:robust_ad`** (`critical_factor_robust`) | `w≥1` faithful grid-zoom **+ extended narrow-width locate** (`extend_width=true`: log-`w` down to ~0.05 → `:ad` descent → faithful confirm), `sfmin = min(both)` | **middle ladder rung**: captures the narrow-AE width reduction (2–11×) at `nb=N_BASIS`; `extend_width=false` → pure `w≥1` |
-| `:confirm` (`critical_factor_confirm`) | cheap eigenvalue-only `f1` grid search + early-stop few-confirm | provably exact over the `w≥1` grid; fewer `IFLUX=true` evals |
+| `:confirm` (`critical_factor_confirm`) | cheap eigenvalue-only `f1` grid search + early-stop few-confirm (shared `_rank_confirm`) | provably exact over the `w≥1` grid; fewer `IFLUX=true` evals. Also available *inside* `:robust_ad` as the **opt-in** `confirm_grid=true` (default **off** — see note) |
 | `adf1` (`critical_factor_ad_f1seed`) *(core)* | pinned-aware `f1` seed grid → `:ad` descent on interior basins (+ grid-floor guard) → early-stop confirm | fixes `:ad`'s pinned-blindness; fast canonical pass |
 | **`:truth`** (`critical_factor_truth`) *(core)* | **`:robust_ad` (width-extended) + separable nbasis convergence** at the located `(ky,w)` | **top ladder rung**: adds the (adverse) `+nbasis` correction; **NOT Fortran-faithful** (see §5) |
 | `critical_factor_triggered` *(core)* | fast `adf1` canonical pass + width-floor/trust trigger → escalate to `:truth`, keep `min` | production policy wrapper |
@@ -45,6 +45,22 @@ leading AE-band growth crosses `γ*` and passes the TGLF-EP keep filters — ove
 experiment-only solvers (`critical_factor_direct`, `critical_factor_ad_escalate`) live in
 `build/ad/direct_solver.jl` and depend on `NLopt` (in `Project.toml` but **not** imported by the
 module, so the production package / sysimage stay NLopt-free).
+
+**`confirm_grid` (opt-in, default `false`).** `critical_factor_robust` can fold the `:confirm`
+cheap-rank→few-confirm scheme into its `w≥1` grid passes (shared `_rank_confirm`, forwarded by
+`critical_factor_truth`). It is **provably exact for a fixed node set** — verified **bitwise** vs the
+brute path with `adaptive=false` across DIII-D IR=2/17/22/95 at `nb=6/8/16` — and cuts `IFLUX=true`
+evals (e.g. 780→29 at one radius). It is nonetheless **kept off by default** because, on the GPU/MPS
+production route, measurement (20-radius DIII-D 1-node sweep, `nb=6..32`) shows it is **7–18% SLOWER**:
+the early-stop confirm loop is inherently serial (each confirm depends on the running incumbent) so it
+confirms on **one** GPU while the brute path fans all `nkyhat·nefwid` faithful solves across the whole
+MPS team, and the cheap rank adds a full extra eigen-scan pass — i.e. the `IFLUX=true` keep filter is
+**not** the per-node bottleneck (the eigensolve is). At `nb=32` it reproduces the brute `sfmin` exactly
+(0 rel diff, all 20 radii) yet is ~10% slower — a pure loss there. Separately, with `adaptive=true` its
+cheap (over-counted) feasibility count feeds the `sparse` zoom trigger and shifts which refine boxes are
+explored, so `sfmin` can differ from the brute path at near-degenerate radii (~3–10% at a couple of
+`nb<32` DIII-D radii; exact with `adaptive=false`). Use `confirm_grid=true` for **CPU/serial** runs
+(where the keep filter cost matters and there is no team to underutilize) or with `adaptive=false`.
 
 ---
 
