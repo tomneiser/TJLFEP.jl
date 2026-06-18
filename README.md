@@ -120,7 +120,14 @@ are compared, each on its fastest parallel layout:
   `robust_ad` for production scans and `truth` (on an **MPS team**) for validation. See
   [`docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`](docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md).
 
-![Wallclock vs N_BASIS](docs/plots/scan20_timing_lines.png?v=4)
+![Node-hours vs N_BASIS](docs/plots/scan20_timing_lines.png?v=5)
+
+The plot reports each solver's **cost in node-hours** (nodes × wallclock), so runs
+on different node counts compare fairly, and now includes the **`robust_ad`** series
+(the production width-extended solver). At `N_BASIS=32` the GPU paths stay cheap —
+`ad` threads ≈0.06, `grid` MPS ≈0.3, `robust_ad` ≈1.3, `truth` ≈1.4 node-hours —
+versus ≈2.9 (Julia CPU grid) and ≈4.3 (Fortran). The per-backend tables below break
+this down in raw wallclock seconds.
 
 **Grid solver** — Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
 SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
