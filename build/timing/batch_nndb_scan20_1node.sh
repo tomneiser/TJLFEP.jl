@@ -1,6 +1,6 @@
 #!/bin/bash -l
 # SINGLE-NODE BACKFILL layout (the NN-database-generation strategy): 1 node, 4 A100s, 4 GPU-worker
-# tasks (G=1 -> one GPU each) that share a directory-based ATOMIC claim queue (QUEUE_MODE=1) over
+# tasks (G=1 -> one GPU each) that share a directory-based ATOMIC claim queue (BACKFILL_MODE=1) over
 # all SCAN_N radii. Each worker spawns its MPS team ONCE and then drains the queue, reusing the team
 # across every radius it claims, so the team spawn/JIT is paid once per GPU and there is no per-node
 # tail until the very last radius. This trades ~SCAN_N/4 waves of wallclock for using only 1 node,
@@ -36,7 +36,7 @@ export MPS_TEAM="${MPS_TEAM:-8}"
 export SOLVER="${SOLVER:-robust_ad}"
 export REFINE_ROUNDS="${REFINE_ROUNDS:-1}"
 export GPUS_PER_RADIUS=1
-export QUEUE_MODE=1
+export BACKFILL_MODE=1
 export JULIA_WORKER_THREADS="${JULIA_WORKER_THREADS:-2}"
 export JULIA_CUDA_USE_COMPAT=false
 export TJLFEP_PROBE="${TJLFEP_PROBE:-0}"

@@ -1,5 +1,5 @@
 #!/bin/bash -l
-# Submit the SINGLE-NODE BACKFILL (batch_nndb_scan20_1node.sh, QUEUE_MODE=1, nodes=1) timing sweep
+# Submit the SINGLE-NODE BACKFILL (batch_nndb_scan20_1node.sh, BACKFILL_MODE=1, nodes=1) timing sweep
 # over nbasis for one SOLVER. This is the node-hours-minimal layout (4 GPU-workers drain the 20-radius
 # claim queue on ONE node, reusing their MPS team), so the resulting TIMING_RESULT lines carry
 # nodes=1 and feed the node-hours-vs-nbasis plot directly.

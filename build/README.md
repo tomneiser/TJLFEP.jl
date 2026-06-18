@@ -23,7 +23,7 @@ jobs and are gitignored.
 
 | Subdir | Contents |
 |--------|----------|
-| `common/` | Shared GPU/MPS driver (`run_gacode_scan20_mps_task.jl`, one-radius-per-task or `QUEUE_MODE=1` backfill), MPS launch wrapper (`mps-scan-wrapper.sh`), result merge (`merge_gacode_scan20_array.jl`), sysimage helper (`julia_sysimage.inc.sh`). |
+| `common/` | Shared GPU/MPS driver (`run_gacode_scan20_mps_task.jl`, one-radius-per-task or `BACKFILL_MODE=1` backfill), MPS launch wrapper (`mps-scan-wrapper.sh`), result merge (`merge_gacode_scan20_array.jl`), sysimage helper (`julia_sysimage.inc.sh`). |
 | `verify/` | Fortran-vs-Julia verification (batch runners, distributed drivers, overlay plotters). |
 | `run/` | Smoke test, file-based validation, 5-node production scan, merge, self-contained submit template. |
 | `timing/` | Timing-vs-N_BASIS sweep (per-backend batch runners, driver, collector, plotter). |
@@ -97,7 +97,7 @@ julia --project=. timing/collect_scan20_timing.jl   # -> timing_runs/scan20_timi
 
 For an apples-to-apples *cost* comparison (and the NN-database-generation
 layout), `timing/submit_nodehours_vs_nbasis.sh` submits one **single node** per
-`N_BASIS` running `timing/batch_nndb_scan20_1node.sh` with `QUEUE_MODE=1`: its 4
+`N_BASIS` running `timing/batch_nndb_scan20_1node.sh` with `BACKFILL_MODE=1`: its 4
 GPU-worker tasks share a directory-based atomic claim queue over all 20 radii,
 each spawning its MPS team once and reusing it across every radius it claims.
 This is the node-hours-minimal layout (1 node instead of 5, at the cost of
