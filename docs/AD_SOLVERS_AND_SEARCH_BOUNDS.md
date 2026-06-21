@@ -30,7 +30,7 @@ leading AE-band growth crosses `γ*` and passes the TGLF-EP keep filters — ove
 | Solver | Strategy | Notes |
 |--------|----------|-------|
 | `:grid` | Fortran `kwscale_scan` `(kyhat × width × factor)` sweep | reference; bit-faithful to Fortran (`w≥1`) |
-| `:ad` (`critical_factor_optimize`) | 1 seed → projected-gradient/IFT descent on the cheap AE-onset surface | fastest; **blind to floor-pinned basins**, single-basin fragile |
+| `:ad` (`critical_factor_optimize`) | 1 seed → projected-gradient/IFT descent on the cheap AE-onset surface, **width-extended** in the scan path (`extend_width=true`: same log-`w` locate as `:robust_ad`, seeded on the `:ad` descent instead of a faithful grid, `sfmin = min(w≥1 descent, narrow locate)`) | fastest; the extension recovers most of the narrow-width gain over Fortran `w≥1` at no faithful-grid cost; still **blind to floor-pinned basins** / single-basin fragile on the `w≥1` core (less robust than `:robust_ad`). `extend_width=false` → pure `w≥1` |
 | **`:robust_ad`** (`critical_factor_robust`) | `w≥1` faithful grid-zoom **+ extended narrow-width locate** (`extend_width=true`: log-`w` down to ~0.05 → `:ad` descent → faithful confirm), `sfmin = min(both)` | **middle ladder rung**: captures the narrow-AE width reduction (2–11×) at `nb=N_BASIS`; `extend_width=false` → pure `w≥1` |
 | `:confirm` (`critical_factor_confirm`) | cheap eigenvalue-only `f1` grid search + early-stop few-confirm (shared `_rank_confirm`) | provably exact over the `w≥1` grid; fewer `IFLUX=true` evals. Also available *inside* `:robust_ad` as the **opt-in** `confirm_grid=true` (default **off** — see note) |
 | `adf1` (`critical_factor_ad_f1seed`) *(core)* | pinned-aware `f1` seed grid → `:ad` descent on interior basins (+ grid-floor guard) → early-stop confirm | fixes `:ad`'s pinned-blindness; fast canonical pass |
@@ -299,6 +299,19 @@ automatically).
 
 ## 5. Production recommendation
 
+**Recommended production model: `:robust_ad`.** It is the width-correct critical-factor
+solver — it admits the narrow-width EP-driven AE modes the Fortran `w≥1` grid excludes — and
+is trustworthy everywhere (always finite, never misses a basin), unlike the fast pure-`:ad`
+path, which can spike or pin at the search ceiling on the hard radii. Reserve `:truth` (the
+`nbasis`-converged tier) for validation or the few flagged outer radii. The `sfmin(IR)`
+overlay for the three solver tiers at `nbasis=32` (DIII-D, SCAN_N=20):
+
+![sfmin: grid vs robust_ad vs ad](plots/sfmin_grid_robust_ad_ad_nb32.png)
+
+`:robust_ad` (red) sits at or below `:grid` (blue) across the profile — capturing the narrow
+EP modes at the outer radii (IR ≳ 65; ~10× below grid at IR=95) — while pure `:ad` (orange)
+tracks grid on clean radii but spikes/caps at IR=17, 33, 95.
+
 - Keep **`WIDTH_MIN=1.0`, `WIDTH_MAX=2.0`, `nbasis=32`** as the default operating box **to stay
   faithful to Fortran TGLF-EP** (which floors width at 1.0) and in the well-conditioned regime.
   This is a modeling choice, not a numerical one.
@@ -357,3 +370,6 @@ Timing & profile reproduction (run from `build/`, premium GPU):
 - **grid / robust_ad / production-truth `sfmin` profile** (the §4.6 plot): `ad/plot_grid_vs_truth.jl`
   (reads the grid, `robust_ad` r1, and `:truth` run `sfmin_scan.txt` files; override paths via
   `GRID_TXT` / `ROBUST_TXT` / `PROD_TXT`).
+- **grid / robust_ad / ad `sfmin` profile** (the §5 production-recommendation plot):
+  `ad/plot_sfmin_grid_robust_ad_ad.jl` (reads the grid, production `robust_ad`, and pure-`:ad`
+  `sfmin_scan.txt` files; override paths via `GRID_TXT` / `ROBUST_TXT` / `AD_TXT`).

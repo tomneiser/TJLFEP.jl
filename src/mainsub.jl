@@ -80,8 +80,9 @@ end
     _mainsub_ad(inputsEP, inputsPR, printout; use_gpu=false, inner=:threads, team=nothing) -> ((growthrate, ep, pr, marginal_ql), (sf_buf, wf_buf))
 
 AD-solver branch of [`mainsub`](@ref) (PROCESS_IN==5). Runs
-[`critical_factor_optimize`](@ref) (faithful-confirmed) to obtain the critical EP
-scale factor and its marking `(kymark, width)`, writes them onto `inputsEP`
+[`critical_factor_optimize`](@ref) (faithful-confirmed, **width-extended**:
+`extend_width=true`) to obtain the critical EP scale factor and its marking
+`(kymark, width)`, writes them onto `inputsEP`
 (`FACTOR_IN`, `KYMARK`, `WIDTH_IN`) exactly like the grid path, and returns the
 `mainsub` tuple shape so the radial drivers/output writers are unchanged. The AD
 path does not assemble the full QL/growthrate buffers, so `growthrate` is a NaN
@@ -97,7 +98,7 @@ function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_g
                      inner::Symbol = :threads,
                      team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
     res = critical_factor_optimize(inputsEP, inputsPR; use_gpu=use_gpu, faithful_confirm=true,
-                                   inner=inner, team=team)
+                                   extend_width=true, inner=inner, team=team)
 
     # Prefer the all-filter (faithful) onset when a mode actually binds; otherwise
     # fall back to the AE-band optimum from the descent.
@@ -128,6 +129,9 @@ function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_g
         push!(sf_buf, "width = $(wmark)")
         push!(sf_buf, "binding = $(bind)")
         push!(sf_buf, "iters = $(res.iters)  evals = $(res.evals)  converged = $(res.converged)")
+        if get(res, :extended, false)
+            push!(sf_buf, "extended = true  n_ext_confirm = $(get(res, :n_ext_confirm, 0))")
+        end
     end
 
     return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, nothing)

@@ -875,9 +875,32 @@ Keywords: `gamma_thresh=nothing` (case γ*), `nseed_ky=4`, `nseed_w=4`,
 `step0=0.25`, `nbacktrack=12`, `faithful_confirm=false`, `use_gpu=false`,
 `verbose=false`.
 
+**`extend_width=false`** (opt-in; on by default in the `solver=:ad` scan path):
+the canonical descent above only searches `w∈[WIDTH_MIN,WIDTH_MAX]` (`w≥1`), so it
+structurally misses the narrow EP-driven AE modes (`w≪1`) that set the true
+critical factor at near-marginal radii (the canonical `w≥1` box biases `sfmin`
+high there — up to ~25× at the steep profile edge). When `extend_width=true` the
+solver additionally runs [`_locate_extended`](@ref) — a cheap log-spaced `(ky,w)`
+AE-onset rank (down to `w_lo=0.05`, `ky_lo=0.05`) → `:ad` descent → faithful
+early-stop confirm — and folds any LOWER faithful onset into the result. This is
+the SAME width-extension machinery `:robust_ad` uses, but seeded on the cheap `:ad`
+descent instead of a full faithful `w≥1` grid-zoom, so it is much cheaper than
+`:robust_ad` (no faithful grid) while recovering most of the narrow-width accuracy
+gain over the Fortran/grid `w≥1` baseline. The `w≥1` descent is retained as a floor
+(AD descent can under-resolve the dense core). Extension knobs: `w_lo=0.05`,
+`ky_lo=0.05`, `nseed_ky_ext=6`, `nseed_w_ext=10`, `n_eig_seed=12`, `k_descend=6`.
+`extend_width` implies a faithful confirm of the `w≥1` optimum (for a valid
+early-stop bound). It does NOT alter the default (`extend_width=false`) behavior,
+so [`_locate_extended`](@ref)'s own inner `:ad` descents (which pass it unset)
+remain `w≥1`.
+
 Returns `(; sfmin, kyhat, width, f_seedmin, ky_seed, w_seed, iters, evals,
-converged, faithful)` where `faithful` is the [`marginal_factor_faithful`](@ref)
-result at the optimum (or `nothing`).
+converged, faithful, extended, n_ext_confirm)` where `faithful` is the
+[`marginal_factor_faithful`](@ref) result at the winning optimum (or `nothing`),
+`extended` echoes `extend_width`, and `n_ext_confirm` counts the narrow-width
+faithful confirms. With a faithful confirm, `sfmin` is the faithful onset of the
+winner (min over the `w≥1` descent and the narrow extension); otherwise the
+AE-band descent onset.
 """
 function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                                   gamma_thresh::Union{Nothing,Float64} = nothing,
@@ -890,6 +913,9 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
                                   maxiter::Int = 20, gtol::Float64 = 1.0e-4, xtol::Float64 = 1.0e-5,
                                   step0::Float64 = 0.25, nbacktrack::Int = 8,
                                   faithful_confirm::Bool = false,
+                                  extend_width::Bool = false, w_lo::Float64 = 0.05, ky_lo::Float64 = 0.05,
+                                  nseed_ky_ext::Int = 6, nseed_w_ext::Int = 10,
+                                  n_eig_seed::Int = 12, k_descend::Int = 6,
                                   inner::Symbol = :threads,
                                   team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
                                   use_gpu::Bool = false, verbose::Bool = false)
@@ -948,10 +974,13 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
         end
     end
     f_seedmin = best_f; ky_seed = best_ky; w_seed = best_w
-    if !isfinite(best_f)
+    # When `extend_width` is set we DON'T bail on an infeasible w≥1-box seed: a narrow
+    # (w<WIDTH_MIN) mode may still be feasible and is recovered by the width extension below.
+    if !isfinite(best_f) && !extend_width
         verbose && @warn "critical_factor_optimize: no feasible (instability-bearing) seed"
         return (; sfmin = Inf, kyhat = NaN, width = NaN, f_seedmin, ky_seed, w_seed,
-                iters = 0, evals = evals[], converged = false, faithful = nothing)
+                iters = 0, evals = evals[], converged = false, faithful = nothing,
+                extended = false, n_ext_confirm = 0)
     end
 
     # ── projected-gradient descent with backtracking line search ──
@@ -959,7 +988,7 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
     f = best_f
     iters = 0
     converged = false
-    for it in 1:maxiter
+    for it in (isfinite(best_f) ? (1:maxiter) : (1:0))
         iters = it
         r = fgrad(ky, w; f_start = isfinite(f) ? f : nothing)
         (!r.converged || !isfinite(r.f)) && break
@@ -996,15 +1025,53 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
         end
     end
 
+    # ── canonical (w≥1) faithful confirm of the descent optimum ──
+    # `extend_width` implies a faithful confirm so the running best below is in faithful
+    # terms (matching the candidate confirms), giving a valid early-stop bound.
+    do_confirm = faithful_confirm || extend_width
     faithful = nothing
-    if faithful_confirm
+    if do_confirm && isfinite(f)
         faithful = marginal_factor_faithful(inputsEP, inputsPR; kyhat = ky, width = w,
                                             scan_lo = scan_lo, scan_hi = shi, use_gpu = use_gpu,
                                             inner = inner, team = team)
     end
 
-    return (; sfmin = f, kyhat = ky, width = w, f_seedmin, ky_seed, w_seed,
-            iters = iters, evals = evals[], converged = converged, faithful = faithful)
+    # Running best in FAITHFUL terms (fall back to the AE-band descent onset if nothing bound).
+    win_f = (faithful !== nothing && faithful.binding != :none && isfinite(faithful.factor_faithful)) ?
+            faithful.factor_faithful : f
+    win_ky = ky; win_w = w; win_faithful = faithful
+    n_ext_confirm = 0
+
+    # ── width extension: cheap log-spaced (ky,w) AE-onset rank → :ad descent → faithful confirm.
+    # This is the SAME `_locate_extended` machinery `:robust_ad` uses, but seeded on the cheap :ad
+    # descent above instead of a faithful w≥1 grid-zoom (so it is far cheaper than `:robust_ad` — no
+    # full faithful grid). It captures the narrow EP-driven AE modes (w≪WIDTH_MIN) the canonical w≥1
+    # :ad descent structurally misses, folding any LOWER faithful onset into the running best. The
+    # w≥1 descent is kept as a floor (the AD descent can under-resolve the dense core min). ──
+    if extend_width
+        loc = _locate_extended(inputsEP, inputsPR; gth = gth, slo = scan_lo, shi = shi, ky_lo = ky_lo,
+                w_lo = w_lo, w_hi = whi, nseed_ky = nseed_ky_ext, nseed_w = nseed_w_ext,
+                n_eig_seed = n_eig_seed, k_descend = k_descend, inner = inner, team = team,
+                use_gpu = use_gpu)
+        evals[] += loc.total_eig
+        for c in loc.cands
+            (isfinite(win_f) && c[3] >= win_f) && break   # cands sorted by onset (a lower bound on faithful)
+            r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = c[1], width = c[2],
+                    gamma_thresh = gth, scan_lo = scan_lo, scan_hi = shi, threaded = true,
+                    inner = inner, team = team, use_gpu = use_gpu)
+            n_ext_confirm += 1; evals[] += r.evals_full + r.evals_eig
+            if r.binding != :none && isfinite(r.factor_faithful) &&
+               (!isfinite(win_f) || r.factor_faithful < win_f)
+                win_f = r.factor_faithful; win_ky = c[1]; win_w = c[2]; win_faithful = r
+            end
+        end
+        verbose && @info "cfo width-extended" ky=win_ky w=win_w sfmin=win_f n_ext_confirm
+    end
+
+    sfmin_out = isfinite(win_f) ? win_f : f
+    return (; sfmin = sfmin_out, kyhat = win_ky, width = win_w, f_seedmin, ky_seed, w_seed,
+            iters = iters, evals = evals[], converged = converged, faithful = win_faithful,
+            extended = extend_width, n_ext_confirm = n_ext_confirm)
 end
 
 """
