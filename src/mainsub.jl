@@ -97,8 +97,12 @@ contexts overlapping via Hyper-Q), else they run in-process threaded.
 function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_gpu::Bool = false,
                      inner::Symbol = :threads,
                      team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+    # Use the SAME scan floor as :robust_ad (scan_hi/512, not the optimizer's 1e-3 default) so the
+    # width-extended :ad reports the same floor-pinned sfmin as the production solver at near-marginal
+    # radii (otherwise it would clip ~10× lower at the 1e-3 floor and spuriously beat :robust_ad).
     res = critical_factor_optimize(inputsEP, inputsPR; use_gpu=use_gpu, faithful_confirm=true,
-                                   extend_width=true, inner=inner, team=team)
+                                   extend_width=true, scan_lo=Float64(inputsEP.FACTOR_IN) / 512.0,
+                                   inner=inner, team=team)
 
     # Prefer the all-filter (faithful) onset when a mode actually binds; otherwise
     # fall back to the AE-band optimum from the descent.

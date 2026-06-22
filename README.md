@@ -120,6 +120,24 @@ are compared, each on its fastest parallel layout:
   `robust_ad` for production scans and `truth` (on an **MPS team**) for validation. See
   [`docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`](docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md).
 
+**Recommended production model: `robust_ad`.** It is width-correct — it admits the
+narrow-width EP-driven AE modes the Fortran `w≥1` grid structurally excludes — yet
+robust everywhere (always finite, no basin misses). The fast `ad` path is now also
+**width-extended** (it folds in the same narrow-width locate, seeded on the cheap `ad`
+descent instead of a faithful `w≥1` grid), so it tracks `robust_ad` closely at far
+lower cost; reserve `truth` (the `nbasis`-converged tier) for validation or the few
+flagged outer radii. The plot overlays `sfmin(IR)` for the three solvers at
+`N_BASIS=32`:
+
+![sfmin vs radius: grid vs robust_ad vs ad](docs/plots/sfmin_grid_robust_ad_ad_nb32.png?v=2)
+
+`robust_ad` (red) sits at or below `grid` (blue) across the whole profile, lowering
+`sfmin` into the narrow-width modes at the outer radii (IR ≳ 65; up to ~10× below grid
+at IR=95). The width-extended `ad` (orange) now overlays `robust_ad` across the outer
+profile — the multi-seed ranked locate also cures pure `ad`'s old single-descent
+over-predictions at the inner radii — deviating only by ~5% at the innermost `w≥1`-core
+radii (IR≲7), where the single descent under-resolves the dense core.
+
 ![Node-hours vs N_BASIS](docs/plots/scan20_timing_lines.png?v=5)
 
 The plot reports each solver's **cost in node-hours** (nodes × wallclock), so runs

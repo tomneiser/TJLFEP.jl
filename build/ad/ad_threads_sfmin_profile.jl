@@ -25,18 +25,35 @@ function main()
     @assert CUDA.functional() "run on a GPU node"
     opts, _, _ = preprocess_gacode_inputs(GACODE, TGLFEP)
     scan_n = opts.SCAN_N
-    @printf("DIII-D N_BASIS=%d  SCAN_N=%d  solver=%s refine_rounds=%d  GPU=%s\n",
-            opts.N_BASIS, scan_n, SOLVER, REFINE, CUDA.name(first(CUDA.devices())))
+    # SI_LIST (e.g. "8,9,10") re-runs only those scan indices and UPDATES the existing OUT_TXT in
+    # place (keeping all other radii); empty = full 1:scan_n sweep (overwrite, as before).
+    si_env = strip(get(ENV, "SI_LIST", ""))
+    si_list = isempty(si_env) ? collect(1:scan_n) : parse.(Int, split(si_env, ','))
+    @printf("DIII-D N_BASIS=%d  SCAN_N=%d  solver=%s refine_rounds=%d  GPU=%s  si_list=%s\n",
+            opts.N_BASIS, scan_n, SOLVER, REFINE, CUDA.name(first(CUDA.devices())), string(si_list))
     flush(stdout)
 
-    open(OUT_TXT, "w") do io
-        for si in 1:scan_n
-            t = @elapsed r = run_gacode_scan_task(GACODE, TGLFEP, si;
-                    out_dir = OUT_DIR, use_gpu = true, inner = :threads,
-                    solver = SOLVER, refine_rounds = REFINE)
-            @printf(io, "%d %d %.10g\n", si, r.ir, r.sfmin); flush(io)
-            @printf("done si=%2d ir=%3d sfmin=%.6g  in %.1fs\n", si, r.ir, r.sfmin, t)
-            flush(stdout)
+    # seed the table from disk so a subset re-run preserves untouched radii
+    rows = Dict{Int,Tuple{Int,Float64}}()
+    if isfile(OUT_TXT)
+        for line in eachline(OUT_TXT)
+            p = split(strip(line)); length(p) >= 3 || continue
+            rows[parse(Int, p[1])] = (parse(Int, p[2]), parse(Float64, p[3]))
+        end
+    end
+
+    for si in si_list
+        t = @elapsed r = run_gacode_scan_task(GACODE, TGLFEP, si;
+                out_dir = OUT_DIR, use_gpu = true, inner = :threads,
+                solver = SOLVER, refine_rounds = REFINE)
+        rows[si] = (r.ir, r.sfmin)
+        @printf("done si=%2d ir=%3d sfmin=%.6g  in %.1fs\n", si, r.ir, r.sfmin, t)
+        flush(stdout)
+        open(OUT_TXT, "w") do io
+            for k in sort(collect(keys(rows)))
+                ir, sf = rows[k]
+                @printf(io, "%d %d %.10g\n", k, ir, sf)
+            end
         end
     end
     println("=== wrote ", OUT_TXT, " ===")
