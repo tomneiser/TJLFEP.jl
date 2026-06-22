@@ -138,14 +138,18 @@ profile — the multi-seed ranked locate also cures pure `ad`'s old single-desce
 over-predictions at the inner radii — deviating only by ~5% at the innermost `w≥1`-core
 radii (IR≲7), where the single descent under-resolves the dense core.
 
-![Node-hours vs N_BASIS](docs/plots/scan20_timing_lines.png?v=5)
+![Node-hours vs N_BASIS](docs/plots/scan20_timing_lines.png?v=6)
 
 The plot reports each solver's **cost in node-hours** (nodes × wallclock), so runs
-on different node counts compare fairly, and now includes the **`robust_ad`** series
+on different node counts compare fairly, and includes the **`robust_ad`** series
 (the production width-extended solver). At `N_BASIS=32` the GPU paths stay cheap —
-`ad` threads ≈0.06, `grid` MPS ≈0.3, `robust_ad` ≈1.3, `truth` ≈1.4 node-hours —
-versus ≈2.9 (Julia CPU grid) and ≈4.3 (Fortran). The per-backend tables below break
-this down in raw wallclock seconds.
+`grid` MPS ≈0.3, width-extended `ad` ≈0.9, `robust_ad` ≈1.4, `truth` ≈1.4 node-hours —
+versus ≈2.9 (Julia CPU grid) and ≈4.3 (Fortran). The now width-extended `ad` runs at
+**≈⅔ the node-hours of `robust_ad`** (0.14/0.16/0.31/0.92 vs 0.21/0.22/0.45/1.38 at
+`N_BASIS=6/8/16/32`) while matching its `sfmin` across the outer profile — the
+narrow-width locate makes it ~2–3× costlier than the old pure-`ad` descent but still
+the cheapest width-correct option. The per-backend tables below break this down in raw
+wallclock seconds.
 
 **Grid solver** — Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
 SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
