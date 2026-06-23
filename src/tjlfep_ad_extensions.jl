@@ -889,18 +889,29 @@ descent instead of a full faithful `w≥1` grid-zoom, so it is much cheaper than
 gain over the Fortran/grid `w≥1` baseline. The `w≥1` descent is retained as a floor
 (AD descent can under-resolve the dense core). Extension knobs: `w_lo=0.05`,
 `ky_lo=0.05`, `nseed_ky_ext=6`, `nseed_w_ext=10`, `n_eig_seed=12`, `k_descend=6`.
-`extend_width` implies a faithful confirm of the `w≥1` optimum (for a valid
-early-stop bound). It does NOT alter the default (`extend_width=false`) behavior,
-so [`_locate_extended`](@ref)'s own inner `:ad` descents (which pass it unset)
+It does NOT alter the default (`extend_width=false`) behavior, so
+[`_locate_extended`](@ref)'s own inner `:ad` descents (which pass it unset)
 remain `w≥1`.
+
+`extend_width` interacts with **`faithful_confirm`**:
+- `faithful_confirm=true` (the `solver=:ad` scan default): the located narrow
+  candidates are faithful-confirmed (`IFLUX=true`) with an early-stop bound, so
+  `sfmin` is the faithful keep onset (min over the `w≥1` descent and the
+  extension) and **matches `:robust_ad` bitwise** at the located mode.
+- `faithful_confirm=false` ("pure AD" extended): NO faithful confirm anywhere —
+  the solver folds in the lowest cheap AE-band/descended onset over the located
+  candidates and reports that. Much cheaper (zero `IFLUX=true` evals), but the
+  AE-band onset is ≤ the faithful keep onset, so it does **not** match
+  `:robust_ad` bitwise (and can dip below it where keep filters would reject the
+  marginal mode).
 
 Returns `(; sfmin, kyhat, width, f_seedmin, ky_seed, w_seed, iters, evals,
 converged, faithful, extended, n_ext_confirm)` where `faithful` is the
 [`marginal_factor_faithful`](@ref) result at the winning optimum (or `nothing`),
 `extended` echoes `extend_width`, and `n_ext_confirm` counts the narrow-width
-faithful confirms. With a faithful confirm, `sfmin` is the faithful onset of the
-winner (min over the `w≥1` descent and the narrow extension); otherwise the
-AE-band descent onset.
+faithful confirms (0 when `faithful_confirm=false`). With a faithful confirm,
+`sfmin` is the faithful onset of the winner (min over the `w≥1` descent and the
+narrow extension); otherwise the AE-band descent onset.
 """
 function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                                   gamma_thresh::Union{Nothing,Float64} = nothing,
@@ -1026,46 +1037,60 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
     end
 
     # ── canonical (w≥1) faithful confirm of the descent optimum ──
-    # `extend_width` implies a faithful confirm so the running best below is in faithful
-    # terms (matching the candidate confirms), giving a valid early-stop bound.
-    do_confirm = faithful_confirm || extend_width
+    # With `faithful_confirm` the running best below is carried in FAITHFUL (keep-onset) terms,
+    # matching the candidate confirms and giving a valid early-stop bound. WITHOUT it the solver
+    # stays on the cheap AE-band onset surface end-to-end (the "pure AD" extended path: no
+    # `IFLUX=true` confirm anywhere — far cheaper, but it reports the AE-band onset, which is ≤ the
+    # faithful keep onset and so does NOT match `:robust_ad` bitwise).
     faithful = nothing
-    if do_confirm && isfinite(f)
+    if faithful_confirm && isfinite(f)
         faithful = marginal_factor_faithful(inputsEP, inputsPR; kyhat = ky, width = w,
                                             scan_lo = scan_lo, scan_hi = shi, use_gpu = use_gpu,
                                             inner = inner, team = team)
     end
 
-    # Running best in FAITHFUL terms (fall back to the AE-band descent onset if nothing bound).
+    # Running best (FAITHFUL terms when confirming; AE-band descent onset otherwise).
     win_f = (faithful !== nothing && faithful.binding != :none && isfinite(faithful.factor_faithful)) ?
             faithful.factor_faithful : f
     win_ky = ky; win_w = w; win_faithful = faithful
     n_ext_confirm = 0
 
-    # ── width extension: cheap log-spaced (ky,w) AE-onset rank → :ad descent → faithful confirm.
-    # This is the SAME `_locate_extended` machinery `:robust_ad` uses, but seeded on the cheap :ad
-    # descent above instead of a faithful w≥1 grid-zoom (so it is far cheaper than `:robust_ad` — no
-    # full faithful grid). It captures the narrow EP-driven AE modes (w≪WIDTH_MIN) the canonical w≥1
-    # :ad descent structurally misses, folding any LOWER faithful onset into the running best. The
-    # w≥1 descent is kept as a floor (the AD descent can under-resolve the dense core min). ──
+    # ── width extension: cheap log-spaced (ky,w) AE-onset rank → :ad descent → (optional) faithful
+    # confirm. This is the SAME `_locate_extended` machinery `:robust_ad` uses, but seeded on the
+    # cheap :ad descent above instead of a faithful w≥1 grid-zoom (so it is far cheaper than
+    # `:robust_ad` — no full faithful grid). It captures the narrow EP-driven AE modes (w≪WIDTH_MIN)
+    # the canonical w≥1 :ad descent structurally misses. The w≥1 descent is kept as a floor (the AD
+    # descent can under-resolve the dense core min). ──
     if extend_width
         loc = _locate_extended(inputsEP, inputsPR; gth = gth, slo = scan_lo, shi = shi, ky_lo = ky_lo,
                 w_lo = w_lo, w_hi = whi, nseed_ky = nseed_ky_ext, nseed_w = nseed_w_ext,
                 n_eig_seed = n_eig_seed, k_descend = k_descend, inner = inner, team = team,
                 use_gpu = use_gpu)
         evals[] += loc.total_eig
-        for c in loc.cands
-            (isfinite(win_f) && c[3] >= win_f) && break   # cands sorted by onset (a lower bound on faithful)
-            r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = c[1], width = c[2],
-                    gamma_thresh = gth, scan_lo = scan_lo, scan_hi = shi, threaded = true,
-                    inner = inner, team = team, use_gpu = use_gpu)
-            n_ext_confirm += 1; evals[] += r.evals_full + r.evals_eig
-            if r.binding != :none && isfinite(r.factor_faithful) &&
-               (!isfinite(win_f) || r.factor_faithful < win_f)
-                win_f = r.factor_faithful; win_ky = c[1]; win_w = c[2]; win_faithful = r
+        if faithful_confirm
+            # faithful early-stop confirm: confirm candidates in increasing cheap order, stopping as
+            # soon as the next cheap onset ≥ the best faithful (the cheap edge lower-bounds faithful).
+            for c in loc.cands
+                (isfinite(win_f) && c[3] >= win_f) && break
+                r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = c[1], width = c[2],
+                        gamma_thresh = gth, scan_lo = scan_lo, scan_hi = shi, threaded = true,
+                        inner = inner, team = team, use_gpu = use_gpu)
+                n_ext_confirm += 1; evals[] += r.evals_full + r.evals_eig
+                if r.binding != :none && isfinite(r.factor_faithful) &&
+                   (!isfinite(win_f) || r.factor_faithful < win_f)
+                    win_f = r.factor_faithful; win_ky = c[1]; win_w = c[2]; win_faithful = r
+                end
+            end
+        else
+            # pure AD: fold in the lowest AE-band/descended onset over the located candidates (cands
+            # are sorted ascending by onset), with NO faithful confirm anywhere.
+            for c in loc.cands
+                if isfinite(c[3]) && (!isfinite(win_f) || c[3] < win_f)
+                    win_f = c[3]; win_ky = c[1]; win_w = c[2]; win_faithful = nothing
+                end
             end
         end
-        verbose && @info "cfo width-extended" ky=win_ky w=win_w sfmin=win_f n_ext_confirm
+        verbose && @info "cfo width-extended" ky=win_ky w=win_w sfmin=win_f n_ext_confirm confirm=faithful_confirm
     end
 
     sfmin_out = isfinite(win_f) ? win_f : f

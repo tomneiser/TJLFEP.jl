@@ -100,7 +100,12 @@ function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_g
     # Use the SAME scan floor as :robust_ad (scan_hi/512, not the optimizer's 1e-3 default) so the
     # width-extended :ad reports the same floor-pinned sfmin as the production solver at near-marginal
     # radii (otherwise it would clip ~10× lower at the 1e-3 floor and spuriously beat :robust_ad).
-    res = critical_factor_optimize(inputsEP, inputsPR; use_gpu=use_gpu, faithful_confirm=true,
+    #
+    # `AD_FAITHFUL_CONFIRM=0` switches the width extension to the cheap "pure AD" path (no IFLUX=true
+    # confirm anywhere → reports the AE-band onset, which does NOT match :robust_ad bitwise). Default
+    # ("1") keeps the production faithful-confirmed behavior.
+    ad_confirm = get(ENV, "AD_FAITHFUL_CONFIRM", "1") != "0"
+    res = critical_factor_optimize(inputsEP, inputsPR; use_gpu=use_gpu, faithful_confirm=ad_confirm,
                                    extend_width=true, scan_lo=Float64(inputsEP.FACTOR_IN) / 512.0,
                                    inner=inner, team=team)
 
