@@ -897,8 +897,10 @@ remain `w≥1`.
 - `:locate` — the `_locate_extended` log-grid + `k_descend`-way multistart above
   (production; matches `:robust_ad` bitwise under `faithful_confirm`).
 - `:wide` — a much cheaper single-pass scheme: widen the *main* descent box down
-  to `w_lo`, seed it with a denser **log-spaced** `w` grid, descend the top
-  `wide_kdesc` (default 2) well-separated seeds, and faithful-confirm the best.
+  to `w_lo` (and clamp the ky floor up to `ky_lo` to match `:locate`'s domain),
+  seed it with a denser **log-spaced** `w` grid, descend the top `wide_kdesc`
+  (default 2) well-separated seeds, drop any floor-pinned (w≈`w_lo`/ky≈`ky_lo`)
+  corner optima when an interior optimum exists, and faithful-confirm the best.
   ~7× cheaper than `:locate`, recovers most of the narrow-width gain over the
   `w≥1` baseline, and stays *conservative* (confirmed keep onset ≥ truth) — it
   does NOT generally match `:robust_ad` bitwise. Good for fast NN-database
@@ -954,8 +956,12 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
     # `:locate`, recovers most of the narrow-width accuracy, and stays conservative (it reports the
     # confirmed keep onset). `:locate` (default) keeps the production `:robust_ad`-matching behavior.
     wide = extend_width && extend_mode == :wide
-    if wide && w_bounds === nothing
-        wlo = w_lo
+    if wide
+        w_bounds === nothing && (wlo = w_lo)
+        # Match the :locate / :robust_ad descent domain: clamp the ky floor up to `ky_lo`. The default
+        # `ky_bounds` reaches down to 1e-3, where the AE-band onset degenerates into a spurious ky→0
+        # corner artifact that `_locate_extended` never explores (its descents are bounded ky ≥ ky_lo).
+        kylo = max(kylo, ky_lo)
     end
 
     evals = Ref(0)
@@ -1084,6 +1090,14 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
             push!(optima, descend(s[1], s[2], s[3]))
         end
         sort!(optima, by = o -> o.f)
+        # Floor-pin guard (:wide): a descent that terminates exactly on the search-box floor
+        # (w ≈ w_lo or ky ≈ ky_lo) is the spurious narrow/long-wavelength corner mode that
+        # `:robust_ad` rejects in favor of the interior optimum. Drop floor-pinned optima, but ONLY
+        # when a non-pinned feasible optimum exists (so a genuinely floor-bound mode still reports).
+        if wide
+            fpin = o -> isfinite(o.f) && (o.w <= wlo * (1 + 1e-3) || o.ky <= kylo * (1 + 1e-3))
+            any(o -> isfinite(o.f) && !fpin(o), optima) && (optima = filter(!fpin, optima))
+        end
     else
         push!(optima, (; ky = best_ky, w = best_w, f = best_f, iters = 0, converged = false))
     end
