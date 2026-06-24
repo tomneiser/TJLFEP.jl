@@ -1133,8 +1133,13 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
         # ── `:wide` extension: the multistart descents above already swept the narrow band. Fold the
         # remaining well-separated optima (sorted ascending by AE-band onset) into the running best.
         if faithful_confirm
+            # Same early-stop bound as the `:locate` branch: prune candidates whose cheap onset is ≥
+            # the incumbent `win_f`, or ≥ the scan ceiling `shi` (= FACTOR_IN) when the w≥1 box was
+            # infeasible (win_f = Inf). The cheap onset lower-bounds the faithful onset and `optima`
+            # is sorted ascending, so this is an exact prune that bounds the confirm count.
             for o in optima[2:end]
-                (isfinite(win_f) && o.f >= win_f) && break   # cheap onset lower-bounds faithful
+                stop_bound = isfinite(win_f) ? win_f : shi
+                o.f >= stop_bound && break
                 isfinite(o.f) || continue
                 r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = o.ky, width = o.w,
                         gamma_thresh = gth, scan_lo = scan_lo, scan_hi = shi, threaded = true,
@@ -1162,9 +1167,17 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
         evals[] += loc.total_eig
         if faithful_confirm
             # faithful early-stop confirm: confirm candidates in increasing cheap order, stopping as
-            # soon as the next cheap onset ≥ the best faithful (the cheap edge lower-bounds faithful).
+            # soon as the next cheap onset ≥ the pruning bound (the cheap edge lower-bounds faithful).
+            # The bound is the running faithful incumbent `win_f`; when the canonical w≥1 box was
+            # infeasible (win_f = Inf — e.g. ExB/rotational suppression raised γ* so no w≥1 mode clears
+            # threshold), fall back to the scan ceiling `shi` (= FACTOR_IN). A candidate whose cheap
+            # AE-band onset already exceeds FACTOR_IN cannot have a faithful onset below it (faithful ≥
+            # cheap), so it can never be the binding critical factor and is pruned exactly — this keeps
+            # the extension from faithful-confirming EVERY narrow candidate when the w≥1 box is
+            # infeasible (the ExB-on slowdown). `win_f` itself stays Inf so `sfmin` is unaffected.
             for c in loc.cands
-                (isfinite(win_f) && c[3] >= win_f) && break
+                stop_bound = isfinite(win_f) ? win_f : shi
+                c[3] >= stop_bound && break
                 r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = c[1], width = c[2],
                         gamma_thresh = gth, scan_lo = scan_lo, scan_hi = shi, threaded = true,
                         inner = inner, team = team, use_gpu = use_gpu)
@@ -1482,8 +1495,17 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
                 n_eig_seed = n_eig_seed, k_descend = k_descend, inner = inner, team = team,
                 use_gpu = use_gpu)
         total_eig += loc.total_eig
+        # Early-stop pruning bound: candidates are sorted ascending by their cheap/descended onset,
+        # which lower-bounds the faithful keep onset, so once a candidate's cheap onset reaches the
+        # bound none below it can win. The bound is the canonical w≥1 incumbent `best_f`; when that
+        # box was infeasible (best_f = Inf — e.g. ExB/rotational suppression raised γ* so no w≥1 mode
+        # clears threshold) fall back to the scan ceiling `shi` (= FACTOR_IN). A candidate whose cheap
+        # onset already exceeds FACTOR_IN cannot have a faithful onset below it, so it is pruned
+        # exactly — without this the extension faithful-confirms EVERY narrow candidate (the ExB-on
+        # slowdown). `best_f` itself stays Inf so `sfmin`/`status` are unaffected.
         for c in loc.cands
-            c[3] >= best_f && break   # candidates are sorted by cheap/descended onset; none below can win
+            stop_bound = isfinite(best_f) ? best_f : shi
+            c[3] >= stop_bound && break
             r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = c[1], width = c[2],
                     gamma_thresh = gth, scan_lo = slo, scan_hi = shi, threaded = true,
                     inner = inner, team = team, use_gpu = use_gpu)
