@@ -104,9 +104,16 @@ function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_g
     # `AD_FAITHFUL_CONFIRM=0` switches the width extension to the cheap "pure AD" path (no IFLUX=true
     # confirm anywhere → reports the AE-band onset, which does NOT match :robust_ad bitwise). Default
     # ("1") keeps the production faithful-confirmed behavior.
+    #
+    # `AD_EXTEND_MODE=wide` switches to the cheap single-pass width extension (widened-box log-seeded
+    # multistart, ~7× cheaper than the default `locate`, conservative but not bitwise-:robust_ad) —
+    # intended for fast NN-database generation. Default ("locate") keeps the production behavior.
     ad_confirm = get(ENV, "AD_FAITHFUL_CONFIRM", "1") != "0"
+    ad_mode    = Symbol(get(ENV, "AD_EXTEND_MODE", "locate"))
+    ad_kdesc   = parse(Int, get(ENV, "AD_WIDE_KDESC", "2"))   # :wide multistart breadth (mode=:wide only)
     res = critical_factor_optimize(inputsEP, inputsPR; use_gpu=use_gpu, faithful_confirm=ad_confirm,
-                                   extend_width=true, scan_lo=Float64(inputsEP.FACTOR_IN) / 512.0,
+                                   extend_width=true, extend_mode=ad_mode, wide_kdesc=ad_kdesc,
+                                   scan_lo=Float64(inputsEP.FACTOR_IN) / 512.0,
                                    inner=inner, team=team)
 
     # Prefer the all-filter (faithful) onset when a mode actually binds; otherwise

@@ -893,6 +893,18 @@ It does NOT alter the default (`extend_width=false`) behavior, so
 [`_locate_extended`](@ref)'s own inner `:ad` descents (which pass it unset)
 remain `w≥1`.
 
+`extend_mode` (default `:locate`) selects HOW the extension searches:
+- `:locate` — the `_locate_extended` log-grid + `k_descend`-way multistart above
+  (production; matches `:robust_ad` bitwise under `faithful_confirm`).
+- `:wide` — a much cheaper single-pass scheme: widen the *main* descent box down
+  to `w_lo`, seed it with a denser **log-spaced** `w` grid, descend the top
+  `wide_kdesc` (default 2) well-separated seeds, and faithful-confirm the best.
+  ~7× cheaper than `:locate`, recovers most of the narrow-width gain over the
+  `w≥1` baseline, and stays *conservative* (confirmed keep onset ≥ truth) — it
+  does NOT generally match `:robust_ad` bitwise. Good for fast NN-database
+  generation. With `faithful_confirm=false` `:wide` reports the (unfiltered)
+  AE-band onset and can under-predict, like the pure `:locate` path.
+
 `extend_width` interacts with **`faithful_confirm`**:
 - `faithful_confirm=true` (the `solver=:ad` scan default): the located narrow
   candidates are faithful-confirmed (`IFLUX=true`) with an early-stop bound, so
@@ -927,6 +939,7 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
                                   extend_width::Bool = false, w_lo::Float64 = 0.05, ky_lo::Float64 = 0.05,
                                   nseed_ky_ext::Int = 6, nseed_w_ext::Int = 10,
                                   n_eig_seed::Int = 12, k_descend::Int = 6,
+                                  extend_mode::Symbol = :locate, wide_kdesc::Int = 2,
                                   inner::Symbol = :threads,
                                   team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
                                   use_gpu::Bool = false, verbose::Bool = false)
@@ -934,6 +947,16 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
     shi = scan_hi === nothing ? Float64(inputsEP.FACTOR_IN) : scan_hi
     wlo, whi = w_bounds === nothing ? (Float64(inputsEP.WIDTH_MIN), Float64(inputsEP.WIDTH_MAX)) : w_bounds
     kylo, kyhi = ky_bounds
+
+    # `extend_mode = :wide` (single-pass width extension): widen the descent/seed box down to `w_lo`
+    # and run a small well-separated multistart of the SAME fast descent (+ faithful confirm) over the
+    # whole width range, instead of the `:locate` log-grid + many-descent machinery. Much cheaper than
+    # `:locate`, recovers most of the narrow-width accuracy, and stays conservative (it reports the
+    # confirmed keep onset). `:locate` (default) keeps the production `:robust_ad`-matching behavior.
+    wide = extend_width && extend_mode == :wide
+    if wide && w_bounds === nothing
+        wlo = w_lo
+    end
 
     evals = Ref(0)
     fval = function (ky, w; f_start = nothing)
@@ -950,20 +973,76 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
         r
     end
 
+    # ── one projected-gradient descent (backtracking line search) from a single seed ──
+    descend = function (ky0::Float64, w0::Float64, f0::Float64)
+        ky, w, f = ky0, w0, f0
+        iters = 0; converged = false
+        for it in (isfinite(f0) ? (1:maxiter) : (1:0))
+            iters = it
+            r = fgrad(ky, w; f_start = isfinite(f) ? f : nothing)
+            (!r.converged || !isfinite(r.f)) && break
+            gky, gw = r.grad
+            sky = (kyhi - kylo); sw = (whi - wlo)   # scale step by box so ky and w move comparably
+            gnorm = sqrt((gky * sky)^2 + (gw * sw)^2)
+            gnorm < gtol && (converged = true; break)
+            α = step0; improved = false; f_cur = r.f
+            for _ in 1:nbacktrack
+                dky = -α * gky * sky^2 / max(gnorm, 1e-30)
+                dw  = -α * gw  * sw^2  / max(gnorm, 1e-30)
+                ky_t = _clamp_to(ky + dky, kylo, kyhi)
+                w_t  = _clamp_to(w  + dw,  wlo, whi)
+                f_pred = f_cur + gky * (ky_t - ky) + gw * (w_t - w)   # IFT first-order warm start
+                f_t = fval(ky_t, w_t; f_start = isfinite(f_pred) && f_pred > 0 ? f_pred : nothing)
+                if f_t < f_cur - 1e-10
+                    small = abs(ky_t - ky) + abs(w_t - w) < xtol
+                    ky, w, f = ky_t, w_t, f_t; improved = true
+                    small && (converged = true)
+                    break
+                end
+                α *= 0.5
+            end
+            verbose && @info "cfo" iter=it ky=ky w=w f=f grad=(gky, gw) gnorm=gnorm improved=improved
+            improved || (converged = true; break)   # no descent direction within the box → local min
+        end
+        return (; ky, w, f, iters, converged)
+    end
+
+    # greedily pick up to `k` well-separated seeds (distinct basins) from a sorted-by-onset pool
+    pick_starts = function (pool::Vector{Tuple{Float64,Float64,Float64}}, k::Int)
+        picks = Tuple{Float64,Float64,Float64}[]
+        for s in pool
+            if all(p -> abs(log(s[2]) - log(p[2])) > 0.5 || abs(s[1] - p[1]) > 0.2, picks)
+                push!(picks, s)
+            end
+            length(picks) >= k && break
+        end
+        isempty(picks) ? (isempty(pool) ? Tuple{Float64,Float64,Float64}[] : [pool[1]]) : picks
+    end
+
     # ── seed: warm start from a caller-provided (ky,w) (e.g. neighbor radius), or
     #    a coarse grid (mirrors kwscale_scan's first round). The grid is the robust
     #    fallback if the warm seed is infeasible. ──
     best_f = Inf; best_ky = NaN; best_w = NaN
+    seed_pool = Tuple{Float64,Float64,Float64}[]   # (ky, w, AE-band onset), ranked ascending below
     if seed !== nothing
         sky = _clamp_to(seed[1], kylo, kyhi); sw = _clamp_to(seed[2], wlo, whi)
         f = fval(sky, sw)
         if isfinite(f)
-            best_f = f; best_ky = sky; best_w = sw
+            best_f = f; best_ky = sky; best_w = sw; push!(seed_pool, (sky, sw, f))
         end
     end
-    if !isfinite(best_f)
-        kys = [kylo + (kyhi - kylo) * (i - 0.5) / nseed_ky for i in 1:nseed_ky]
-        ws  = nseed_w == 1 ? [0.5 * (wlo + whi)] : [wlo + (whi - wlo) * (i - 1) / (nseed_w - 1) for i in 1:nseed_w]
+    # `:wide` always sweeps the (log-w) grid so the multistart sees the narrow band, even with a warm seed.
+    if !isfinite(best_f) || wide
+        if wide
+            # log-spaced w (spans ~decades; concentrates resolution at narrow w) + denser ky.
+            kys = nseed_ky_ext <= 1 ? [0.5 * (kylo + kyhi)] :
+                  [kylo + (kyhi - kylo) * (i - 1) / (nseed_ky_ext - 1) for i in 1:nseed_ky_ext]
+            ws  = nseed_w_ext <= 1 ? [sqrt(wlo * whi)] :
+                  [exp(log(wlo) + (log(whi) - log(wlo)) * (i - 1) / (nseed_w_ext - 1)) for i in 1:nseed_w_ext]
+        else
+            kys = [kylo + (kyhi - kylo) * (i - 0.5) / nseed_ky for i in 1:nseed_ky]
+            ws  = nseed_w == 1 ? [0.5 * (wlo + whi)] : [wlo + (whi - wlo) * (i - 1) / (nseed_w - 1) for i in 1:nseed_w]
+        end
         seedpts = [(ky, w) for ky in kys for w in ws]
         # Each seed solve is independent → saturate the team/threads. The eval-counting
         # `fval` closure mutates a coordinator-local Ref that remote workers can't update,
@@ -979,11 +1058,13 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
         for (idx, fr) in enumerate(seedres)
             f, ne = fr
             evals[] += ne
+            isfinite(f) && push!(seed_pool, (seedpts[idx][1], seedpts[idx][2], f))
             if f < best_f
                 best_f = f; best_ky = seedpts[idx][1]; best_w = seedpts[idx][2]
             end
         end
     end
+    sort!(seed_pool, by = t -> t[3])
     f_seedmin = best_f; ky_seed = best_ky; w_seed = best_w
     # When `extend_width` is set we DON'T bail on an infeasible w≥1-box seed: a narrow
     # (w<WIDTH_MIN) mode may still be feasible and is recovered by the width extension below.
@@ -994,47 +1075,20 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
                 extended = false, n_ext_confirm = 0)
     end
 
-    # ── projected-gradient descent with backtracking line search ──
-    ky, w = best_ky, best_w
-    f = best_f
-    iters = 0
-    converged = false
-    for it in (isfinite(best_f) ? (1:maxiter) : (1:0))
-        iters = it
-        r = fgrad(ky, w; f_start = isfinite(f) ? f : nothing)
-        (!r.converged || !isfinite(r.f)) && break
-        gky, gw = r.grad
-        # scale step by the box so ky and w move comparably
-        sky = (kyhi - kylo); sw = (whi - wlo)
-        gnorm = sqrt((gky * sky)^2 + (gw * sw)^2)
-        gnorm < gtol && (converged = true; break)
-        α = step0
-        improved = false
-        f_cur = r.f
-        for _ in 1:nbacktrack
-            dky = -α * gky * sky^2 / max(gnorm, 1e-30)
-            dw  = -α * gw  * sw^2  / max(gnorm, 1e-30)
-            ky_t = _clamp_to(ky + dky, kylo, kyhi)
-            w_t  = _clamp_to(w  + dw,  wlo, whi)
-            # warm-start the trial solve from the first-order IFT prediction of f★
-            f_pred = f_cur + gky * (ky_t - ky) + gw * (w_t - w)
-            f_t = fval(ky_t, w_t; f_start = isfinite(f_pred) && f_pred > 0 ? f_pred : nothing)
-            if f_t < f_cur - 1e-10
-                if abs(ky_t - ky) + abs(w_t - w) < xtol
-                    ky, w, f = ky_t, w_t, f_t; improved = true; converged = true
-                    break
-                end
-                ky, w, f = ky_t, w_t, f_t; improved = true
-                break
-            end
-            α *= 0.5
+    # ── local descent(s): one from the best seed, or a small well-separated multistart for `:wide`
+    #    (descend the top-`wide_kdesc` distinct seeds so different narrow/core basins are explored). ──
+    optima = NamedTuple[]
+    if isfinite(best_f)
+        starts = wide ? pick_starts(seed_pool, max(1, wide_kdesc)) : [(best_ky, best_w, best_f)]
+        for s in starts
+            push!(optima, descend(s[1], s[2], s[3]))
         end
-        verbose && @info "cfo" iter=it ky=ky w=w f=f grad=(gky, gw) gnorm=gnorm improved=improved
-        if !improved
-            converged = true   # no descent direction within the box → local min
-            break
-        end
+        sort!(optima, by = o -> o.f)
+    else
+        push!(optima, (; ky = best_ky, w = best_w, f = best_f, iters = 0, converged = false))
     end
+    ky = optima[1].ky; w = optima[1].w; f = optima[1].f
+    iters = sum(o -> o.iters, optima); converged = optima[1].converged
 
     # ── canonical (w≥1) faithful confirm of the descent optimum ──
     # With `faithful_confirm` the running best below is carried in FAITHFUL (keep-onset) terms,
@@ -1061,7 +1115,32 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
     # `:robust_ad` — no full faithful grid). It captures the narrow EP-driven AE modes (w≪WIDTH_MIN)
     # the canonical w≥1 :ad descent structurally misses. The w≥1 descent is kept as a floor (the AD
     # descent can under-resolve the dense core min). ──
-    if extend_width
+    if extend_width && wide
+        # ── `:wide` extension: the multistart descents above already swept the narrow band. Fold the
+        # remaining well-separated optima (sorted ascending by AE-band onset) into the running best.
+        if faithful_confirm
+            for o in optima[2:end]
+                (isfinite(win_f) && o.f >= win_f) && break   # cheap onset lower-bounds faithful
+                isfinite(o.f) || continue
+                r = marginal_factor_faithful(inputsEP, inputsPR; kyhat = o.ky, width = o.w,
+                        gamma_thresh = gth, scan_lo = scan_lo, scan_hi = shi, threaded = true,
+                        inner = inner, team = team, use_gpu = use_gpu)
+                n_ext_confirm += 1; evals[] += r.evals_full + r.evals_eig
+                if r.binding != :none && isfinite(r.factor_faithful) &&
+                   (!isfinite(win_f) || r.factor_faithful < win_f)
+                    win_f = r.factor_faithful; win_ky = o.ky; win_w = o.w; win_faithful = r
+                end
+            end
+        else
+            # pure `:wide` (no confirm): lowest descended AE-band onset (does NOT match :robust_ad).
+            for o in optima
+                if isfinite(o.f) && (!isfinite(win_f) || o.f < win_f)
+                    win_f = o.f; win_ky = o.ky; win_w = o.w; win_faithful = nothing
+                end
+            end
+        end
+        verbose && @info "cfo wide-extended" ky=win_ky w=win_w sfmin=win_f n_ext_confirm confirm=faithful_confirm
+    elseif extend_width
         loc = _locate_extended(inputsEP, inputsPR; gth = gth, slo = scan_lo, shi = shi, ky_lo = ky_lo,
                 w_lo = w_lo, w_hi = whi, nseed_ky = nseed_ky_ext, nseed_w = nseed_w_ext,
                 n_eig_seed = n_eig_seed, k_descend = k_descend, inner = inner, team = team,

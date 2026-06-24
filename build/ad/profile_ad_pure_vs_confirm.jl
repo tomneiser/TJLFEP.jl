@@ -42,6 +42,26 @@ function run_case(opts, prof, ir)
 
     row = Dict{Symbol,Any}(:ir => ir)
 
+    if "orig" in AX_MODES
+        # The ORIGINAL fast :ad: single w≥1 descent + 1 faithful confirm, NO _locate_extended grid.
+        t = @elapsed o = critical_factor_optimize(ep, prof; faithful_confirm = true, extend_width = false, kw...)
+        of = faithful_of(o)
+        row[:orig] = of; row[:orig_w] = o.width; row[:orig_ev] = o.evals; row[:orig_t] = t
+        @printf("  orig :ad (w≥1)    sfmin=%.5g  at (ky=%.4f, w=%.4f)  evals=%d  (no locate grid)  %.1fs\n",
+                of, o.kyhat, o.width, o.evals, t); flush(stdout)
+    end
+    if "wide" in AX_MODES
+        # The "why not just widen the box?" test: the SAME cheap solver (single seed-scan + ONE
+        # projected-gradient descent + 1 faithful confirm), but with the descent/seed box widened to
+        # w∈[0.05, WIDTH_MAX] and denser seeds — extend_width=false, so NO multi-descent locate grid.
+        wmax = Float64(ep.WIDTH_MAX)
+        t = @elapsed wd = critical_factor_optimize(ep, prof; faithful_confirm = true, extend_width = false,
+                w_bounds = (0.05, wmax), nseed_ky = 6, nseed_w = 10, kw...)
+        wf = faithful_of(wd)
+        row[:wide] = wf; row[:wide_w] = wd.width; row[:wide_ev] = wd.evals; row[:wide_t] = t
+        @printf("  wide :ad (1 desc) sfmin=%.5g  at (ky=%.4f, w=%.4f)  evals=%d  (extended box, single descent)  %.1fs\n",
+                wf, wd.kyhat, wd.width, wd.evals, t); flush(stdout)
+    end
     if "confirm" in AX_MODES
         t = @elapsed c = critical_factor_optimize(ep, prof; faithful_confirm = true, extend_width = true, kw...)
         cf = faithful_of(c)
@@ -89,25 +109,27 @@ function main()
     end
 
     println("\n===================== SUMMARY (sfmin) =====================")
-    @printf("  %-5s %-12s %-12s %-12s %-10s %-10s\n", "IR", "confirm", "pure", "robust", "pure/conf", "pure/rob")
+    @printf("  %-5s %-11s %-11s %-11s %-11s %-11s\n", "IR", "orig(w≥1)", "wide(1desc)", "confirm", "pure", "robust")
     for r in rows
-        cf = get(r, :confirm, NaN); pu = get(r, :pure, NaN); ro = get(r, :robust, NaN)
-        @printf("  %-5d %-12.5g %-12.5g %-12.5g %-10.3f %-10.3f\n",
-                r[:ir], cf, pu, ro, pu / max(cf, eps()), pu / max(ro, eps()))
+        @printf("  %-5d %-11.5g %-11.5g %-11.5g %-11.5g %-11.5g\n",
+                r[:ir], get(r, :orig, NaN), get(r, :wide, NaN), get(r, :confirm, NaN),
+                get(r, :pure, NaN), get(r, :robust, NaN))
     end
 
-    println("\n===================== SUMMARY (cost) =====================")
-    @printf("  %-5s %-12s %-12s %-12s %-10s %-10s\n",
-            "IR", "conf_t", "pure_t", "rob_t", "conf_ev", "pure_ev")
-    tc = tp = tr = 0.0
+    println("\n===================== SUMMARY (cost: per-radius wallclock s / evals) =====================")
+    @printf("  %-5s %-9s %-9s %-9s %-9s %-9s | %-8s %-8s %-8s\n",
+            "IR", "orig_t", "wide_t", "conf_t", "pure_t", "rob_t", "orig_ev", "wide_ev", "conf_ev")
+    to = tw = tc = tp = tr = 0.0
     for r in rows
-        ct = get(r, :confirm_t, 0.0); pt = get(r, :pure_t, 0.0); rt = get(r, :robust_t, 0.0)
-        tc += ct; tp += pt; tr += rt
-        @printf("  %-5d %-12.2f %-12.2f %-12.2f %-10d %-10d\n",
-                r[:ir], ct, pt, rt, get(r, :confirm_ev, 0), get(r, :pure_ev, 0))
+        ot = get(r, :orig_t, 0.0); wt = get(r, :wide_t, 0.0); ct = get(r, :confirm_t, 0.0)
+        pt = get(r, :pure_t, 0.0); rt = get(r, :robust_t, 0.0)
+        to += ot; tw += wt; tc += ct; tp += pt; tr += rt
+        @printf("  %-5d %-9.2f %-9.2f %-9.2f %-9.2f %-9.2f | %-8d %-8d %-8d\n",
+                r[:ir], ot, wt, ct, pt, rt, get(r, :orig_ev, 0), get(r, :wide_ev, 0), get(r, :confirm_ev, 0))
     end
-    @printf("  %-5s %-12.2f %-12.2f %-12.2f\n", "SUM", tc, tp, tr)
-    tp > 0 && tc > 0 && @printf("  pure/confirm wallclock = %.3f   (confirm/pure speedup = %.2fx)\n", tp / tc, tc / tp)
+    @printf("  %-5s %-9.2f %-9.2f %-9.2f %-9.2f %-9.2f\n", "SUM", to, tw, tc, tp, tr)
+    to > 0 && @printf("  wide/orig = %.2fx   pure/orig = %.2fx   confirm/orig = %.2fx   (vs the fast single descent)\n",
+                      tw / max(to, eps()), tp / max(to, eps()), tc / max(to, eps()))
 end
 
 main()
