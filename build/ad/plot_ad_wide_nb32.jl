@@ -31,7 +31,7 @@ series = [
         :black, :solid, :diamond),
     (":ad :locate (extended)", joinpath(BUILD, "gacode_nb32_scan20_jgpu_ad_54949227_tasks", "sfmin_scan.txt"),
         :seagreen, :solid, :utriangle),
-    (":ad :wide (kdesc=2)", joinpath(BUILD, "gacode_nb32_scan20_jgpu_ad_wide_54949226_tasks", "sfmin_scan.txt"),
+    (":ad :wide (kdesc=2, guarded)", joinpath(BUILD, "gacode_nb32_scan20_1node_ad_54979250_tasks", "sfmin_scan.txt"),
         :firebrick, :solid, :star5),
 ]
 
