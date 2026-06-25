@@ -340,7 +340,78 @@ tracks grid on clean radii but spikes/caps at IR=17, 33, 95.
 
 ---
 
-## 6. Reproduction
+## 6. ExB shear / rotational suppression: why it is so much slower (and why that is mostly intrinsic)
+
+`ROTATIONAL_SUPPRESSION_FLAG=1` (the ExB-shear path) makes a TJLFEP run **much** longer than the
+same case with shear off. Investigation (DIII-D example, IR=74, forced-`γ*` sweep on 1×A100,
+`USE_GPU=1`) shows this is **largely intrinsic to the physics regime, not a solver bug**.
+
+### 6.1 Mechanism
+ExB shear enters TGLF-EP through the **quench rule**, not the spectral shift: it **raises the keep
+threshold `γ*`** (`gamma_thresh`). The chain is:
+
+1. The raised `γ*` **suppresses every cheap canonical `w ≥ 1` mode** — none clear the threshold, so
+   the canonical-box incumbent is `Inf` (`status` would be `no_onset` on the `w≥1` box alone).
+2. With the easy modes gone, the only feasible instabilities are the **narrow (`w ≪ 1`) EP-driven
+   AE modes of §4** — which can *only* be found by the width-extension locate (`_locate_extended`
+   → `:ad` descents). So the solver is forced into the expensive narrow-band search on *every*
+   radius where shear bites, instead of just reading off the `w≥1` grid.
+3. Each descent step evaluates the narrow `γ_AE(factor)` band via `marginal_factor` (`ae_band=true`),
+   and **`γ_AE(factor)` is a narrow bump, not monotone**. Many probed `(ky,w)` nodes are *fully
+   suppressed* (bump peak `< γ*`), and confirming "no onset" there costs a full `nscan`-point global
+   scan each (these surface as the "no sign change" warnings).
+
+### 6.2 Cost attribution (per-phase eigensolve counters)
+The phase-level eigensolve instrumentation (`eig_coarse / eig_zoom / eig_loc_cheap / eig_loc_desc /
+eig_ext_confirm`, added in `e4f2cb5`) localises the entire cost growth to the **width-extension
+descents** (`loc_desc`). Forced-`γ*` sweep at IR=74:
+
+| `γ*` | `sfmin` | `loc_desc` evals | wall | `w≥1` box |
+|------|---------|------------------|------|-----------|
+| 1e-7 | 0.21199 | 155 | 91 s | feasible (cheap) |
+| 0.05 | 0.24525 | 5176 | 341 s | **suppressed** |
+| 0.10 | 0.32366 | 5598 | 358 s | **suppressed** |
+| 0.20 | 0.52447 | 6642 | 407 s | **suppressed** |
+| 0.40 | 1.1874 | 2921 | 199 s | **suppressed** |
+
+At `γ*=1e-7` (shear off) the `w≥1` box is feasible and `loc_desc` is negligible (155); as soon as
+shear suppresses that box, `loc_desc` jumps ~35× and dominates the wall time. The `sfmin` values are
+the genuine narrow-AE thresholds — the descents are **finding the answer**, not wasting time.
+
+### 6.3 The one real bug (fixed) and two micro-optimisations that did not help
+- **Fixed (`ad93a78`): unbounded faithful-confirm.** The width-extension early-stop bound used the
+  incumbent critical factor `win_f`; when the `w≥1` box was suppressed (`win_f = Inf`) the bound was
+  `Inf`, so **every** narrow candidate got a faithful confirm. Falling the bound back to the scan
+  ceiling `shi` (= `FACTOR_IN`) makes the prune exact (a candidate whose cheap onset already exceeds
+  `FACTOR_IN` cannot be the binding factor) and removes the pathological confirm blow-up. This is the
+  actual ExB-on bug.
+- **Fixed (`e4f2cb5`): `marginal_factor` monotone early-out was unsafe for the AE band.** The early-out
+  probes `scan_hi`/`scan_lo` to settle "always stable/unstable" in ≤2 eigensolves, assuming `γ_lead`
+  is monotone in the factor. For `ae_band=true` the filtered `γ_AE(f)` is a **bump**, so the early-out
+  could miss an interior unstable window. Gated with `!ae_band` (valid only for the raw
+  max-over-modes `γ_lead`). Correctness fix, not a speedup.
+- **Tried and reverted — localized bidirectional warm-start.** Hypothesis: the descent's
+  `marginal_factor` calls fall back to full global scans because the geometric warm-start misses the
+  moving bump. A short local log-scan fallback was **~2–4% slower** (`sfmin` identical): the warm-starts
+  mostly *succeed* already; there are just very many of them.
+- **Tried and reverted — margin-guarded descent prune.** Hypothesis: descents whose cheap onset is
+  already above the incumbent are wasted. **Bit-identical to baseline** (no effect): at the
+  shear-on radii the incumbent *is* `Inf` (the `w≥1` box is suppressed), so the bound is `shi` and
+  nothing is pruned — confirming the descents are necessary, not wasteful.
+
+### 6.4 Conclusion
+The ExB-shear slowdown is **mostly intrinsic**: shear raises `γ*`, suppresses the cheap `w≥1` modes,
+and forces the narrow-bump AE search of §4 on every affected radius. The one true inefficiency (the
+`Inf`-bound confirm blow-up) is fixed in `ad93a78`. Beyond that, the remaining cost is the genuine
+narrow-band locate, and further speedup requires **accuracy/speed trade-offs** (reduce `k_descend`,
+loosen the descent tolerance / cap `maxiter`, or use a coarser `nscan` for suppression detection) —
+each trading a small `sfmin` risk for wall time. Reproduce with `build/ad/test_exb_earlystop.jl` +
+`build/ad/batch_test_exb_earlystop.sh` (forced-`γ*` sweep; the script's per-phase `eig:` line prints
+the §6.2 breakdown).
+
+---
+
+## 7. Reproduction
 
 Experiment harnesses (run from `build/`, premium GPU, MPS team=4):
 
