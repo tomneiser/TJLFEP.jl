@@ -38,6 +38,13 @@ const SCAN_N = parse(Int, get(ENV, "SCAN_N", "20"))
 const N_BASIS = parse(Int, get(ENV, "N_BASIS", "32"))
 const NGRID = parse(Int, get(ENV, "NGRID", "201"))
 const ALPHA_SOLVER = Symbol(get(ENV, "ALPHA_SOLVER", "stiff"))
+# Pin the critical-factor engine explicitly (the ActorTJLFEP default is now :ad). This FUSE-dd
+# timing run benchmarks the grid path by default; override with SOLVER=ad|robust_ad|truth.
+const SOLVER = Symbol(get(ENV, "SOLVER", "grid"))
+# solver=:ad width-extension knobs (honored when SOLVER=ad; harmless otherwise).
+const EXTEND_MODE = Symbol(get(ENV, "AD_EXTEND_MODE", "locate"))
+const WIDE_KDESC = parse(Int, get(ENV, "AD_WIDE_KDESC", "2"))
+const FAITHFUL_CONFIRM = get(ENV, "AD_FAITHFUL_CONFIRM", "1") != "0"
 const INNER = Symbol(get(ENV, "INNER", "threads"))
 const MPS_TEAM = parse(Int, get(ENV, "MPS_TEAM", "0"))
 const OUT_DIR = get(ENV, "TJLFEP_OUT_DIR", "")
@@ -129,9 +136,12 @@ act.ActorTJLFEP.rho_scan = collect(range(0.05, 0.95; length=SCAN_N))
 act.ActorTJLFEP.n_basis = N_BASIS
 act.ActorTJLFEP.use_gpu = true
 act.ActorTJLFEP.alpha_solver = ALPHA_SOLVER
+act.ActorTJLFEP.solver = SOLVER
 # MPS-team concurrency on the FUSE-dd path (Section 8). Guarded so older ActorTJLFEP
 # versions that lack these params still run (the timing harness sets neither var).
-for (prop, val) in ((:inner, INNER), (:mps_team, MPS_TEAM))
+for (prop, val) in ((:inner, INNER), (:mps_team, MPS_TEAM),
+                    (:extend_mode, EXTEND_MODE), (:wide_kdesc, WIDE_KDESC),
+                    (:faithful_confirm, FAITHFUL_CONFIRM))
     try
         setproperty!(act.ActorTJLFEP, prop, val)
     catch err

@@ -152,7 +152,8 @@ function _dd_radius_output(Options, profile, i::Int;
         use_gpu::Bool=false, inner::Symbol=:threads,
         team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
         ql_flux_scan::Bool=false, printout::Bool=false, solver::Symbol=:grid,
-        refine_rounds::Int=1)
+        refine_rounds::Int=1, extend_mode::Union{Nothing,Symbol}=nothing,
+        wide_kdesc::Union{Nothing,Int}=nothing, faithful_confirm::Union{Nothing,Bool}=nothing)
     arrTGLFEP_i = deepcopy(Options)
     arrMTGLF_i = deepcopy(profile)
 
@@ -167,7 +168,8 @@ function _dd_radius_output(Options, profile, i::Int;
     println("=============================================================")
 
     return TJLFEP.mainsub(arrTGLFEP_i, arrMTGLF_i, printout; use_gpu=use_gpu, inner=inner,
-        team=team, ql_flux_scan=ql_flux_scan, solver=solver, refine_rounds=refine_rounds)
+        team=team, ql_flux_scan=ql_flux_scan, solver=solver, refine_rounds=refine_rounds,
+        extend_mode=extend_mode, wide_kdesc=wide_kdesc, faithful_confirm=faithful_confirm)
 end
 
 """
@@ -184,7 +186,8 @@ cross-radius post-processing below is identical to the in-process path.
 function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any};
                 printout::Bool=false, saveFiles::Bool=false, dir::String="ddFiles", use_gpu::Bool=false,
                 ql_flux_scan::Bool=false, inner::Symbol=:threads, mps_team::Int=0, solver::Symbol=:grid,
-                refine_rounds::Int=1,
+                refine_rounds::Int=1, extend_mode::Union{Nothing,Symbol}=nothing,
+                wide_kdesc::Union{Nothing,Int}=nothing, faithful_confirm::Union{Nothing,Bool}=nothing,
                 precomputed_dir::AbstractString=get(ENV, "TJLFEP_PRECOMPUTED_DIR", ""))
 
     Options, profile, extraEP, expro_state = preprocess_imas_inputs(dd, rho, OptionsDict; verbose=printout)
@@ -209,7 +212,8 @@ function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::D
         # SPMD layout (run_tjlfep inner=:mps_team -> runTHD_dd_radius per task + this merge).
         pmap_outputs = pmap(i -> _dd_radius_output(Options, profile, i;
             use_gpu=use_gpu, inner=:threads, team=nothing, ql_flux_scan=ql_flux_scan,
-            printout=printout, solver=solver, refine_rounds=refine_rounds), 1:n_ir)
+            printout=printout, solver=solver, refine_rounds=refine_rounds,
+            extend_mode=extend_mode, wide_kdesc=wide_kdesc, faithful_confirm=faithful_confirm), 1:n_ir)
     else
         @info "runTHD(dd): loading precomputed per-radius results (SPMD merge)" precomputed_dir n_ir
         pmap_outputs = map(1:n_ir) do i
@@ -499,7 +503,8 @@ function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::D
 end  # End of struct-based runTHD
 
 """
-    runTHD_dd_radius(dd, rho, OptionsDict, scan_index; out_dir, use_gpu, inner, team, ql_flux_scan)
+    runTHD_dd_radius(dd, rho, OptionsDict, scan_index; out_dir, use_gpu, inner, team, ql_flux_scan,
+                     solver, refine_rounds, extend_mode, wide_kdesc, faithful_confirm)
 
 SPMD per-radius entry point (DIII-D-style layout). Runs the kw-scan for the single
 radius `scan_index` and serializes the `pmap`-element result to `out_dir/task_<scan_index>.jls`
@@ -518,7 +523,8 @@ function TJLFEP.runTHD_dd_radius(dd::IMAS.dd, rho::AbstractVector{Float64},
         inner::Symbol=:mps_team,
         team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
         ql_flux_scan::Bool=false, printout::Bool=false, solver::Symbol=:grid,
-        refine_rounds::Int=1)
+        refine_rounds::Int=1, extend_mode::Union{Nothing,Symbol}=nothing,
+        wide_kdesc::Union{Nothing,Int}=nothing, faithful_confirm::Union{Nothing,Bool}=nothing)
     Options, profile, _, _ = preprocess_imas_inputs(dd, rho, OptionsDict; verbose=printout)
     1 <= scan_index <= Options.SCAN_N ||
         error("runTHD_dd_radius: scan_index=$scan_index out of range 1:$(Options.SCAN_N)")
@@ -528,7 +534,8 @@ function TJLFEP.runTHD_dd_radius(dd::IMAS.dd, rho::AbstractVector{Float64},
 
     output = _dd_radius_output(Options, profile, scan_index;
         use_gpu=use_gpu, inner=inner, team=team, ql_flux_scan=ql_flux_scan, printout=printout,
-        solver=solver, refine_rounds=refine_rounds)
+        solver=solver, refine_rounds=refine_rounds, extend_mode=extend_mode,
+        wide_kdesc=wide_kdesc, faithful_confirm=faithful_confirm)
 
     task_file = joinpath(out_dir, "task_$(scan_index).jls")
     open(task_file, "w") do io

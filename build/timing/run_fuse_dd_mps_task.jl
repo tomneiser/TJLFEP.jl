@@ -14,6 +14,7 @@
 # Env knobs:
 #   SCAN_INDEX (set by mps-scan-wrapper.sh)  MPS_TEAM (8)  INNER (mps_team|threads)  USE_GPU (1)
 #   TJLFEP_OUT_DIR  TEAM_GPUS/CUDA_VISIBLE_DEVICES  JULIA_WORKER_THREADS (2)  TJLFEP_GPU_SYSIMAGE
+#   SOLVER (grid)  AD_EXTEND_MODE (locate)  AD_WIDE_KDESC (2)  AD_FAITHFUL_CONFIRM (1)
 
 using Pkg
 
@@ -34,6 +35,13 @@ using Distributed
 const NTEAM = parse(Int, get(ENV, "MPS_TEAM", "8"))
 const THREADS_PER_WORKER = parse(Int, get(ENV, "JULIA_WORKER_THREADS", "2"))
 const INNER = Symbol(get(ENV, "INNER", "mps_team"))
+# Critical-factor engine + solver=:ad width-extension knobs (must match the phase-1/phase-3
+# actor config so the per-radius result is consistent with the merge). Default :grid like the
+# in-process timing path; run_tjlfep exports SOLVER/AD_* into the batch env.
+const SOLVER = Symbol(get(ENV, "SOLVER", "grid"))
+const EXTEND_MODE = Symbol(get(ENV, "AD_EXTEND_MODE", "locate"))
+const WIDE_KDESC = parse(Int, get(ENV, "AD_WIDE_KDESC", "2"))
+const FAITHFUL_CONFIRM = get(ENV, "AD_FAITHFUL_CONFIRM", "1") != "0"
 const TEAM_GPUS = let s = get(ENV, "TEAM_GPUS", get(ENV, "CUDA_VISIBLE_DEVICES", "0"))
     String.(split(s, ',', keepempty=false))
 end
@@ -107,6 +115,7 @@ flush(stdout)
 
 t0 = time()
 task_file = TJLFEP.runTHD_dd_radius(dd, rho_scan, OptionsDict, SCAN_INDEX;
-    out_dir=TASKS_DIR, use_gpu=true, inner=INNER, team=TEAM)
+    out_dir=TASKS_DIR, use_gpu=true, inner=INNER, team=TEAM, solver=SOLVER,
+    extend_mode=EXTEND_MODE, wide_kdesc=WIDE_KDESC, faithful_confirm=FAITHFUL_CONFIRM)
 println("OK scan_index=$SCAN_INDEX -> $task_file in $(round(time() - t0; digits=1)) s")
 flush(stdout)

@@ -34,7 +34,9 @@ do not assemble the full QL buffers).
 """
 function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; use_gpu::Bool = false,
                  inner::Symbol = :threads, team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
-                 ql_flux_scan::Bool = false, solver::Symbol = :grid, refine_rounds::Int = 1)
+                 ql_flux_scan::Bool = false, solver::Symbol = :grid, refine_rounds::Int = 1,
+                 extend_mode::Union{Nothing,Symbol} = nothing, wide_kdesc::Union{Nothing,Int} = nothing,
+                 faithful_confirm::Union{Nothing,Bool} = nothing)
     solver in (:grid, :ad, :robust_ad, :truth) ||
         error("mainsub: solver must be :grid, :ad, :robust_ad, or :truth (got $solver)")
     x = inputsEP.PROCESS_IN
@@ -58,7 +60,8 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
             " SCAN_N=", inputsEP.SCAN_N, " N_BASIS=", inputsEP.N_BASIS)
 
         if solver == :ad
-            return _mainsub_ad(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
+            return _mainsub_ad(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team,
+                               extend_mode=extend_mode, wide_kdesc=wide_kdesc, faithful_confirm=faithful_confirm)
         elseif solver == :robust_ad
             return _mainsub_robust_ad(inputsEP, inputsPR, printout; use_gpu=use_gpu,
                                       inner=inner, team=team, refine_rounds=refine_rounds)
@@ -96,21 +99,26 @@ contexts overlapping via Hyper-Q), else they run in-process threaded.
 """
 function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_gpu::Bool = false,
                      inner::Symbol = :threads,
-                     team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+                     team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                     extend_mode::Union{Nothing,Symbol} = nothing,
+                     wide_kdesc::Union{Nothing,Int} = nothing,
+                     faithful_confirm::Union{Nothing,Bool} = nothing)
     # Use the SAME scan floor as :robust_ad (scan_hi/512, not the optimizer's 1e-3 default) so the
     # width-extended :ad reports the same floor-pinned sfmin as the production solver at near-marginal
     # radii (otherwise it would clip ~10× lower at the 1e-3 floor and spuriously beat :robust_ad).
     #
-    # `AD_FAITHFUL_CONFIRM=0` switches the width extension to the cheap "pure AD" path (no IFLUX=true
-    # confirm anywhere → reports the AE-band onset, which does NOT match :robust_ad bitwise). Default
-    # ("1") keeps the production faithful-confirmed behavior.
+    # The three AD-extension knobs resolve as: explicit kwarg (e.g. from the FUSE actor) when given,
+    # else the matching environment variable, else the production default. This keeps env-driven runs
+    # (timing harnesses, NN-DB scripts) working while letting callers pass the knobs directly.
     #
-    # `AD_EXTEND_MODE=wide` switches to the cheap single-pass width extension (widened-box log-seeded
-    # multistart, ~7× cheaper than the default `locate`, conservative but not bitwise-:robust_ad) —
-    # intended for fast NN-database generation. Default ("locate") keeps the production behavior.
-    ad_confirm = get(ENV, "AD_FAITHFUL_CONFIRM", "1") != "0"
-    ad_mode    = Symbol(get(ENV, "AD_EXTEND_MODE", "locate"))
-    ad_kdesc   = parse(Int, get(ENV, "AD_WIDE_KDESC", "2"))   # :wide multistart breadth (mode=:wide only)
+    # `faithful_confirm`/`AD_FAITHFUL_CONFIRM=0` → cheap "pure AD" path (no IFLUX=true confirm anywhere
+    #   → reports the AE-band onset, which does NOT match :robust_ad bitwise). Default keeps confirm on.
+    # `extend_mode`/`AD_EXTEND_MODE=wide` → cheap single-pass width extension (widened-box log-seeded
+    #   multistart, conservative but not bitwise-:robust_ad), vs the default `:locate`.
+    # `wide_kdesc`/`AD_WIDE_KDESC` → :wide multistart breadth (mode=:wide only).
+    ad_confirm = faithful_confirm === nothing ? (get(ENV, "AD_FAITHFUL_CONFIRM", "1") != "0") : faithful_confirm
+    ad_mode    = extend_mode === nothing ? Symbol(get(ENV, "AD_EXTEND_MODE", "locate")) : extend_mode
+    ad_kdesc   = wide_kdesc === nothing ? parse(Int, get(ENV, "AD_WIDE_KDESC", "2")) : wide_kdesc
     res = critical_factor_optimize(inputsEP, inputsPR; use_gpu=use_gpu, faithful_confirm=ad_confirm,
                                    extend_width=true, extend_mode=ad_mode, wide_kdesc=ad_kdesc,
                                    scan_lo=Float64(inputsEP.FACTOR_IN) / 512.0,
