@@ -140,7 +140,7 @@ recovers nearly all of that narrow-width accuracy in a single pass — tracking
 `:locate`/`robust_ad` to within ~1–2× (a mild, conservative over-prediction at the outer
 radii, e.g. ~1.7× at IR=64) and never falling below them.
 
-![Node-hours vs N_BASIS](docs/plots/scan20_timing_wide_lines.png?v=1)
+![Node-hours vs N_BASIS](docs/plots/scan20_timing_wide_lines.png?v=2)
 
 The plot reports each solver's **cost in node-hours** (nodes × wallclock) on the identical
 1-node-backfill layout (4 GPU workers draining a 20-radius claim queue), so the comparison
