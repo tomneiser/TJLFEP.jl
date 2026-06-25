@@ -230,7 +230,19 @@ function gamma_dgamma_dfactor(inputsEP::Options{Float64}, inputsPR::profile{Floa
         @warn "gamma_dgamma_dfactor: FACTOR_IN=$fclamp is at/over the clamp range [0, $(ForwardDiff.value(epD.FACTOR_MAX))]; dγ/dfactor assumes an interior point"
     end
 
-    res = _tjlf_run_dual(inputD, D; use_gpu = use_gpu)
+    # A singular TGLF dispersion matrix means no resolvable eigenmode — most commonly at the
+    # separatrix scan point (ir≈NR) of a synthesized equilibrium, or at very narrow widths the
+    # :wide seed grid probes. Mirror TJLFEP_ky's grid-path handling: treat the combo as AE-stable
+    # (γ=0, ∂γ=0) instead of letting the SingularException crash the whole AD scan.
+    local res
+    try
+        res = _tjlf_run_dual(inputD, D; use_gpu = use_gpu)
+    catch err
+        err isa SingularException || rethrow()
+        @warn "gamma_dgamma_dfactor: singular TGLF dispersion matrix (ir=$(inputsEP.IR), ky=$(ForwardDiff.value(inputD.KY)), width=$(ForwardDiff.value(inputD.WIDTH))); treating combo as stable (γ=0, no AE mode)" maxlog = 5
+        z = zeros(Float64, inputD.NMODES)
+        return (gamma = z, dgamma_dfactor = copy(z), freq = copy(z), dfreq_dfactor = copy(z), factor = fclamp)
+    end
     g = res.eigenvalue[:, 1, 1]   # [nmodes] growth rate (Dual)
     f = res.eigenvalue[:, 1, 2]   # [nmodes] frequency   (Dual)
 
@@ -306,7 +318,18 @@ function gamma_grad(inputsEP::Options{Float64}, inputsPR::profile{Float64};
         end
     end
 
-    res = _tjlf_run_dual(inputD, D; use_gpu = use_gpu)
+    # Singular dispersion matrix → no resolvable eigenmode; degrade gracefully to AE-stable
+    # (γ=0, all partials 0), matching TJLFEP_ky and gamma_dgamma_dfactor rather than crashing.
+    local res
+    try
+        res = _tjlf_run_dual(inputD, D; use_gpu = use_gpu)
+    catch err
+        err isa SingularException || rethrow()
+        @warn "gamma_grad: singular TGLF dispersion matrix (ir=$(inputsEP.IR), ky=$(ForwardDiff.value(inputD.KY)), width=$(ForwardDiff.value(inputD.WIDTH))); treating combo as stable (γ=0, no AE mode)" maxlog = 5
+        NM = inputD.NMODES
+        return (; gamma = zeros(Float64, NM), freq = zeros(Float64, NM),
+                  dgamma = zeros(Float64, NM, N), dfreq = zeros(Float64, NM, N), vars)
+    end
     g = res.eigenvalue[:, 1, 1]
     f = res.eigenvalue[:, 1, 2]
     NM = length(g)
@@ -403,6 +426,9 @@ Keywords:
   - `scan_lo=1e-3, scan_hi=10.0, nscan=8`  geometric samples used to auto-bracket
   - `ae_band = false`               track only the AE-band-filtered γ (freq <
                                     `FREQ_AE_UPPER`) instead of the raw max-over-modes γ
+  - `monotone_earlyout = true`      assume γ_lead↑ in `f` and probe `scan_hi`/`scan_lo`
+                                    first, settling "always stable/unstable" (the
+                                    high-γ*/ExB case) in ≤2 eigensolves instead of `nscan`
   - `tol = 1e-6`                    converged when `|g| < tol·(1+|γ_thresh|)` or step `< xtol`
   - `xtol = 1e-8`, `maxiter = 40`
   - `use_gpu = false`, `verbose = false`
@@ -414,7 +440,7 @@ function marginal_factor(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                          bracket::Union{Nothing,Tuple{Float64,Float64}} = nothing,
                          f_start::Union{Nothing,Float64} = nothing,
                          scan_lo::Float64 = 1.0e-3, scan_hi::Float64 = 10.0, nscan::Int = 8,
-                         ae_band::Bool = false,
+                         ae_band::Bool = false, monotone_earlyout::Bool = true,
                          tol::Float64 = 1.0e-6, xtol::Float64 = 1.0e-8, maxiter::Int = 40,
                          use_gpu::Bool = false, verbose::Bool = false)
     # nothing ⇒ use the case's own threshold (rotational γ* or 1e-7), matching kwscale_scan
@@ -458,9 +484,32 @@ function marginal_factor(inputsEP::Options{Float64}, inputsPR::profile{Float64};
         a = b = NaN
         if bracket === nothing
             fs = exp.(range(log(scan_lo), log(scan_hi); length = nscan))
+            # Early-out (γ_lead is monotone-increasing in the EP drive factor — the same
+            # assumption rtsafe and the f_start warm-start above already make): probe the
+            # TOP of the scan first. If even the largest factor keeps γ_lead below
+            # threshold the mode is stable across all of [scan_lo, scan_hi] — the dominant
+            # cost once ExB shear raises γ* (modes suppressed) — so settle it in ONE
+            # eigensolve instead of sweeping all nscan points; likewise detect "always
+            # unstable" from the bottom point. monotone_earlyout=false forces the old
+            # full sweep (e.g. to validate against a possibly non-monotone γ_lead(f)).
+            ghi = NaN
+            if monotone_earlyout
+                ghi = g(scan_hi)[1]
+                if ghi < 0
+                    return (; factor = scan_hi, gamma_lead = ghi + gamma_thresh,
+                            gamma = Float64[], freq = Float64[], iters = 0,
+                            evals = evals[], converged = false, bracket = (scan_lo, scan_hi))
+                end
+            end
             prev_f = fs[1]; prev_g = g(prev_f)[1]
+            if monotone_earlyout && prev_g >= 0
+                return (; factor = scan_lo, gamma_lead = prev_g + gamma_thresh,
+                        gamma = Float64[], freq = Float64[], iters = 0,
+                        evals = evals[], converged = false, bracket = (scan_lo, scan_hi))
+            end
             for f in fs[2:end]
-                gf = g(f)[1]
+                # reuse the top-endpoint probe rather than re-evaluating g(scan_hi)
+                gf = (monotone_earlyout && f == fs[end]) ? ghi : g(f)[1]
                 if prev_g < 0 && gf >= 0
                     a, ga, b, gb = prev_f, prev_g, f, gf
                     break
