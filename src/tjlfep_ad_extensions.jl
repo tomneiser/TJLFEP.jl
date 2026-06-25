@@ -426,7 +426,8 @@ Keywords:
   - `scan_lo=1e-3, scan_hi=10.0, nscan=8`  geometric samples used to auto-bracket
   - `ae_band = false`               track only the AE-band-filtered γ (freq <
                                     `FREQ_AE_UPPER`) instead of the raw max-over-modes γ
-  - `monotone_earlyout = true`      assume γ_lead↑ in `f` and probe `scan_hi`/`scan_lo`
+  - `monotone_earlyout = true`      (raw γ_lead only; auto-disabled when `ae_band`)
+                                    assume γ_lead↑ in `f` and probe `scan_hi`/`scan_lo`
                                     first, settling "always stable/unstable" (the
                                     high-γ*/ExB case) in ≤2 eigensolves instead of `nscan`
   - `tol = 1e-6`                    converged when `|g| < tol·(1+|γ_thresh|)` or step `< xtol`
@@ -484,16 +485,19 @@ function marginal_factor(inputsEP::Options{Float64}, inputsPR::profile{Float64};
         a = b = NaN
         if bracket === nothing
             fs = exp.(range(log(scan_lo), log(scan_hi); length = nscan))
-            # Early-out (γ_lead is monotone-increasing in the EP drive factor — the same
-            # assumption rtsafe and the f_start warm-start above already make): probe the
-            # TOP of the scan first. If even the largest factor keeps γ_lead below
-            # threshold the mode is stable across all of [scan_lo, scan_hi] — the dominant
-            # cost once ExB shear raises γ* (modes suppressed) — so settle it in ONE
-            # eigensolve instead of sweeping all nscan points; likewise detect "always
-            # unstable" from the bottom point. monotone_earlyout=false forces the old
-            # full sweep (e.g. to validate against a possibly non-monotone γ_lead(f)).
+            # Top-of-range early-out, VALID ONLY for the raw (max-over-modes) γ_lead, which is
+            # monotone-increasing in the EP drive factor — the same assumption rtsafe and the
+            # f_start warm-start above already make. Probe scan_hi first: if even the largest
+            # factor keeps γ_lead below threshold the mode is stable across all of [scan_lo,
+            # scan_hi], settled in ONE eigensolve instead of the full nscan sweep (and detect
+            # "always unstable" from the bottom point). DISABLED for ae_band=true: the
+            # AE-band-filtered γ_AE(f) is a NARROW BUMP (rises above γ* in an interior window,
+            # restabilises by scan_hi — see _ae_unstable_window), so a sub-threshold scan_hi
+            # does NOT imply stability and the top-probe would wrongly drop a feasible bumped
+            # seed. monotone_earlyout=false also forces the full sweep.
+            eo = monotone_earlyout && !ae_band
             ghi = NaN
-            if monotone_earlyout
+            if eo
                 ghi = g(scan_hi)[1]
                 if ghi < 0
                     return (; factor = scan_hi, gamma_lead = ghi + gamma_thresh,
@@ -502,14 +506,14 @@ function marginal_factor(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                 end
             end
             prev_f = fs[1]; prev_g = g(prev_f)[1]
-            if monotone_earlyout && prev_g >= 0
+            if eo && prev_g >= 0
                 return (; factor = scan_lo, gamma_lead = prev_g + gamma_thresh,
                         gamma = Float64[], freq = Float64[], iters = 0,
                         evals = evals[], converged = false, bracket = (scan_lo, scan_hi))
             end
             for f in fs[2:end]
                 # reuse the top-endpoint probe rather than re-evaluating g(scan_hi)
-                gf = (monotone_earlyout && f == fs[end]) ? ghi : g(f)[1]
+                gf = (eo && f == fs[end]) ? ghi : g(f)[1]
                 if prev_g < 0 && gf >= 0
                     a, ga, b, gb = prev_f, prev_g, f, gf
                     break
@@ -1367,6 +1371,8 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
     kylo = 0.0; kyhi = 1.0
 
     total_full = 0; total_eig = 0; npts_total = 0
+    # Phase-level eigensolve breakdown (diagnostic: locate where the high-γ* eig cost lives).
+    eig_coarse = 0; eig_zoom = 0; eig_loc_cheap = 0; eig_loc_desc = 0; eig_ext_confirm = 0
     all_res = Any[]
     best_f = Inf; best_ky = NaN; best_w = NaN; best_bind = :none
 
@@ -1456,7 +1462,9 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
     end
 
     # Coarse pass mirrors kwscale_scan's first round: kyhat∈(0,1], width∈[WIDTH_MIN,WIDTH_MAX].
+    _e0 = total_eig
     st = eval_grid!(kylo, kyhi, wlo, whi)
+    eig_coarse += total_eig - _e0
     n_feasible_coarse = st.nfeasible
 
     # ── Hybrid outer (outer=:hybrid) ─────────────────────────────────────────────
@@ -1511,7 +1519,9 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
         prev = best_f
         kya = max(kylo, best_ky - dky); kyb = min(kyhi, best_ky + dky)
         wa  = max(wlo,  best_w  - dw);  wb  = min(whi,  best_w  + dw)
+        _ez = total_eig
         st = eval_grid!(kya, kyb, wa, wb)
+        eig_zoom += total_eig - _ez
         refine_done += 1
         dky *= 2.0 / max(nkyhat - 1, 1)   # window already spans ±dky; tighten node spacing
         dw  *= 2.0 / max(nefwid - 1, 1)
@@ -1544,6 +1554,7 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
                 n_eig_seed = n_eig_seed, k_descend = k_descend, inner = inner, team = team,
                 use_gpu = use_gpu)
         total_eig += loc.total_eig
+        eig_loc_cheap += loc.cheap_eig; eig_loc_desc += loc.desc_eig
         # Early-stop pruning bound: candidates are sorted ascending by their cheap/descended onset,
         # which lower-bounds the faithful keep onset, so once a candidate's cheap onset reaches the
         # bound none below it can win. The bound is the canonical w≥1 incumbent `best_f`; when that
@@ -1559,6 +1570,7 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
                     gamma_thresh = gth, scan_lo = slo, scan_hi = shi, threaded = true,
                     inner = inner, team = team, use_gpu = use_gpu)
             n_ext_confirm += 1; total_full += r.evals_full; total_eig += r.evals_eig
+            eig_ext_confirm += r.evals_eig
             if r.binding != :none && isfinite(r.factor_faithful) && r.factor_faithful < best_f
                 best_f = r.factor_faithful; best_ky = c[1]; best_w = c[2]; best_bind = r.binding
             end
@@ -1577,7 +1589,9 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
             status = status, scan_lo = slo, scan_hi = shi, refine_done = refine_done,
             polished = polished, extended = extend_width, n_ext_confirm = n_ext_confirm,
             n_feasible_coarse = n_feasible_coarse, npts_coarse = nkyhat * nefwid,
-            total_evals_full = total_full, total_evals_eig = total_eig, npts = npts_total, results = all_res)
+            total_evals_full = total_full, total_evals_eig = total_eig, npts = npts_total,
+            eig_coarse = eig_coarse, eig_zoom = eig_zoom, eig_loc_cheap = eig_loc_cheap,
+            eig_loc_desc = eig_loc_desc, eig_ext_confirm = eig_ext_confirm, results = all_res)
 end
 
 # Cheap-rank → few-confirm over a FIXED (ky,w) point list. Ranks every node on the CHEAP
@@ -1993,10 +2007,12 @@ function _locate_extended(ep0, prof; gth, slo, shi, ky_lo, w_lo, w_hi,
                       n_eig=n_eig_seed, threaded=false, use_gpu=use_gpu)
             (; ky=ky, w=w, f=(win.unstable ? win.f1 : Inf), pinned=win.pinned_lo, evals=win.evals)
         end, length(pts); inner=inner, team=team)
-    total_eig = 0; for c in cheap; total_eig += c.evals; end
+    cheap_eig = 0; for c in cheap; cheap_eig += c.evals; end
+    desc_eig = 0; total_eig = cheap_eig
     feas = [c for c in cheap if isfinite(c.f)]
     isempty(feas) && return (; cands=Tuple{Float64,Float64,Float64}[], feas=feas,
-                             npts=length(pts), n_desc=0, total_eig=total_eig)
+                             npts=length(pts), n_desc=0, total_eig=total_eig,
+                             cheap_eig=cheap_eig, desc_eig=desc_eig)
     sort!(feas, by = c -> c.f)
 
     cands = Tuple{Float64,Float64,Float64}[]; n_desc = 0
@@ -2005,7 +2021,7 @@ function _locate_extended(ep0, prof; gth, slo, shi, ky_lo, w_lo, w_hi,
             r = critical_factor_optimize(ep0, prof; gamma_thresh=gth, seed=(c.ky, c.w),
                     scan_lo=slo, scan_hi=shi, ky_bounds=(max(ky_lo, 1.0e-6), 1.0), w_bounds=(w_lo, w_hi),
                     inner=inner, team=team, use_gpu=use_gpu)
-            total_eig += r.evals; n_desc += 1
+            total_eig += r.evals; desc_eig += r.evals; n_desc += 1
             isfinite(r.sfmin) && push!(cands, (r.kyhat, r.width, r.sfmin))   # descended interior optimum
             push!(cands, (c.ky, c.w, c.f))                                   # grid-floor guard: keep seed
         else
@@ -2013,7 +2029,8 @@ function _locate_extended(ep0, prof; gth, slo, shi, ky_lo, w_lo, w_hi,
         end
     end
     sort!(cands, by = c -> c[3])
-    return (; cands=cands, feas=feas, npts=length(pts), n_desc=n_desc, total_eig=total_eig)
+    return (; cands=cands, feas=feas, npts=length(pts), n_desc=n_desc, total_eig=total_eig,
+            cheap_eig=cheap_eig, desc_eig=desc_eig)
 end
 
 """
