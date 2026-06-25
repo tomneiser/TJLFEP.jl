@@ -1825,7 +1825,19 @@ function gamma_input_sensitivities(inputsEP::Options{Float64}, inputsPR::profile
         push!(labels, _knob_label(fld, idx, ep_slot))
     end
 
-    res = _tjlf_run_dual(inputD, D; use_gpu = use_gpu)
+    # Singular dispersion matrix → no resolvable eigenmode; degrade to AE-stable (γ=0, zero
+    # sensitivities) rather than crashing, matching TJLFEP_ky and the gamma_* helpers.
+    local res
+    try
+        res = _tjlf_run_dual(inputD, D; use_gpu = use_gpu)
+    catch err
+        err isa SingularException || rethrow()
+        @warn "gamma_input_sensitivities: singular TGLF dispersion matrix (ir=$(inputsEP.IR), ky=$(ForwardDiff.value(inputD.KY)), width=$(ForwardDiff.value(inputD.WIDTH))); treating combo as stable (γ=0, no AE mode)" maxlog = 5
+        NM = inputD.NMODES
+        z = zeros(Float64, NM, N)
+        return (; gamma = zeros(Float64, NM), freq = zeros(Float64, NM),
+                  dgamma = z, dfreq = copy(z), logsens = copy(z), knobs = ks, labels, base)
+    end
     g = res.eigenvalue[:, 1, 1]
     f = res.eigenvalue[:, 1, 2]
     NM = length(g)
