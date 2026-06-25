@@ -29,9 +29,9 @@ series = [
         :gray55, :dash, :circle),
     ("robust_ad (reference)", joinpath(BUILD, "gacode_nb32_scan20_1node_robust_ad_54638544_tasks", "sfmin_scan.txt"),
         :black, :solid, :diamond),
-    (":ad :locate (extended)", joinpath(BUILD, "gacode_nb32_scan20_jgpu_ad_54949227_tasks", "sfmin_scan.txt"),
+    (":ad :locate (default)", joinpath(BUILD, "gacode_nb32_scan20_jgpu_ad_54949227_tasks", "sfmin_scan.txt"),
         :seagreen, :solid, :utriangle),
-    (":ad :wide (kdesc=2, guarded)", joinpath(BUILD, "gacode_nb32_scan20_1node_ad_54979250_tasks", "sfmin_scan.txt"),
+    (":ad :wide (2x faster than :locate)", joinpath(BUILD, "gacode_nb32_scan20_1node_ad_54979250_tasks", "sfmin_scan.txt"),
         :firebrick, :solid, :star5),
 ]
 

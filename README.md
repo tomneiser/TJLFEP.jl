@@ -120,36 +120,37 @@ are compared, each on its fastest parallel layout:
   `robust_ad` for production scans and `truth` (on an **MPS team**) for validation. See
   [`docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`](docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md).
 
-**Recommended production model: `robust_ad`.** It is width-correct — it admits the
-narrow-width EP-driven AE modes the Fortran `w≥1` grid structurally excludes — yet
-robust everywhere (always finite, no basin misses). The fast `ad` path is now also
-**width-extended** (it folds in the same narrow-width locate, seeded on the cheap `ad`
-descent instead of a faithful `w≥1` grid), so it tracks `robust_ad` closely at far
-lower cost; reserve `truth` (the `nbasis`-converged tier) for validation or the few
-flagged outer radii. The plot overlays `sfmin(IR)` for the three solvers at
-`N_BASIS=32`:
+**Recommended production model: `:ad :locate` (the `ActorTJLFEP` default).** The
+width-extended `ad` path folds in the same narrow-width locate `robust_ad` uses (a dense
+log-spaced `(kyhat,width)` seed grid + multistart descents + grid-floor guard, seeded on
+the cheap `ad` descent), so it tracks `robust_ad` essentially bit-for-bit across the whole
+profile at a fraction of the cost — the speed/accuracy sweet spot, and now the default
+`solver`/`extend_mode` in FUSE. For bulk NN-database generation, **`:ad :wide`** (a single
+log-seeded multistart pass, `wide_kdesc=2`) is **~2× faster than `:locate`** while staying
+conservative — always ≥ `robust_ad`, within ~1–2×, never under-predicting. Keep
+`robust_ad` as the always-finite reference and `truth` (the `nbasis`-converged tier) for
+validation. The plot overlays `sfmin(IR)` for all four solvers at `N_BASIS=32`:
 
-![sfmin vs radius: grid vs robust_ad vs ad](docs/plots/sfmin_grid_robust_ad_ad_nb32.png?v=2)
+![sfmin vs radius: grid vs robust_ad vs :ad :locate vs :ad :wide](docs/plots/ad_wide_accuracy_nb32.png?v=1)
 
-`robust_ad` (red) sits at or below `grid` (blue) across the whole profile, lowering
-`sfmin` into the narrow-width modes at the outer radii (IR ≳ 65; up to ~10× below grid
-at IR=95). The width-extended `ad` (orange) now overlays `robust_ad` across the outer
-profile — the multi-seed ranked locate also cures pure `ad`'s old single-descent
-over-predictions at the inner radii — deviating only by ~5% at the innermost `w≥1`-core
-radii (IR≲7), where the single descent under-resolves the dense core.
+`:ad :locate` (green) overlays `robust_ad` (black) almost exactly across the entire
+profile, both dropping well below the Fortran-equivalent `grid` (gray dashed) into the
+narrow-width modes at the outer radii (IR ≳ 65; up to ~10× below grid). `:ad :wide` (red)
+recovers nearly all of that narrow-width accuracy in a single pass — tracking
+`:locate`/`robust_ad` to within ~1–2× (a mild, conservative over-prediction at the outer
+radii, e.g. ~1.7× at IR=64) and never falling below them.
 
-![Node-hours vs N_BASIS](docs/plots/scan20_timing_lines.png?v=6)
+![Node-hours vs N_BASIS](docs/plots/scan20_timing_wide_lines.png?v=1)
 
-The plot reports each solver's **cost in node-hours** (nodes × wallclock), so runs
-on different node counts compare fairly, and includes the **`robust_ad`** series
-(the production width-extended solver). At `N_BASIS=32` the GPU paths stay cheap —
-`grid` MPS ≈0.3, width-extended `ad` ≈0.9, `robust_ad` ≈1.4, `truth` ≈1.4 node-hours —
-versus ≈2.9 (Julia CPU grid) and ≈4.3 (Fortran). The now width-extended `ad` runs at
-**≈⅔ the node-hours of `robust_ad`** (0.14/0.16/0.31/0.92 vs 0.21/0.22/0.45/1.38 at
-`N_BASIS=6/8/16/32`) while matching its `sfmin` across the outer profile — the
-narrow-width locate makes it ~2–3× costlier than the old pure-`ad` descent but still
-the cheapest width-correct option. The per-backend tables below break this down in raw
-wallclock seconds.
+The plot reports each solver's **cost in node-hours** (nodes × wallclock) on the identical
+1-node-backfill layout (4 GPU workers draining a 20-radius claim queue), so the comparison
+is apples-to-apples for NN-database generation. At `N_BASIS=32` the GPU paths stay cheap —
+`grid` MPS ≈0.31, `:ad :wide` ≈0.46, `:ad :locate` ≈0.92, `robust_ad` ≈1.38, `truth` ≈1.38
+node-hours — versus ≈4.3 for Fortran. **`:ad :wide` runs at ~2× lower node-hours than
+`:locate`** (and ~3× below `robust_ad`): 2.0×/2.6×/2.6×/2.0× cheaper than `:locate` at
+`N_BASIS=6/8/16/32`, with the absolute gap widening at higher `N_BASIS` where the faithful
+confirms get more expensive. The per-backend tables below break this down in raw wallclock
+seconds.
 
 **Grid solver** — Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
 SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
