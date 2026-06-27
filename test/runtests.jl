@@ -10,4 +10,5 @@ using Test
 
 @testset "TJLFEP" begin
     include("runtests_regression_nb6.jl")
+    include("runtests_regression_spectrum.jl")
 end

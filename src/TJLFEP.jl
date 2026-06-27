@@ -24,6 +24,8 @@ include("tjlfep_debug.jl")
 include("EXPROconst.jl")
 include("tjlfep_ky.jl")
 include("tjlfep_kwscale_scan.jl")
+include("tjlfep_TM.jl")
+include("tjlfep_ky_widthscan.jl")
 include("tjlfep_ql_extract.jl")
 include("mainsub.jl")
 include("tjlfep_complete_output.jl")
@@ -50,6 +52,7 @@ export expro_species_for_gacode_is_ep, read_gacode_scalar_field, read_gacode_ion
 export expro_bound_deriv, expro_log_gradients, read_expro_for_alpha, compute_alpha_crit_profiles
 export tjlfep_complete_output
 export runTHD, runTHD_from_gacode
+export TJLFEP_TM, TJLFEP_ky_widthscan
 export gamma_dgamma_dfactor, gamma_grad, marginal_factor, marginal_factor_faithful, critical_factor_grid, critical_factor_optimize, critical_factor_robust, critical_factor_confirm, critical_factor_profile, gamma_input_sensitivities, critical_factor_ad_f1seed, critical_factor_truth, critical_factor_triggered
 export MarginalQLData, extract_marginal_ql, build_alpha_ql_modes
 export ql_flux_scan_at_marginal, diff_star_from_D_W

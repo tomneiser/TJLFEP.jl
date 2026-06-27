@@ -12,7 +12,9 @@ end
 
 function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int;
                    eigen_cache::Union{Vector{<:Complex}, Nothing} = nothing,
-                   use_gpu::Bool = false) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
+                   use_gpu::Bool = false,
+                   mode_in_override::Union{Nothing,Int} = nothing,
+                   ky_model_override::Union{Nothing,Int} = nothing) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
     _pb = _probe_on()
     _t_ky = _pb ? time_ns() : UInt64(0)
 # function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::String, l_wavefunction_out::Int) where {T<:Real} #, factor_in::Int64, kyhat_in::Int64, width_in::Int64)
@@ -33,7 +35,7 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
 
     #========================================#
 
-    inputTJLF = TJLF_map(inputsEP, inputsPR)
+    inputTJLF = TJLF_map(inputsEP, inputsPR; mode_in_override=mode_in_override, ky_model_override=ky_model_override)
 
     inputTJLF.USE_TRANSPORT_MODEL = false # single-ky path: bypasses full spectral transport model
     # inputTJLF.USE_TRANSPORT_MODEL = true

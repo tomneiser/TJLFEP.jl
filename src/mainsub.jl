@@ -47,8 +47,7 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
         msg = "No"
         return msg
     elseif (x == 3)
-        msg = "No"
-        return msg
+        return _mainsub_spectrum(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
     elseif (x == 4)
         msg = "No"
         return msg
@@ -77,6 +76,51 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
         msg = "No"
         return msg 
     end
+end
+
+"""
+    _mainsub_spectrum(inputsEP, inputsPR, printout; use_gpu=false, inner=:threads, team=nothing)
+        -> ((growthrate, ep, pr, spectra), (nothing, file_buffers))
+
+Spectrum branch of [`mainsub`](@ref) (PROCESS_IN==3). Mirrors the Fortran
+`TGLFEP_mainsub.f90` `case(3)`:
+
+  1. When `WIDTH_IN_FLAG` is false, set `MODE_IN=2` and run
+     [`TJLFEP_ky_widthscan`](@ref) to locate the width at maximum `gamma_AE`; store it on
+     `inputsEP.WIDTH_IN` and the scan ky on `inputsEP.KYMARK`.
+  2. For `mode_in ∈ {1,2,4}` run [`TJLFEP_TM`](@ref) (full transport-model `ky` spectrum)
+     and collect the `out.eigenvalue_m<mode>` buffers.
+
+Returns the standard `mainsub` tuple shape. `spectra` (the 4th element) is a `Dict`
+`mode_in => (ky, gamma, freq)` of in-memory spectra; `file_buffers` (the 2nd tuple's
+`wf`-slot) is the `(filename, lines)` list the radial driver writes to disk.
+"""
+function _mainsub_spectrum(inputsEP::Options, inputsPR::profile, printout::Bool;
+                           use_gpu::Bool = false, inner::Symbol = :threads,
+                           team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+    file_buffers = Tuple{String,Vector{String}}[]
+
+    # Auto width: scan width at EP-only drive (mode_in=2) and mark the max-gamma width.
+    if !inputsEP.WIDTH_IN_FLAG
+        inputsEP.MODE_IN = 2
+        width_in, _gmark, _fmark, ky_in, ws_buf =
+            TJLFEP_ky_widthscan(inputsEP, inputsPR; use_gpu=use_gpu, inner=inner, team=team)
+        inputsEP.WIDTH_IN = width_in
+        inputsEP.KYMARK = ky_in
+        printout && push!(file_buffers, ws_buf)
+    end
+
+    # gamma/omega spectra at the three Fortran spectrum modes.
+    spectra = Dict{Int,NamedTuple{(:ky, :gamma, :freq)}}()
+    for mode in (1, 2, 4)
+        inputsEP.MODE_IN = mode
+        ky, gamma, freq, ev_buf = TJLFEP_TM(inputsEP, inputsPR; mode_in=mode, use_gpu=use_gpu)
+        spectra[mode] = (ky=ky, gamma=gamma, freq=freq)
+        printout && push!(file_buffers, ev_buf)
+    end
+
+    growthrate = fill(NaN, (5, 10, 10, inputsEP.NMODES))
+    return (growthrate, inputsEP, inputsPR, spectra), (nothing, file_buffers)
 end
 
 """

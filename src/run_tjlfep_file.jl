@@ -70,6 +70,36 @@ function _unpack_mainsub!(ret)
     return growth, ep, mt, marginal_ql
 end
 
+"""
+Write one radius's `mainsub` output buffers `(sf_buf, wf_buf_all)` to disk under `out_dir`:
+the scalefactor buffer to `out.scalefactor<suffix>` and each `(filename, lines)` entry of
+`wf_buf_all` (wavefunction files for PROCESS_IN=5; eigenvalue/width-scan spectra for
+PROCESS_IN=3) to its own file. No-ops on `nothing`/empty buffers.
+"""
+function _write_radius_buffers(buffers, suffix::AbstractString; out_dir::AbstractString=".")
+    buffers === nothing && return nothing
+    sf_buf, wf_buf_all = buffers
+    if sf_buf !== nothing && !isempty(sf_buf)
+        open(joinpath(out_dir, "out.scalefactor" * suffix), "w") do io
+            for line in sf_buf
+                println(io, line)
+            end
+        end
+    end
+    if wf_buf_all !== nothing
+        for (fname, fbuf) in wf_buf_all
+            if fbuf !== nothing && !isempty(fbuf)
+                open(joinpath(out_dir, fname), "w") do io
+                    for line in fbuf
+                        println(io, line)
+                    end
+                end
+            end
+        end
+    end
+    return nothing
+end
+
 """Run mainsub for one scan index (radius). Used by threads and distributed loops."""
 function _runTHD_radius!(
     i::Int,
@@ -84,6 +114,7 @@ function _runTHD_radius!(
     ql_flux_scan::Bool = false,
     solver::Symbol = :grid,
     refine_rounds::Int = 1,
+    arrbuffers::Union{Nothing,AbstractVector} = nothing,
 )
     arrTGLFEP[i].IR = arrTGLFEP[i].IR_EXP[i]
     ir = arrTGLFEP[i].IR
@@ -97,12 +128,15 @@ function _runTHD_radius!(
             println("=============================================================")
         end
     end
-    growth, ep, mt, _ = _unpack_mainsub!(
-        TJLFEP.mainsub(arrTGLFEP[i], arrMTGLF[i], printout; use_gpu=use_gpu, inner=inner, team=team,
-                       ql_flux_scan=ql_flux_scan, solver=solver, refine_rounds=refine_rounds))
+    ret = TJLFEP.mainsub(arrTGLFEP[i], arrMTGLF[i], printout; use_gpu=use_gpu, inner=inner, team=team,
+                         ql_flux_scan=ql_flux_scan, solver=solver, refine_rounds=refine_rounds)
+    growth, ep, mt, _ = _unpack_mainsub!(ret)
     arrgrowth[i] = growth
     arrTGLFEP[i] = ep
     arrMTGLF[i] = mt
+    if arrbuffers !== nothing
+        arrbuffers[i] = ret[2]
+    end
     return nothing
 end
 
@@ -189,14 +223,20 @@ function _runTHD_core!(
     par = _resolve_runTHD_parallel(parallel)
     if par === :threads
         stdout_lock = ReentrantLock()
+        arrbuffers = printout ? Vector{Any}(undef, n_ir) : nothing
         # set BLAS=1 before spawning radius threads so the nested per-radius
         # kwscale_scan scope short-circuits (no concurrent set_num_threads)
         TJLF.with_blas_threads(1) do
         Threads.@threads for i in 1:n_ir
             _runTHD_radius!(i, arrTGLFEP, arrMTGLF, arrgrowth, printout, use_gpu;
                             stdout_lock=stdout_lock, inner=inner, team=team, ql_flux_scan=ql_flux_scan,
-                            solver=solver, refine_rounds=refine_rounds)
+                            solver=solver, refine_rounds=refine_rounds, arrbuffers=arrbuffers)
         end
+        end
+        if printout
+            for i in 1:n_ir
+                _write_radius_buffers(arrbuffers[i], coalesce(arrTGLFEP[i].SUFFIX, ""))
+            end
         end
     elseif par === :distributed
         pmap_outputs = pmap(i -> begin
@@ -223,26 +263,7 @@ function _runTHD_core!(
         end
         if printout
             for i in 1:n_ir
-                sf_buf, wf_buf_all = all_buffers[i]
-                suffix_i = coalesce(arrTGLFEP[i].SUFFIX, "")
-                if sf_buf !== nothing && !isempty(sf_buf)
-                    open("out.scalefactor" * suffix_i, "w") do io
-                        for line in sf_buf
-                            println(io, line)
-                        end
-                    end
-                end
-                if wf_buf_all !== nothing && !isempty(wf_buf_all)
-                    for (str_wf_file, wfbuf) in wf_buf_all
-                        if wfbuf !== nothing && !isempty(wfbuf)
-                            open(str_wf_file, "w") do io
-                                for line in wfbuf
-                                    println(io, line)
-                                end
-                            end
-                        end
-                    end
-                end
+                _write_radius_buffers(all_buffers[i], coalesce(arrTGLFEP[i].SUFFIX, ""))
             end
         end
     else
@@ -684,32 +705,16 @@ function run_gacode_scan_task(
 
     ret = TJLFEP.mainsub(ep, mt, printout; use_gpu=use_gpu, inner=inner, team=team, ql_flux_scan=ql_flux_scan,
                          solver=solver, refine_rounds=refine_rounds)
-    growth, ep_out, mt_out, _ = _unpack_mainsub!(ret)
+    growth, ep_out, mt_out, fourth = _unpack_mainsub!(ret)
     sfmin = ep_out.FACTOR_IN
     width = coalesce(ep_out.WIDTH_IN, ep_out.WIDTH, NaN)
     kymark = coalesce(ep_out.KYMARK, NaN)
+    # PROCESS_IN=3 returns the in-memory γ/ω spectra (Dict mode_in => (ky,gamma,freq)) in the
+    # 4th slot; for the threshold paths the 4th slot is marginal-QL data we don't serialize.
+    spectra = ep_out.PROCESS_IN == 3 ? fourth : nothing
 
     if printout
-        sf_buf, wf_buf_all = ret[2]
-        suffix_i = coalesce(ep_out.SUFFIX, "")
-        if sf_buf !== nothing && !isempty(sf_buf)
-            open(joinpath(out_dir, "out.scalefactor" * suffix_i), "w") do io
-                for line in sf_buf
-                    println(io, line)
-                end
-            end
-        end
-        if wf_buf_all !== nothing
-            for (str_wf_file, wfbuf) in wf_buf_all
-                if wfbuf !== nothing && !isempty(wfbuf)
-                    open(joinpath(out_dir, str_wf_file), "w") do io
-                        for line in wfbuf
-                            println(io, line)
-                        end
-                    end
-                end
-            end
-        end
+        _write_radius_buffers(ret[2], coalesce(ep_out.SUFFIX, ""); out_dir=out_dir)
     end
 
     result = (
@@ -718,6 +723,7 @@ function run_gacode_scan_task(
         sfmin=Float64(sfmin),
         width=Float64(width),
         kymark=Float64(kymark),
+        spectra=spectra,
         use_gpu=use_gpu,
         hostname=gethostname(),
     )

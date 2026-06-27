@@ -679,7 +679,13 @@ function readTGLFEP(filename::String, ir_exp::Vector{Int64})
     @assert widthin != -1 "WIDTH_IN_FLAG not found in TGLFEP input"
     @assert ky_model != -1 "KY_MODEL not found in TGLFEP input"
     @assert process_in != -1 "PROCESS_IN not found in TGLFEP input"
-    @assert threshold_flag != -1 "THRESHOLD_FLAG not found in TGLFEP input"
+    # THRESHOLD_FLAG is only read by the Fortran for process_in in {4,5,6}; the spectrum
+    # (3) and ky/TM (0,1,2) inputs omit it. Require it only when it is actually used.
+    if process_in == 4 || process_in == 5 || process_in == 6
+        @assert threshold_flag != -1 "THRESHOLD_FLAG not found in TGLFEP input"
+    elseif threshold_flag == -1
+        threshold_flag = 0
+    end
 
     # Now, nscan_in, widthin are assigned and ready.
 
@@ -762,6 +768,30 @@ function readTGLFEP(filename::String, ir_exp::Vector{Int64})
         inputTJLFEP.FACTOR = fill(inputTJLFEP.FACTOR_IN, nscan_in)
     end
     inputTJLFEP.FACTOR_MAX_PROFILE = inputTJLFEP.FACTOR
+
+    # The spectrum (process_in=3) and ky/TM (0,1,2) inputs omit the threshold/reject/scan
+    # fields that only the threshold searches (4/5/6) read. The Fortran leaves those module
+    # variables at their (zero) defaults; mirror that here so the spectrum + width-scan paths
+    # run without them. (4/5/6 always supply these, so this never overrides a real value.)
+    # Float fields in `Options` initialize to NaN (not `missing`), so treat NaN as "unset" too.
+    _needs_default(x) = x === missing || (x isa AbstractFloat && isnan(x))
+    _default_if_missing!(o, f, v) = (_needs_default(getfield(o, f)) && setfield!(o, f, v))
+    _default_if_missing!(inputTJLFEP, :SCAN_METHOD, 0)
+    # process_in=3 does not read PPRIME_METHOD; the Fortran then hits the default branch
+    # ("reverting to fixed p_prime"). Use 0 here so TJLF_map's else-branch sets the raw
+    # fixed p_prime(ir), matching the Fortran.
+    _default_if_missing!(inputTJLFEP, :PPRIME_METHOD, 0)
+    _default_if_missing!(inputTJLFEP, :REJECT_I_PINCH_FLAG, 0)
+    _default_if_missing!(inputTJLFEP, :REJECT_E_PINCH_FLAG, 0)
+    _default_if_missing!(inputTJLFEP, :REJECT_TH_PINCH_FLAG, 0)
+    _default_if_missing!(inputTJLFEP, :REJECT_EP_PINCH_FLAG, 0)
+    _default_if_missing!(inputTJLFEP, :REJECT_TEARING_FLAG, 0)
+    _default_if_missing!(inputTJLFEP, :ROTATIONAL_SUPPRESSION_FLAG, 0)
+    _default_if_missing!(inputTJLFEP, :WRITE_WAVEFUNCTION, 0)
+    _default_if_missing!(inputTJLFEP, :N_BASIS, 32)
+    _default_if_missing!(inputTJLFEP, :QL_RATIO_THRESH, 0.0)
+    _default_if_missing!(inputTJLFEP, :THETA_SQ_THRESH, 1.0e10)
+    _default_if_missing!(inputTJLFEP, :Q_SCALE, 1.0)
 
     return inputTJLFEP
 end
@@ -867,7 +897,10 @@ function default_input_tjlf(::Type{T}, ns::Int, nky::Int) where {T<:Real}
     return input
 end
 
-function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
+function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T};
+                  mode_in_override::Union{Nothing,Int} = nothing,
+                  ky_model_override::Union{Nothing,Int} = nothing,
+                  nky::Int = 12) where {T<:Real}
     # Access the fields like this:
     # inputsOptions = inputsEP.Options
     # profile = inputsEP.profile   
@@ -886,11 +919,14 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
     inputsEP.MODE_IN = 2
     inputsEP.KY_MODEL = 3
     =#
-    inputsEP.MODE_IN = 2
-    inputsEP.KY_MODEL = 3
+    # The grid/scalefactor path (process_in=5) forces EP-drive-only (mode_in=2) and the
+    # kwscale_scan ky model (ky_model=3). The spectrum path (process_in=3) needs to vary
+    # mode_in over {1,2,4} and keep its own ky_model, so callers can override here.
+    inputsEP.MODE_IN  = mode_in_override === nothing  ? 2 : mode_in_override
+    inputsEP.KY_MODEL = ky_model_override === nothing ? 3 : ky_model_override
 
     # Okay finally I can do this lol:
-    inputTJLF = default_input_tjlf(T, inputsPR.NS, 12) # TJLF.InputTJLF seeded with TGLF-EP defaults
+    inputTJLF = default_input_tjlf(T, inputsPR.NS, nky) # TJLF.InputTJLF seeded with TGLF-EP defaults
     if (inputsEP.IR < 1 || inputsEP.IR > inputsPR.NR)
         println("ir isn't within range")
         return 1
@@ -931,8 +967,11 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
         end
     end
     
+    # SCAN_METHOD is not read by the Fortran for the spectrum (process_in=3) input, so it
+    # can be `missing` here; default to 0 (no factor-driven EP scaling) in that case.
+    scan_method_eff = coalesce(inputsEP.SCAN_METHOD, 0)
     inputsEP.FACTOR_MAX = 0.5 / abs(inputTJLF.ZS[is]*inputsPR.AS[ir, is])
-    if (inputsEP.SCAN_METHOD == 2)
+    if (scan_method_eff == 2)
         inputsEP.FACTOR_MAX = 1.0E3
     end
     inputsEP.FACTOR_IN
@@ -944,7 +983,7 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
     end
 
     # Factor_in is used to scale only the ion after the energetic species:
-    if (inputsEP.SCAN_METHOD == 1)
+    if (scan_method_eff == 1)
         inputTJLF.AS[is] = inputsPR.AS[ir, is]*inputsEP.FACTOR_IN
     end
     # I believe this is a correction for quasineutrality? AS is the ratio of density of the species to the electron
@@ -995,7 +1034,7 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T}) where {T<:Real}
         inputTJLF.FILTER = 0.0
     end
 
-    if (inputsEP.SCAN_METHOD == 2) # SCAN_METHOD 1 or 2 is chosen for whether you are applying the scaling to the density gradient or the density.
+    if (scan_method_eff == 2) # SCAN_METHOD 1 or 2 is chosen for whether you are applying the scaling to the density gradient or the density.
         inputTJLF.RLNS[is] = inputsEP.FACTOR_IN*inputsPR.RLNS[ir, is]
     end
 
