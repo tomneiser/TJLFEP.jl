@@ -1,4 +1,4 @@
-[![codecov](https://codecov.io/github/ProjectTorreyPines/TJLF-EP.jl/graph/badge.svg)](https://codecov.io/github/ProjectTorreyPines/TJLF-EP.jl)
+[![codecov](https://codecov.io/github/projecttorreypines/tjlfep.jl/graph/badge.svg?token=WIeugjkmVB)](https://codecov.io/github/projecttorreypines/tjlfep.jl)
 
 # TJLFEP.jl
 
