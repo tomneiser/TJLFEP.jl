@@ -9,9 +9,6 @@ threshold model built on top of [TJLF](https://github.com/ProjectTorreyPines/TJL
 until a marginally unstable Alfvénic mode appears, yielding the critical EP
 density/pressure gradients used for EP transport and stability studies.
 
-For the full API reference, see the
-[online documentation](https://projecttorreypines.github.io/TJLFEP.jl/dev).
-
 It is a close, jointly-maintained translation of the Fortran GACODE add-on
 `TGLF-EP` — verified against it bit-for-bit — and adds a CUDA GPU eigensolver path
 that is **~6.8× faster than the Fortran CPU reference** at production basis size
@@ -25,6 +22,9 @@ production default **`:ad :locate`** tracks the `robust_ad` reference essentiall
 bit-for-bit while running the full 20-radius profile at **~4.7× lower node-hours
 than Fortran** (and the bulk-generation **`:ad :wide`** at ~9×); see the
 benchmark below.
+
+For the full API reference, see the
+[online documentation](https://projecttorreypines.github.io/TJLFEP.jl/dev).
 
 ## Capabilities
 
