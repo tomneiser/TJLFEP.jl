@@ -1,3 +1,5 @@
+[![codecov](https://codecov.io/github/projecttorreypines/tjlfep.jl/graph/badge.svg?token=WIeugjkmVB)](https://codecov.io/github/projecttorreypines/tjlfep.jl)
+
 # TJLFEP.jl
 
 A Julia port of **TGLF-EP**, the energetic-particle (EP) critical-gradient
