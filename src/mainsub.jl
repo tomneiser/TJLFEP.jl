@@ -127,9 +127,13 @@ end
     _mainsub_ad(inputsEP, inputsPR, printout; use_gpu=false, inner=:threads, team=nothing) -> ((growthrate, ep, pr, marginal_ql), (sf_buf, wf_buf))
 
 AD-solver branch of [`mainsub`](@ref) (PROCESS_IN==5). Runs
-[`critical_factor_optimize`](@ref) (faithful-confirmed, **width-extended**:
-`extend_width=true`) to obtain the critical EP scale factor and its marking
-`(kymark, width)`, writes them onto `inputsEP`
+[`critical_factor_optimize`](@ref) to obtain the critical EP scale factor and its
+marking `(kymark, width)`. The `extend_mode` knob selects the cost/accuracy tier:
+`:locate` (default, faithful-confirmed + **width-extended** `extend_width=true`,
+tracks `:robust_ad`), `:wide` (cheap single-pass width extension), or `:only`
+(fast-turnaround "bare" AD — canonical `w≥1` box, `extend_width=false` and no
+faithful confirm; fastest, but misses the narrow-width edge modes). Writes the
+result onto `inputsEP`
 (`FACTOR_IN`, `KYMARK`, `WIDTH_IN`) exactly like the grid path, and returns the
 `mainsub` tuple shape so the radial drivers/output writers are unchanged. The AD
 path does not assemble the full QL/growthrate buffers, so `growthrate` is a NaN
@@ -157,14 +161,24 @@ function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_g
     #
     # `faithful_confirm`/`AD_FAITHFUL_CONFIRM=0` → cheap "pure AD" path (no IFLUX=true confirm anywhere
     #   → reports the AE-band onset, which does NOT match :robust_ad bitwise). Default keeps confirm on.
-    # `extend_mode`/`AD_EXTEND_MODE=wide` → cheap single-pass width extension (widened-box log-seeded
-    #   multistart, conservative but not bitwise-:robust_ad), vs the default `:locate`.
+    # `extend_mode`/`AD_EXTEND_MODE`:
+    #   `:locate` (default) → dense narrow-width locate, tracks :robust_ad essentially bit-for-bit.
+    #   `:wide`             → cheap single-pass width extension (widened-box log-seeded multistart,
+    #                         conservative but not bitwise-:robust_ad).
+    #   `:only`             → fast-turnaround "bare" AD: the canonical `w≥1` box only, no width
+    #                         extension and no faithful confirm (AE-band onset). Fastest and least
+    #                         accurate — for quick iteration, NOT production / NN-DB generation, since
+    #                         it misses the narrow-width edge modes.
     # `wide_kdesc`/`AD_WIDE_KDESC` → :wide multistart breadth (mode=:wide only).
     ad_confirm = faithful_confirm === nothing ? (get(ENV, "AD_FAITHFUL_CONFIRM", "1") != "0") : faithful_confirm
     ad_mode    = extend_mode === nothing ? Symbol(get(ENV, "AD_EXTEND_MODE", "locate")) : extend_mode
     ad_kdesc   = wide_kdesc === nothing ? parse(Int, get(ENV, "AD_WIDE_KDESC", "2")) : wide_kdesc
+    # :only forces the bare config (no width extension, no faithful confirm).
+    ad_extend  = ad_mode !== :only
+    ad_confirm = ad_extend ? ad_confirm : false
     res = critical_factor_optimize(inputsEP, inputsPR; use_gpu=use_gpu, faithful_confirm=ad_confirm,
-                                   extend_width=true, extend_mode=ad_mode, wide_kdesc=ad_kdesc,
+                                   extend_width=ad_extend,
+                                   extend_mode=(ad_extend ? ad_mode : :locate), wide_kdesc=ad_kdesc,
                                    scan_lo=Float64(inputsEP.FACTOR_IN) / 512.0,
                                    inner=inner, team=team)
 

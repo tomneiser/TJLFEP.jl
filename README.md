@@ -11,11 +11,16 @@ density/pressure gradients used for EP transport and stability studies.
 It is a close, jointly-maintained translation of the Fortran GACODE add-on
 `TGLF-EP` — verified against it bit-for-bit — and adds a CUDA GPU eigensolver path
 that is **~6.8× faster than the Fortran CPU reference** at production basis size
-(`N_BASIS=32`). A Julia-native **autodiff (`ad`) solver** pushes this to **~36×**
-by replacing the brute-force scale-factor grid with a gradient-based Newton
-root-find (see the benchmark below); because it is grid-independent, the AD
-solver also *changes the result* — its `sfmin` is the smooth, more accurate
-marginal factor rather than a value quantized to the coarse factor grid.
+(`N_BASIS=32`). On top of that, Julia-native **autodiff (`ad`) solvers** replace
+the brute-force scale-factor grid with gradient-based onset root-finds plus a
+width-extended `(kyhat,width)` descent. These also *change the result*: they
+locate the narrow-width EP-driven modes the Fortran `w≥1` box excludes (up to
+~10× lower `sfmin` at the outer radii), yielding the smooth, more accurate
+marginal factor rather than a value quantized to the coarse factor grid. The
+production default **`:ad :locate`** tracks the `robust_ad` reference essentially
+bit-for-bit while running the full 20-radius profile at **~4.7× lower node-hours
+than Fortran** (and the bulk-generation **`:ad :wide`** at ~9×); see the
+benchmark below.
 
 ## Capabilities
 
@@ -129,9 +134,13 @@ the cheap `ad` descent), so it tracks `robust_ad` essentially bit-for-bit across
 profile at a fraction of the cost — the speed/accuracy sweet spot, and now the default
 `solver`/`extend_mode` in FUSE. For bulk NN-database generation, **`:ad :wide`** (a single
 log-seeded multistart pass, `wide_kdesc=2`) is **~2× faster than `:locate`** while staying
-conservative — always ≥ `robust_ad`, within ~1–2×, never under-predicting. Keep
-`robust_ad` as the always-finite reference and `truth` (the `nbasis`-converged tier) for
-validation. The plot overlays `sfmin(IR)` for all four solvers at `N_BASIS=32`:
+conservative — always ≥ `robust_ad`, within ~1–2×, never under-predicting. For quick
+iteration / fast turnaround there is also **`:ad :only`** — the "bare" AD config (the
+canonical `w≥1` box, `extend_width=false` and no faithful confirm): the fastest tier, but it
+**misses the narrow-width edge modes** so it should not be used for production or NN-DB
+generation. Keep `robust_ad` as the always-finite reference and `truth` (the
+`nbasis`-converged tier) for validation. The plot overlays `sfmin(IR)` for all four solvers
+at `N_BASIS=32`:
 
 ![sfmin vs radius: grid vs robust_ad vs :ad :locate vs :ad :wide](docs/plots/ad_wide_accuracy_nb32.png?v=1)
 
@@ -164,69 +173,52 @@ SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
 | 16 | 347.0  | 250.0   | 161.7 | 2.15× |
 | 32 | 1546.0 | 1029.2  | 226.3 | **6.83×** |
 
-**Autodiff solver** — Julia GPU (5 A100 nodes, **in-process threads**), vs the
-grid GPU path above:
+**Fast-turnaround `:ad :only` (bare AD: `w≥1` box, no faithful confirm)** — Julia GPU
+(5 A100 nodes, **in-process threads**), vs the grid GPU path above. This is the
+fastest tier — the AE-onset + IFT `(kyhat,width)` descent on the canonical `w≥1`
+box with no width-extension and no faithful-confirm steps — meant for quick
+iteration. *It is **not** production-accurate:* it misses the narrow-width edge
+modes, so its `sfmin` matches neither `:ad :locate`/`robust_ad` nor (necessarily)
+the `grid` keep-flag value. The production `:ad :locate` adds the narrow-width
+`(kyhat,width)` locate **and** faithful confirms, so it costs more (≈0.92 vs grid
+≈0.31 node-hours, per the node-hours table above) in exchange for `robust_ad`-level
+accuracy.
 
-| N_BASIS | Grid GPU MPS (s) | AD GPU threads (s) | AD vs grid-GPU | AD vs Fortran |
-|--------:|-----------------:|-------------------:|---------------:|--------------:|
-| 6  | 140.4 | 65.6 | 2.1× | 0.95× |
-| 8  | 149.0 | 57.9 | 2.6× | 1.7× |
-| 16 | 161.7 | 47.4 | 3.4× | 7.3× |
-| 32 | 226.3 | 42.7 | **5.3×** | **36×** |
+| N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | `:only` vs grid-GPU |
+|--------:|-----------------:|----------------------------:|--------------------:|
+| 6  | 140.4 | 65.6 | 2.1× |
+| 8  | 149.0 | 57.9 | 2.6× |
+| 16 | 161.7 | 47.4 | 3.4× |
+| 32 | 226.3 | 42.7 | **5.3×** |
 
 The grid GPU eigensolver wins decisively over Fortran as the dense eigenproblem
-grows (**6.8×** at `N_BASIS=32`). The AD solver then wins again on top of that:
-**~43 s for the full 20-radius profile at `N_BASIS=32` — 5.3× faster than grid-GPU
-and 36× faster than Fortran.** Running the AD path on an MPS team instead is
-*slower* (≈4.5 min at `N_BASIS=32`, and it worsens with `N_BASIS`): the per-radius
-AD parallel regions are small and the Newton descent is sequential, so the
+grows (**6.8×** at `N_BASIS=32`). `:ad :only` then wins again on top of that —
+~43 s for the full 20-radius profile at `N_BASIS=32`, 5.3× faster than grid-GPU and
+~36× faster than the Fortran CPU reference (1546 s) — **but only because it skips
+the width-extension and confirm work** that the production `:ad :locate` does. Use
+`:only` for fast iteration; use `:ad :locate` (or `:wide` for bulk) when the result
+must be trusted — the honest production comparison is the node-hours table above
+(`:ad :wide` ~9×, `:ad :locate` ~4.7× below Fortran). Running the AD path on an MPS
+team instead is *slower* (≈4.5 min at `N_BASIS=32`, and it worsens with `N_BASIS`):
+the per-radius AD parallel regions are small and the descent is sequential, so the
 team-spawn / remote-call overhead is never amortized. **Rule of thumb: `grid` → MPS,
 `ad` → threads.**
 
 **Physical-truth solver** — Julia GPU (5 A100 nodes, **MPS team**); the accuracy tier,
 not the speed tier:
 
-| N_BASIS | Grid GPU MPS (s) | AD GPU threads (s) | Truth GPU MPS (s) |
-|--------:|-----------------:|-------------------:|------------------:|
+| N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | Truth GPU MPS (s) |
+|--------:|-----------------:|----------------------------:|------------------:|
 | 6  | 140.4 | 65.6 | 397.7 |
 | 8  | 149.0 | 57.9 | 429.5 |
 | 16 | 161.7 | 47.4 | 667.0 |
 | 32 | 226.3 | 42.7 | **2039.3** |
 
 `truth` costs ~34 min for the full profile at `N_BASIS=32` (vs ~3.8 min `grid` MPS and
-~0.7 min `ad` threads), because per radius it runs an extended-width `(ky,w)` search plus a
+~0.7 min `:ad :only` threads), because per radius it runs an extended-width `(ky,w)` search plus a
 4-point `nbasis` convergence sweep `{32,40,48,56}`. Use it when the true narrow-width EP
 threshold is required (it is ~1.9× below grid on the median radius, up to ~11× at the edge);
 otherwise the `:triggered` policy pays this cost only at the flagged near-marginal radii.
-
-### Why AD time is nearly flat (and even dips) in N_BASIS
-
-It looks odd that the AD wallclock does not grow with `N_BASIS` — it even ticks
-*down* slightly (65.6 → 57.9 → 47.4 → 42.7 s for `N_BASIS` 6 → 8 → 16 → 32),
-the opposite of the O(n³) growth you see in the grid/Fortran columns. This is
-expected, not a measurement glitch:
-
-- **AD is overhead-bound, not arithmetic-bound.** The AD route issues a *fixed,
-  N_BASIS-independent* number of eigensolves per radius (a 4×8 seed grid plus a
-  capped AE-onset Newton + implicit-function-theorem descent — ~10² solves),
-  versus the *thousands per radius* the grid path sweeps. With so few solves, the
-  per-radius wall is dominated by fixed per-task cost (CUDA context init, first-call
-  kernel compile/load, reading `input.gacode`) rather than by the dense eigensolve.
-  At these matrix sizes that overhead floor dwarfs the O(n³) arithmetic, so the AD
-  curve stays flat while the grid curve climbs steeply.
-- **Higher `N_BASIS` resolves the physics better, so it converges in fewer solves.**
-  With a coarse basis the growth-rate spectrum γ(factor) is poorly resolved, so the
-  safeguarded Newton/IFT refinement tends to take more steps (more backtracks)
-  before it brackets the onset. With a finer basis the γ(factor) curve is smooth and
-  well-resolved, so the root-find converges in fewer iterations — which can more than
-  offset the larger per-solve cost. This is the small downward trend you see.
-- **The `scan` number is a max over 20 parallel radii** (one per GPU), so it is a
-  straggler-sensitive extreme value; run-to-run noise of a few seconds is normal and
-  accounts for the rest of the wiggle.
-
-Bottom line: a bigger basis is not literally "faster to solve"; the AD route is
-simply insensitive to `N_BASIS` in wallclock, which is exactly why it is the
-production win at large `N_BASIS` where the grid/Fortran cost explodes.
 
 ### AD changes the result (it is grid-independent)
 
