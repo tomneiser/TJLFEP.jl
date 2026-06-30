@@ -1,4 +1,5 @@
 [![codecov](https://codecov.io/github/projecttorreypines/tjlfep.jl/graph/badge.svg?token=WIeugjkmVB)](https://codecov.io/github/projecttorreypines/tjlfep.jl)
+![Docs](https://github.com/ProjectTorreyPines/TJLFEP.jl/actions/workflows/make_docs.yml/badge.svg)
 
 # TJLFEP.jl
 
@@ -7,6 +8,9 @@ threshold model built on top of [TJLF](https://github.com/ProjectTorreyPines/TJL
 (the Julia port of TGLF). TJLFEP scans a scale factor on the EP pressure gradient
 until a marginally unstable Alfvénic mode appears, yielding the critical EP
 density/pressure gradients used for EP transport and stability studies.
+
+For the full API reference, see the
+[online documentation](https://projecttorreypines.github.io/TJLFEP.jl/dev).
 
 It is a close, jointly-maintained translation of the Fortran GACODE add-on
 `TGLF-EP` — verified against it bit-for-bit — and adds a CUDA GPU eigensolver path
@@ -125,7 +129,7 @@ are compared, each on its fastest parallel layout:
   separable `nbasis` convergence sweep `{32,40,48,56}` at the located optimum — a small,
   conservative correction that only matters at the ~5 outer narrow-AE radii. Use
   `robust_ad` for production scans and `truth` (on an **MPS team**) for validation. See
-  [`docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`](docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md).
+  [`docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`](https://github.com/ProjectTorreyPines/TJLFEP.jl/blob/master/docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md).
 
 **Recommended production model: `:ad :locate` (the `ActorTJLFEP` default).** The
 width-extended `ad` path folds in the same narrow-width locate `robust_ad` uses (a dense
@@ -142,7 +146,7 @@ generation. Keep `robust_ad` as the always-finite reference and `truth` (the
 `nbasis`-converged tier) for validation. The plot overlays `sfmin(IR)` for all four solvers
 at `N_BASIS=32`:
 
-![sfmin vs radius: grid vs robust_ad vs :ad :locate vs :ad :wide](docs/plots/ad_wide_accuracy_nb32.png?v=1)
+![sfmin vs radius: grid vs robust_ad vs :ad :locate vs :ad :wide](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ad_wide_accuracy_nb32.png?v=1)
 
 `:ad :locate` (green) overlays `robust_ad` (black) almost exactly across the entire
 profile, both dropping well below the Fortran-equivalent `grid` (gray dashed) into the
@@ -151,7 +155,7 @@ recovers nearly all of that narrow-width accuracy in a single pass — tracking
 `:locate`/`robust_ad` to within ~1–2× (a mild, conservative over-prediction at the outer
 radii, e.g. ~1.7× at IR=64) and never falling below them.
 
-![Node-hours vs N_BASIS](docs/plots/scan20_timing_wide_lines.png?v=2)
+![Node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/scan20_timing_wide_lines.png?v=2)
 
 The plot reports each solver's **cost in node-hours** (nodes × wallclock) on the identical
 1-node-backfill layout (4 GPU workers draining a 20-radius claim queue), so the comparison

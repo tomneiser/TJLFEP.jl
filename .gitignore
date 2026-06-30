@@ -2,6 +2,11 @@
 # Remove attic/ permanently with `rm -rf attic/` once confirmed unneeded.
 attic/
 
+# Documenter build products / auto-generated API page
+docs/build/
+docs/site/
+docs/src/api.md
+
 # Slurm / local run artifacts
 build/*.out
 build/*.err

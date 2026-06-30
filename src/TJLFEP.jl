@@ -69,4 +69,13 @@ export runTHD_dd_radius
 export make_crit_grad_plots
 export TJLF
 
+# Collect the exported names for the auto-generated API reference (docs/make.jl).
+# Mirrors TJLF: list public symbols, skipping the module itself and the
+# re-exported `TJLF` submodule (documented in its own package).
+const document = Dict()
+document[Symbol(@__MODULE__)] = [
+    name for name in Base.names(@__MODULE__; all=false, imported=false)
+    if name != Symbol(@__MODULE__) && name != :TJLF
+]
+
 end 
