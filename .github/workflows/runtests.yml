@@ -5,6 +5,7 @@ on:
     branches:
       - master
   pull_request:
+  workflow_dispatch:
 
 # Note: TJLFEP hard-depends on the full FUSE stack (FUSE/IMAS/TurbulentTransport/CUDA),
 # so the first cold run instantiates a large dependency graph (slow). julia-actions/cache
@@ -52,6 +53,23 @@ jobs:
         working-directory: TJLFEP
         run: julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 
+      # Coverage is OFF unless --code-coverage is passed. `user` instruments the
+      # package source so .cov files land under TJLFEP/src/ for processcoverage below.
       - name: Run regression tests
         working-directory: TJLFEP
-        run: julia --project=. -t ${JULIA_NUM_THREADS} test/runtests.jl
+        run: julia --project=. -t ${JULIA_NUM_THREADS} --code-coverage=user test/runtests.jl
+
+      # processcoverage runs at the workspace ROOT (no working-directory on uses
+      # steps), but the package was checked out under TJLFEP/ and tested there,
+      # so the .cov files are in TJLFEP/src/ — point it there, not at src/.
+      # src/ only: the TJLFEPIMASExt extension under ext/ is not loaded in
+      # FILE_ONLY mode, so including it would report it as 0% covered.
+      - uses: julia-actions/julia-processcoverage@v1
+        with:
+          directories: TJLFEP/src
+
+      - uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
