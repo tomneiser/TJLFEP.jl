@@ -20,8 +20,11 @@ locate the narrow-width EP-driven modes the Fortran `w≥1` box excludes (up to
 marginal factor rather than a value quantized to the coarse factor grid. The
 production default **`:ad :locate`** tracks the `robust_ad` reference essentially
 bit-for-bit while running the full 20-radius profile at **~4.7× lower node-hours
-than Fortran** (and the bulk-generation **`:ad :wide`** at ~9×); see the
-benchmark below.
+than Fortran** (and the bulk-generation **`:ad :wide`** at ~9×). For fast
+iteration, the bare **`:ad :only`** tier runs that same profile in ~43 s at
+`N_BASIS=32` — **~36× faster than the Fortran CPU reference** — though it skips
+the narrow-width edge modes, so it is meant for quick turnaround rather than
+production. See the benchmark below.
 
 For the full API reference, see the
 [online documentation](https://projecttorreypines.github.io/TJLFEP.jl/dev).
@@ -188,12 +191,17 @@ the `grid` keep-flag value. The production `:ad :locate` adds the narrow-width
 ≈0.31 node-hours, per the node-hours table above) in exchange for `robust_ad`-level
 accuracy.
 
-| N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | `:only` vs grid-GPU |
-|--------:|-----------------:|----------------------------:|--------------------:|
-| 6  | 140.4 | 65.6 | 2.1× |
-| 8  | 149.0 | 57.9 | 2.6× |
-| 16 | 161.7 | 47.4 | 3.4× |
-| 32 | 226.3 | 42.7 | **5.3×** |
+| N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | `:only` vs grid-GPU | `:only` vs Fortran CPU |
+|--------:|-----------------:|----------------------------:|--------------------:|-----------------------:|
+| 6  | 140.4 | 65.6 | 2.1× | 0.95× |
+| 8  | 149.0 | 57.9 | 2.6× | 1.7× |
+| 16 | 161.7 | 47.4 | 3.4× | 7.3× |
+| 32 | 226.3 | 42.7 | **5.3×** | **36×** |
+
+(The `:only` vs Fortran CPU column divides the grid solver's Fortran CPU times
+above by `:ad :only`'s wallclock; the advantage grows with `N_BASIS` as the dense
+eigenproblem comes to dominate — from slightly slower at `N_BASIS=6` to ~36× at
+`N_BASIS=32`.)
 
 The grid GPU eigensolver wins decisively over Fortran as the dense eigenproblem
 grows (**6.8×** at `N_BASIS=32`). `:ad :only` then wins again on top of that —
