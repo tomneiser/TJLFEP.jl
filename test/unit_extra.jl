@@ -95,4 +95,65 @@ using TJLFEP
         @test mq2.kymark == 0.0
         @test mq2.width == 1.0
     end
+
+    @testset "mainsub PROCESS_IN no-op branches + solver guard" begin
+        ep = Options{Float64}(1, false, 5, 1, 1, 1)
+        pr = profile{Float64}(1, 1)
+        # PROCESS_IN 1/2/4/6 are not-implemented stubs that just return "No".
+        for pin in (1, 2, 4, 6)
+            ep.PROCESS_IN = pin
+            @test TJLFEP.mainsub(ep, pr, false) == "No"
+        end
+        # Unknown solver is rejected before any dispatch.
+        ep.PROCESS_IN = 5
+        @test_throws ErrorException TJLFEP.mainsub(ep, pr, false; solver=:bogus)
+    end
+
+    @testset "slurm_array_task_id (env parsing)" begin
+        saved = Dict(k => get(ENV, k, nothing)
+                     for k in ("SLURM_ARRAY_TASK_ID", "SLURM_ARRAY_TASKID", "SLURM_PROCID"))
+        try
+            for k in keys(saved); delete!(ENV, k); end
+            @test TJLFEP.slurm_array_task_id() == 0          # nothing set -> 0
+
+            ENV["SLURM_PROCID"] = "7"
+            @test TJLFEP.slurm_array_task_id() == 7          # falls back to PROCID
+
+            ENV["SLURM_ARRAY_TASK_ID"] = "3"
+            @test TJLFEP.slurm_array_task_id() == 3          # array id takes precedence
+        finally
+            for (k, v) in saved
+                v === nothing ? delete!(ENV, k) : (ENV[k] = v)
+            end
+        end
+    end
+
+    @testset "_resolve_runTHD_parallel / _unpack_mainsub!" begin
+        @test TJLFEP._resolve_runTHD_parallel(:threads) == :threads
+        @test TJLFEP._resolve_runTHD_parallel(:distributed) == :distributed
+        # :auto resolves to :threads on a single-worker process.
+        @test TJLFEP._resolve_runTHD_parallel(:auto) == :threads
+
+        ret = ((:g, :ep, :mt, :mql), (:sf, :wf))
+        growth, ep, mt, mql = TJLFEP._unpack_mainsub!(ret)
+        @test (growth, ep, mt, mql) == (:g, :ep, :mt, :mql)
+    end
+
+    @testset "_write_radius_buffers" begin
+        tmp = mktempdir()
+        # nothing / empty -> no files written.
+        TJLFEP._write_radius_buffers(nothing, "_r001"; out_dir=tmp)
+        TJLFEP._write_radius_buffers((nothing, nothing), "_r001"; out_dir=tmp)
+        @test isempty(readdir(tmp))
+
+        # scalefactor buffer + one wavefunction file.
+        sf = ["line1", "line2"]
+        wf = [("out.wavefunction_r001", ["a", "b"]), ("empty", String[])]
+        TJLFEP._write_radius_buffers((sf, wf), "_r001"; out_dir=tmp)
+        @test isfile(joinpath(tmp, "out.scalefactor_r001"))
+        @test isfile(joinpath(tmp, "out.wavefunction_r001"))
+        @test !isfile(joinpath(tmp, "empty"))           # empty buffer is skipped
+        @test readlines(joinpath(tmp, "out.scalefactor_r001")) == sf
+        rm(tmp; recursive=true, force=true)
+    end
 end
