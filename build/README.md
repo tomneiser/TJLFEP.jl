@@ -159,8 +159,15 @@ the identical GPU solver paths (grid / `:ad` / `:robust_ad` / `:truth`):
   file-based scan (`runTHD` / `run_gacode_scan_task`) gets before going FUSE-native.
   It is leaner and faster to load: on an A100 node a worker process starts in
   **~5.0 s vs ~7.2 s** for the generic image (~2 s / ~30% faster per worker, warm
-  cache; measured via `sysimage/batch_measure_sysimage_load.sh`). Build time is
-  comparable (~29 min, same GPU precompile workload); the build self-checks that
+  cache; measured via `sysimage/batch_measure_sysimage_load.sh`). In a real 5-node
+  / 20-task scan the win is larger because the slowest of the 20 concurrently
+  launching workers sets the wall, and the leaner image shortens that load-tail:
+  the `:ad :only` scan20 timing logs show file-only beating generic by **~6–24 s of
+  scan wallclock** at N_BASIS 8/16/32 (identical compute). The exception is
+  N_BASIS=6, whose file-only runs are reproducibly dominated by cold 20-way 1.1 GB
+  load I/O (~150-170 s) rather than compute — which is why the timing plot pins
+  nb6 to the generic image and nb8/16/32 to file-only. Build time is comparable
+  (~29 min, same GPU precompile workload); the build self-checks that
   `TJLFEPIMASExt` stays dormant and FUSE is not baked.
 
 The CPU image is `TJLFEP_cpu_sysimage.so`.
