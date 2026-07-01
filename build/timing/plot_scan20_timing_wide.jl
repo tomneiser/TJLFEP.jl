@@ -55,26 +55,29 @@ end
 wide = [wide_nh(nb) for nb in basis]
 
 # --- :ad :only (bare w>=1, no confirm) series ---
-# :only needs no backfill (few solves, fast), so it is submitted on the 5-node MPS
-# layout (5 nodes x 4 GPU = 20 GPUs, one radius each, wall = slowest radius), same as
-# grid/:wide. Node-hours = nodes x full-scan wallclock, parsed from the fresh sysimage
-# 5-node logs (time_scan20_nb<nb>_julia_gpu_ad_ONLY_<jobid>.out). Falls back to the
-# legacy bare-AD 5-node-threads measurement until the fresh runs land.
-const ONLY_5NODE_S = Dict(6 => 65.6, 8 => 57.9, 16 => 47.4, 32 => 42.7)
+# 5-node MPS layout (5 nodes x 4 GPU = 20 GPUs, one radius/task, wall = slowest task),
+# node-matched to grid/:wide. Node-hours = nodes x full-scan wallclock. Sources are
+# PINNED per N_BASIS (job id) for reproducibility -- "newest-wins" globbing previously
+# grabbed stray reruns. nb8/16/32 use the FILE-ONLY GPU sysimage runs (leaner 1.1 GB
+# image -> faster load + identical compute, so faster than the generic image). nb6 uses
+# the GENERIC-image run: its file-only scan wallclock is dominated by 20-way cold 1.1 GB
+# sysimage-load I/O (~150-170 s, reproducible over two runs) rather than compute
+# (~13 s/radius), which would make the line non-monotone. Mixed-image by design: :only is
+# file-only where clean; grid/:locate/:wide stay on the generic image.
+const ONLY_JOBID = Dict(6 => 55326426, 8 => 55330924, 16 => 55330925, 32 => 55330927)
 function only_nh(nb::Int)
-    pat = Regex("time_scan20_nb$(nb)_julia_gpu_ad_ONLY_[0-9]+\\.out")
-    files = sort(filter(f -> occursin(pat, f), readdir(BUILD)))
-    for f in reverse(files)                       # newest job id wins
-        for ln in eachline(joinpath(BUILD, f))
-            occursin("phase=scan", ln) || continue
-            m = match(r"seconds=\s*([0-9.]+)", ln)
-            n = match(r"nodes=([0-9]+)", ln)
-            m === nothing && continue
-            nodes = n === nothing ? 5.0 : parse(Float64, n.captures[1])
-            return parse(Float64, m.captures[1]) * nodes / 3600
-        end
+    haskey(ONLY_JOBID, nb) || return NaN
+    f = joinpath(BUILD, "time_scan20_nb$(nb)_julia_gpu_ad_ONLY_$(ONLY_JOBID[nb]).out")
+    isfile(f) || (@warn "missing pinned :only log" file=f; return NaN)
+    for ln in eachline(f)
+        occursin("phase=scan", ln) || continue
+        m = match(r"seconds=\s*([0-9.]+)", ln)
+        n = match(r"nodes=([0-9]+)", ln)
+        m === nothing && continue
+        nodes = n === nothing ? 5.0 : parse(Float64, n.captures[1])
+        return parse(Float64, m.captures[1]) * nodes / 3600
     end
-    return haskey(ONLY_5NODE_S, nb) ? ONLY_5NODE_S[nb] * 5 / 3600 : NaN   # legacy fallback
+    return NaN
 end
 only = [only_nh(nb) for nb in basis]
 

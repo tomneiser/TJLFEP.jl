@@ -154,13 +154,15 @@ in a single pass, within ~1–2× of `:ad :locate` (a mild, conservative over-pr
 e.g. ~1.7× at IR=64) and never below it. Colors and legend order match the node-hours
 plot below for quick cross-reference.
 
-![Node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/scan20_timing_wide_lines.png?v=6)
+![Node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/scan20_timing_wide_lines.png?v=7)
 
 Absolute node-hours at `N_BASIS=32` (1-node-backfill layout, 4 GPU workers draining a
-20-radius queue): Fortran ≈4.3; `grid` ≈0.31, `:ad :only` ≈0.21, `:ad :wide` ≈0.46,
+20-radius queue): Fortran ≈4.3; `grid` ≈0.31, `:ad :only` ≈0.18, `:ad :wide` ≈0.46,
 `:ad :locate` ≈0.92. `:ad :wide` is ~2× cheaper than `:locate`
 (the gap widens at higher `N_BASIS`, where the faithful confirms cost more). The
-per-backend tables below give the raw wallclock seconds.
+per-backend tables below give the raw wallclock seconds. (The `:ad :only` line uses the
+leaner file-only GPU sysimage at `N_BASIS≥8`, where its faster load makes it edge out the
+generic image; the other tiers use the generic image.)
 
 **Best-throughput layout depends on the solver** (for these `SCAN_N=20` runs):
 - **`:grid` and `:ad :only` → 5 GPU nodes.** Per-radius cost is uniform, so
