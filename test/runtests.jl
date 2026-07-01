@@ -19,6 +19,9 @@ using Test
     # Small multi-radius scan + finalize (mirror of FUSE's ActorTJLFEP smoke test).
     include("unit_scan_finalize.jl")
 
+    # Ballooning-width scan (PROCESS_IN=3 WIDTH_IN_FLAG=false branch).
+    include("unit_widthscan.jl")
+
     # End-to-end regression against the Fortran TGLF-EP reference (one radius).
     include("runtests_regression_nb6.jl")
     include("runtests_regression_spectrum.jl")
