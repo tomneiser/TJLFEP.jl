@@ -87,3 +87,22 @@ build/mpssweep_*/
 build/mpsteamdiag_*/
 build/probesplit_*/
 build/tjlf_bench_env/
+
+# Slurm job stdout/stderr and run logs. These land at the repo root (e.g.
+# ad_speedup_<jobid>.out, iter_fuse_scan20_gpu_<jobid>.err) and throughout the
+# build/ subtree (build/ad, build/timing, ...); the earlier build/*.{out,err,log}
+# rules only matched the build/ top level. None are ever tracked.
+*.out
+*.err
+*.log
+
+# Serialized matrices / scan-output tables and per-radius task dirs anywhere under
+# build/ (the earlier build/*.jls and build/*_tasks/ rules missed subdirectories
+# like build/ad/*_tasks/ and build/ad/*.jls). No .jls/.txt are tracked.
+build/**/*.jls
+build/**/*.txt
+build/**/*_tasks/
+
+# Sysimage backups and one-off timing probe run dirs
+build/*.so.bak
+build/timing/probe_*/
