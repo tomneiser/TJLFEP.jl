@@ -96,13 +96,20 @@ using TJLFEP
         @test mq2.width == 1.0
     end
 
-    @testset "mainsub PROCESS_IN no-op branches + solver guard" begin
+    @testset "mainsub unsupported PROCESS_IN + solver guard" begin
         ep = Options{Float64}(1, false, 5, 1, 1, 1)
         pr = profile{Float64}(1, 1)
-        # PROCESS_IN 1/2/4/6 are not-implemented stubs that just return "No".
+        # PROCESS_IN 1/2/4/6 are unported Fortran modes -> actionable error.
         for pin in (1, 2, 4, 6)
             ep.PROCESS_IN = pin
-            @test TJLFEP.mainsub(ep, pr, false) == "No"
+            err = try
+                TJLFEP.mainsub(ep, pr, false); nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("not implemented", err.msg)
+            @test occursin("PROCESS_IN=$(pin)", err.msg)
         end
         # Unknown solver is rejected before any dispatch.
         ep.PROCESS_IN = 5

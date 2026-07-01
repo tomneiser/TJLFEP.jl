@@ -40,17 +40,8 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
     solver in (:grid, :ad, :robust_ad, :truth) ||
         error("mainsub: solver must be :grid, :ad, :robust_ad, or :truth (got $solver)")
     x = inputsEP.PROCESS_IN
-    if (x == 1)
-        msg = "No"
-        return msg
-    elseif (x == 2)
-        msg = "No"
-        return msg
-    elseif (x == 3)
+    if (x == 3)
         return _mainsub_spectrum(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
-    elseif (x == 4)
-        msg = "No"
-        return msg
     elseif (x == 5)
         inputsEP.WIDTH_IN_FLAG = false
         inputsEP.MODE_IN = 2
@@ -72,10 +63,21 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
             kwscale_scan(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team,
                          ql_flux_scan=ql_flux_scan)
         return (growthrate, inputsEP, inputsPR, marginal_ql), (scalefactor_buffer, wavebuffer_all)
-    elseif (x == 6)
-        msg = "No"
-        return msg 
+    else
+        _process_in_unsupported(x)
     end
+end
+
+# Fortran TGLFEP defines PROCESS_IN modes 1, 2, 4, and 6, but only the linear
+# spectrum diagnostic (3) and the critical-EP-density-gradient threshold scan (5)
+# have been ported to TJLFEP. Callers destructure a `(growth, ep, pr, ...)` tuple,
+# so silently returning a sentinel would crash downstream with a cryptic
+# MethodError; throw an actionable error naming the supported modes instead.
+function _process_in_unsupported(x)
+    error("mainsub: PROCESS_IN=$(x) is not implemented in TJLFEP. Supported modes are " *
+          "3 (linear γ/ω spectrum diagnostic) and 5 (critical-EP-density-gradient " *
+          "threshold scan). Fortran TGLFEP modes 1, 2, 4, and 6 have not been ported; " *
+          "use PROCESS_IN=5 for critical-gradient scans or PROCESS_IN=3 for the spectrum.")
 end
 
 """
