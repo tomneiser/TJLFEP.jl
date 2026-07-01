@@ -9,6 +9,13 @@ get(ENV, "TJLFEP_FILE_ONLY", "0") == "1" || (ENV["TJLFEP_FILE_ONLY"] = "1")
 using Test
 
 @testset "TJLFEP" begin
+    # Fast, solve-free unit tests (parsers, structs, file IO) for broad coverage.
+    include("unit_helpers.jl")
+    include("unit_structs.jl")
+    include("unit_io.jl")
+    include("unit_ad_smoke.jl")
+
+    # End-to-end regression against the Fortran TGLF-EP reference (one radius).
     include("runtests_regression_nb6.jl")
     include("runtests_regression_spectrum.jl")
 end

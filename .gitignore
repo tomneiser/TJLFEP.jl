@@ -7,6 +7,10 @@ docs/build/
 docs/site/
 docs/src/api.md
 
+# Code-coverage artifacts (julia --code-coverage=user)
+*.cov
+lcov.info
+
 # Slurm / local run artifacts
 build/*.out
 build/*.err
