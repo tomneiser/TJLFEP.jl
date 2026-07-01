@@ -36,6 +36,20 @@ function _widthscan_combo(i::Int, widths::AbstractVector{T},
     )
 end
 
+"""
+    TJLFEP_ky_widthscan(inputsEP::Options, inputsPR::profile; use_gpu=false, inner=:threads, team=nothing)
+
+TGLFEP `ky` width-scan port, used by the spectrum diagnostic ([`TJLFEP_TM`](@ref),
+`PROCESS_IN=3`) when `WIDTH_IN_FLAG=false`. Scans the single-`ky`
+growth-rate/frequency over a width grid (`WIDTH_MIN : 0.01 : WIDTH_MAX`) at the
+EP-only drive and picks the width that maximizes the kept-mode growth rate.
+
+`inner`/`team` select the parallel backend (`:threads`, or `:mps_team` with GPU
+ids); `use_gpu=true` runs eigensolves on CUDA.
+
+Returns the chosen width, the `ky` used (constant across the scan → `kymark`),
+and the `out.ky_widthscan_m<mode>` buffer.
+"""
 function TJLFEP_ky_widthscan(inputsEP::Options{T}, inputsPR::profile{T};
                              use_gpu::Bool = false, inner::Symbol = :threads,
                              team::Union{Nothing,AbstractVector{<:Integer}} = nothing) where {T<:Real}

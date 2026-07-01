@@ -13,6 +13,23 @@ const _TM_NKY    = 30
 const _TM_KY     = 0.15
 const _TM_NBASIS = 32
 
+"""
+    TJLFEP_TM(inputsEP::Options, inputsPR::profile; mode_in, use_gpu=false)
+
+TGLFEP spectrum diagnostic (`PROCESS_IN=3`) port. Computes the gyro-Bohm
+normalized growth-rate/frequency spectra `γ(ky)`, `ω(ky)` by running the full
+TJLF transport model over a fixed `ky` grid (`nky=30`, `ky=0.15`,
+`KYGRID_MODEL=0`, `NBASIS=32`), matching the Fortran `TGLFEP_TM` /
+`write_eigenvalue_spectrum`.
+
+`mode_in` selects the drive (via [`TJLF_map`](@ref)'s override): `1` = background
+plasma + EPs, `2` = EP-only, `4` = ITG/TEM with TAE/EPM filtered. Pass
+`use_gpu=true` to run the eigensolves on CUDA.
+
+Returns `(ky, gamma, freq, (filename, buffer))`, where `gamma`/`freq` are
+`nky × nmodes` matrices (row `i` = `ky[i]`) and `buffer` reproduces
+`out.eigenvalue_m<mode><suffix>`.
+"""
 function TJLFEP_TM(inputsEP::Options{T}, inputsPR::profile{T}; mode_in::Int,
                    use_gpu::Bool = false) where {T<:Real}
     ky_model = coalesce(inputsEP.KY_MODEL, 0)

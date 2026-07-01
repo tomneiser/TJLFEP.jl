@@ -483,6 +483,31 @@ function _runTHD_core!(
     return width, kymark_out, SFmin, dpdr_crit_out, dndr_crit_out
 end
 
+"""
+    runTHD(tglfepfilepath, mtglffilepath, exprofilepath; kwargs...)
+
+Run a TJLFEP critical-gradient scan from the file-based inputs: an
+`input.TGLFEP` (scan control), an `input.MTGLF` (profiles), and an `input.EXPRO`
+(experimental profiles for the α/EP quantities).
+
+Reads the three files into [`Options`](@ref)/[`profile`](@ref), applies the
+EXPRO-derived setup, and runs the scan.
+
+# Keywords
+- `printout::Bool=false`   - also write an `out.TGLFEP` summary file
+- `use_gpu::Bool=false`    - offload eigensolves to CUDA (auto-detected via `pick_device`)
+- `parallel::Symbol=:auto` - radial parallel layout
+- `inner::Symbol=:threads` - per-radius backend (`:threads` or `:mps_team`)
+- `team`                   - GPU ids for the MPS team layout
+- `ql_flux_scan::Bool`     - also extract QL fluxes at the marginal point
+- `solver::Symbol=:grid`   - critical-factor solver (`:grid`, `:ad`, `:truth`, ...)
+- `refine_rounds::Int=1`   - refinement passes
+
+Returns `(width, kymark_out, SFmin, dpdr_crit_out, dndr_crit_out)`.
+
+An IMAS data-dictionary method `runTHD(dd, rho, OptionsDict; ...)` is also
+available when the `TJLFEPIMASExt` extension is loaded (e.g. under FUSE).
+"""
 function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::String;
                 printout::Bool=false, use_gpu::Bool=false, parallel::Symbol=:auto,
                 inner::Symbol=:threads, team::Union{Nothing,AbstractVector{<:Integer}}=nothing,

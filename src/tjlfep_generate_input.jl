@@ -1,3 +1,13 @@
+"""
+    TJLFEP_generate_input()
+
+Generate the TJLFEP profile input files from an `input.TJLFEP.generate` source in
+the current directory (a port of the Fortran `TGLFEP_generate_input` utility).
+
+Reads the sign/geometry/species header and per-radius profile columns and writes
+the corresponding TJLFEP input(s). Errors out if `input.TJLFEP.generate` is not
+found.
+"""
 function TJLFEP_generate_input()
     # Constants and parameters
     pi = 3.14159265359
@@ -160,6 +170,17 @@ function TJLFEP_generate_input()
     end
 end
 
+"""
+    readline_values(file, n_count) -> (v1, v2)
+
+Read one line from an open `input.TJLFEP.generate` `file` and parse it as either
+a scalar or a `(min, max)` scan range. A leading `(` denotes a
+`(v1, v2)` range (returned as-is); otherwise the single value is returned
+duplicated as `(val, val)`. Used by [`TJLFEP_generate_input`](@ref).
+
+(`n_count` is the running count of range-valued parameters; it is incremented
+locally when a range is parsed.)
+"""
 function readline_values(file, n_count)
     line = readline(file)
     lead_char = first(strip(line))

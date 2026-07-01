@@ -12,6 +12,18 @@ function read_crit_grad(filepath::String; code::String="julia")
     return header, vals
 end
 
+"""
+    make_crit_grad_plots(SorF="neither"; dir="", scale="identity", code="julia")
+
+Plot the critical EP pressure- and density-gradient profiles
+(`alpha_dpdr_crit`, `alpha_dndr_crit`) written by a TJLFEP scan, saving
+`*_dpdr_crit.png` / `*_dndr_crit.png`.
+
+`SorF` selects the input/output directory and filename prefix (`"STRUCT"` →
+`structOutputs/`, `"FILE"` → `fileOutputs/`, anything else → `dir`/unprefixed).
+`scale` sets the y-axis scale and `code` selects the input file format
+(`"julia"` array literal vs. Fortran one-value-per-line).
+"""
 function make_crit_grad_plots(SorF::String="neither"; dir::String="", scale::String="identity", code::String="julia")
     if SorF == "STRUCT"
         dir  = "structOutputs"

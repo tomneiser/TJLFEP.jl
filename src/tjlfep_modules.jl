@@ -2,6 +2,25 @@
 # here -- TGLF inputs now come from `TurbulentTransport.InputTGLF` and `TJLF.InputTJLF`
 # (single input type, consistent with TJLF.jl). See TurbulentTransport/src/tglf_ep.jl.
 
+"""
+    Options{T<:Real}
+
+Scan-control / run settings for a TJLFEP calculation — the Julia counterpart of
+the Fortran `TGLFEP` interface module populated from an `input.TGLFEP` file.
+
+Holds the process/threshold selectors (`PROCESS_IN`, `THRESHOLD_FLAG`,
+`SCAN_METHOD`, rejection-flag toggles), basis/mode sizes (`N_BASIS`, `NMODES`,
+`NTOROIDAL`), the radial scan definition (`SCAN_N`, `IRS`, `IR_EXP`), the
+EP/ion species descriptors (`M_I`/`Q_I`/`M_EP`/`Q_EP`, `IS_EP`), the width
+controls (`WIDTH_IN_FLAG`, `WIDTH_IN`/`WIDTH_MIN`/`WIDTH_MAX`), and the
+per-`(kyhat,width)` keep/reject result masks (`LKEEP`, `LTEARING`, the pinch
+flags, ...) plus scan outputs (`FACTOR_OUT`, `WIDTH`, `F_REAL`).
+
+Fields default to `missing`/`NaN` and are filled by the readers
+([`readTGLFEP`](@ref), [`TJLFEP_generate_input`](@ref)); the inner constructor
+`Options{T}(nscan_in, widthin, nn, nr, jtscale_max, nmodes)` allocates the
+vector/matrix fields to the right sizes.
+"""
 mutable struct Options{T<:Real} # This acts as the interface module of Fortran, essentially. It reads the TGLFEP file
     PROCESS_IN::Union{Int, Missing} # May need to be a MODE_IN::Union{T, Missing} for PROCESS_IN <= 1
     THRESHOLD_FLAG::Union{Int, Missing}
@@ -121,6 +140,20 @@ mutable struct Options{T<:Real} # This acts as the interface module of Fortran, 
     end
 end
 
+"""
+    profile{T<:Real}
+
+Local plasma-equilibrium profiles on the TJLFEP radial grid — the intermediary
+between the input readers and the per-radius TGLF/TJLF solves.
+
+Stores the field signs (`SIGN_BT`, `SIGN_IT`), grid/species sizes (`NR`, `NS`,
+`N_ION`), the per-species matrices (`ZS`, `MASS`, `AS`, `TAUS`, `RLNS`, `RLTS`,
+`VPAR`, `VPAR_SHEAR`), the per-radius geometry/Miller quantities (`RMIN`, `RMAJ`,
+`Q`, `SHEAR`, `Q_PRIME`, `P_PRIME`, `KAPPA`/`DELTA`/`ZETA` and their shears, ...),
+and derived quantities (`ZEFF`, `BETAE`, `RHO_STAR`, `OMEGA_TAE`, `gammaE`,
+`B_UNIT`, ...). Populated from an `input.gacode`/EXPRO or `input.profile` source
+by the readers (e.g. [`read_input_profile`](@ref), `preprocess_gacode_inputs`).
+"""
 mutable struct profile{T<:Real}
     # This struct is an intermediary between the processes in read_inputs
     

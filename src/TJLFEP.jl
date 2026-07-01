@@ -38,10 +38,51 @@ include("plotCritGrads.jl")
 # Generic function bindings for the IMAS-path entry points implemented in
 # ext/TJLFEPIMASExt.jl. Declaring them here lets the extension add methods, and lets
 # TJLFEP export the names even when the extension is not loaded.
+
+"""
+    preprocess_imas_inputs(dd, rho, OptionsDict; kw...)
+
+Build TJLFEP's `Options`/`profile` inputs directly from an IMAS data dictionary
+(`dd`) on the requested `rho` grid, mirroring the `input.gacode` preprocessing.
+
+Method provided by the `TJLFEPIMASExt` package extension, which loads only when
+IMAS, GACODE, and TurbulentTransport are all present (e.g. under FUSE); calling
+it without the extension raises a `MethodError`.
+"""
 function preprocess_imas_inputs end
+
+"""
+    save_imas_preprocessed_inputs(args...; kw...)
+
+Write the IMAS-derived TJLFEP inputs to disk (the file-based `input.TGLFEP` /
+`input.MTGLF` / `input.EXPRO` set) so an IMAS run can be reproduced through the
+file path.
+
+Method provided by the `TJLFEPIMASExt` package extension (loaded under
+FUSE/IMAS); a `MethodError` is raised if the extension is not loaded.
+"""
 function save_imas_preprocessed_inputs end
+
+"""
+    remap_extraEP_for_fortran_save!(args...; kw...)
+
+Remap the extra energetic-particle species bookkeeping into the layout the
+Fortran-style file save expects (used when persisting IMAS-derived inputs).
+
+Method provided by the `TJLFEPIMASExt` package extension (loaded under
+FUSE/IMAS); a `MethodError` is raised if the extension is not loaded.
+"""
 function remap_extraEP_for_fortran_save! end
-# SPMD per-radius entry point for the MPS-team layout (method in ext/TJLFEPIMASExt.jl).
+
+"""
+    runTHD_dd_radius(args...; kw...)
+
+Single-program-multiple-data (SPMD) per-radius entry point used by the MPS-team
+multi-GPU layout: runs one radial point of an IMAS-`dd` scan on a worker.
+
+Method provided by the `TJLFEPIMASExt` package extension (loaded under
+FUSE/IMAS); a `MethodError` is raised if the extension is not loaded.
+"""
 function runTHD_dd_radius end
 
 export profile, Options, InputTJLF  # InputTJLF is TJLF.InputTJLF (single consolidated type)

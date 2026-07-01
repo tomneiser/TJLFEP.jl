@@ -1885,6 +1885,25 @@ end
 # AE-unstable-window lower edge f1, while interior basins are slid off-node by the :ad descent. Returns
 # trust diagnostics (feasible_frac, cheap_gap) for the escalation gate. ky_lo=0.25 reproduces the
 # canonical kwscale_scan kyhat floor {0.25,..,1.0} for nseed_ky=4.
+"""
+    critical_factor_ad_f1seed(ep0, prof; kwargs...)
+
+Cheap "front-end" critical-factor solver: an `f1`-seed grid over `(kyhat, width)`
+followed by an AD (`:ad`) descent on the interior basins and an early-stop
+few-confirm pass. Floor-pinned basins (onset at the scan floor) are caught via
+the AE-unstable-window lower-edge `f1`, while interior basins are slid off-node
+by the descent. This is the fast tier feeding the `:ad :locate`/`robust_ad`
+escalation ladder.
+
+Key keywords: `gamma_thresh` (growth-rate threshold; defaults per case),
+`scan_lo`/`scan_hi` (factor bracket; default `FACTOR_IN` and `FACTOR_IN/512`),
+`nseed_ky`/`nseed_w`/`n_eig_seed` (seed-grid sizes), `k_descend` (interior
+basins to descend), `ky_lo=0.25` (kyhat floor), and `inner`/`team`/`use_gpu`
+for the parallel/GPU backend.
+
+Returns the critical factor together with trust diagnostics (e.g.
+`feasible_frac`, `cheap_gap`) used by the escalation gate.
+"""
 function critical_factor_ad_f1seed(ep0, prof; gamma_thresh=nothing,
                                    scan_lo=nothing, scan_hi=nothing,
                                    nseed_ky::Int=4, nseed_w::Int=4, n_eig_seed::Int=12,

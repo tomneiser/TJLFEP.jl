@@ -252,6 +252,12 @@ function read_input_profile(filename::String)
     return prof
 end
 
+"""
+    readprofile(filename::String) -> profile
+
+Alias for [`read_input_profile`](@ref): read an `input.profile`-style file into a
+[`profile`](@ref) struct.
+"""
 readprofile(filename::String) = read_input_profile(filename)
 
 """Map GACODE `is_EP` (ions only) to EXPRO species index when species 1 is electron."""
@@ -277,6 +283,13 @@ function expro_dict_from_profile(prof::profile)
     return extraEP
 end
 
+"""
+    ir_exp_from_scan(nr::Int, irs::Int, scan_n::Int) -> Vector{Int}
+
+Compute the `scan_n` experimental radial indices for a scan: evenly spaced from
+the start index `irs` to `nr`. With `scan_n == 1` the single index `irs` is
+returned.
+"""
 function ir_exp_from_scan(nr::Int, irs::Int, scan_n::Int)
     ir_exp = Vector{Int}(undef, scan_n)
     for i in 1:scan_n
@@ -897,6 +910,16 @@ function default_input_tjlf(::Type{T}, ns::Int, nky::Int) where {T<:Real}
     return input
 end
 
+"""
+    TJLF_map(inputsEP::Options, inputsPR::profile; mode_in_override=nothing, ky_model_override=nothing, nky=12) -> TJLF.InputTJLF
+
+Build a `TJLF.InputTJLF` for a single radial point from TJLFEP's
+[`Options`](@ref) (scan control) and [`profile`](@ref) (plasma profiles),
+mirroring the Fortran `TGLFEP` → TGLF variable mapping.
+
+`mode_in_override` / `ky_model_override` force the drive selector and `ky`-grid
+model (used by the spectrum diagnostic), and `nky` sets the `ky`-grid size.
+"""
 function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T};
                   mode_in_override::Union{Nothing,Int} = nothing,
                   ky_model_override::Union{Nothing,Int} = nothing,
