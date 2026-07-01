@@ -160,9 +160,7 @@ Absolute node-hours at `N_BASIS=32` (1-node-backfill layout, 4 GPU workers drain
 20-radius queue): Fortran ≈4.3; `grid` ≈0.31, `:ad :only` ≈0.18, `:ad :wide` ≈0.46,
 `:ad :locate` ≈0.92. `:ad :wide` is ~2× cheaper than `:locate`
 (the gap widens at higher `N_BASIS`, where the faithful confirms cost more). The
-per-backend tables below give the raw wallclock seconds. (The `:ad :only` line uses the
-leaner file-only GPU sysimage at `N_BASIS≥8`, where its faster load makes it edge out the
-generic image; the other tiers use the generic image.)
+per-backend tables below give the raw wallclock seconds.
 
 **Best-throughput layout depends on the solver** (for these `SCAN_N=20` runs):
 - **`:grid` and `:ad :only` → 5 GPU nodes.** Per-radius cost is uniform, so

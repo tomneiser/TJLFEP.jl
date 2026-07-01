@@ -27,7 +27,7 @@ jobs and are gitignored.
 | `verify/` | Fortran-vs-Julia verification (batch runners, distributed drivers, overlay plotters). |
 | `run/` | Smoke test, file-based validation, 5-node production scan, merge, self-contained submit template. |
 | `timing/` | Timing-vs-N_BASIS sweep (per-backend batch runners, driver, collector, plotter). |
-| `sysimage/` | CPU + generic GPU sysimage builders and their precompile workloads. |
+| `sysimage/` | CPU + generic/file-only GPU sysimage builders, their precompile workloads, and the load-time benchmark (`batch_measure_sysimage_load.sh`). |
 
 The scripts cover five capabilities. The sixth — the FUSE-native IMAS `dd` path —
 lives in `src/` and is demonstrated in `examples/ITER/ITERstructExample.jl`.
@@ -147,14 +147,28 @@ batch scripts: `batch_time_scan20_julia_gpu_ad.sh` (threads, the fast one),
 
 ## 5. Sysimage build + run (`sysimage/`)
 
-Precompiled sysimages remove JIT cost (~110 s/team) for production runs. The
-canonical GPU image is `TJLFEP_gpu_generic_sysimage.so` (node-count agnostic);
-the CPU image is `TJLFEP_cpu_sysimage.so`. Both are written to `build/`. Keep the
-`.so` on a non-purged path (CFS, not `$PSCRATCH`) for reuse across jobs.
+Precompiled sysimages remove JIT cost (~110 s/team) for production runs. Images are
+node-count agnostic and written to `build/`; keep the `.so` on a non-purged path
+(CFS, not `$PSCRATCH`) for reuse across jobs. There are two GPU images, both baking
+the identical GPU solver paths (grid / `:ad` / `:robust_ad` / `:truth`):
+
+- **`TJLFEP_gpu_generic_sysimage.so`** (~3.0 GB) bakes the full FUSE-native stack
+  (CUDA + TJLF + TJLFEP + FUSE/IMAS); use it for the FUSE `dd` path and `ActorTJLFEP`.
+- **`TJLFEP_gpu_sysimage.so`** (~1.1 GB) is the **file-only** image (CUDA + TJLF +
+  TJLFEP standalone, IMAS/FUSE *not* baked) — what a TGLF-EP user running the
+  file-based scan (`runTHD` / `run_gacode_scan_task`) gets before going FUSE-native.
+  It is leaner and faster to load: on an A100 node a worker process starts in
+  **~5.0 s vs ~7.2 s** for the generic image (~2 s / ~30% faster per worker, warm
+  cache; measured via `sysimage/batch_measure_sysimage_load.sh`). Build time is
+  comparable (~29 min, same GPU precompile workload); the build self-checks that
+  `TJLFEPIMASExt` stays dormant and FUSE is not baked.
+
+The CPU image is `TJLFEP_cpu_sysimage.so`.
 
 ```bash
-sbatch sysimage/batch_build_gpu_sysimage_generic.sh   # -> sysimage/build_gpu_sysimage_generic.jl (+ precompile_gpu_workload_generic.jl)
-sbatch sysimage/batch_build_cpu_sysimage.sh           # -> sysimage/build_cpu_sysimage.jl (+ precompile_cpu_workload.jl)
+sbatch sysimage/batch_build_gpu_sysimage_generic.sh    # -> build_gpu_sysimage_generic.jl  (+ precompile_gpu_workload_generic.jl)
+sbatch sysimage/batch_build_gpu_sysimage_fileonly.sh   # -> build_gpu_sysimage_fileonly.jl (+ precompile_gpu_workload_fileonly.jl)
+sbatch sysimage/batch_build_cpu_sysimage.sh            # -> build_cpu_sysimage.jl          (+ precompile_cpu_workload.jl)
 ```
 
 Batch scripts auto-detect the image via `TJLFEP_GPU_SYSIMAGE` / `TJLFEP_SYSIMAGE`
