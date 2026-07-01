@@ -11,8 +11,9 @@ density/pressure gradients used for EP transport and stability studies.
 
 It is a close, jointly-maintained translation of the Fortran GACODE add-on
 `TGLF-EP` — verified against it bit-for-bit — and adds a CUDA GPU eigensolver path
-that is **~6.8× faster than the Fortran CPU reference** at production basis size
-(`N_BASIS=32`). On top of that, Julia-native **autodiff (`ad`) solvers** replace
+that is **~6.8× faster (wallclock) than the Fortran CPU reference** at production
+basis size (`N_BASIS=32`; ~14× in node-hours). On top of that, Julia-native
+**autodiff (`ad`) solvers** replace
 the brute-force scale-factor grid with gradient-based onset root-finds plus a
 width-extended `(kyhat,width)` descent. These also *change the result*: they
 locate the narrow-width EP-driven modes the Fortran `w≥1` box excludes (up to
@@ -176,12 +177,15 @@ seconds.
 **Grid solver** — Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
 SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
 
-| N_BASIS | Fortran CPU (s) | Julia CPU (s) | Julia GPU MPS (s) | GPU speedup vs Fortran |
-|--------:|----------------:|--------------:|------------------:|-----------------------:|
+| N_BASIS | Fortran CPU (s) | Julia CPU (s) | Julia GPU MPS (s) | GPU speedup vs Fortran (wallclock) |
+|--------:|----------------:|--------------:|------------------:|-----------------------------------:|
 | 6  | 62.5   | 141.3   | 140.4 | 0.45× |
 | 8  | 97.5   | 148.4   | 149.0 | 0.65× |
 | 16 | 347.0  | 250.0   | 161.7 | 2.15× |
 | 32 | 1546.0 | 1029.2  | 226.3 | **6.83×** |
+
+(Wallclock here compares a 5-node GPU run to a 10-node Fortran run; the fair
+node-hours comparison is in the node-hours plot/section above.)
 
 **Fast-turnaround `:ad :only` (bare AD: `w≥1` box, no faithful confirm)** — Julia GPU
 (5 A100 nodes, **in-process threads**), vs the grid GPU path above. Pick a solver by
@@ -195,31 +199,26 @@ what you want:
 - **Higher accuracy + narrow (`w<1`) AE modes:** **`:ad :locate`** (default) or
   **`:ad :wide`** for speed.
 
-| N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | `:only` vs grid-GPU | `:only` vs Fortran CPU |
-|--------:|-----------------:|----------------------------:|--------------------:|-----------------------:|
-| 6  | 140.4 | 69.3  | 2.0× | 0.90× |
-| 8  | 149.0 | 69.5  | 2.1× | 1.4× |
-| 16 | 161.7 | 103.8 | 1.6× | 3.3× |
-| 32 | 226.3 | 153.9 | **1.5×** | **10×** |
+| N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | `:only` vs grid-GPU (wallclock) |
+|--------:|-----------------:|----------------------------:|--------------------------------:|
+| 6  | 140.4 | 69.3  | 2.0× |
+| 8  | 149.0 | 69.5  | 2.1× |
+| 16 | 161.7 | 103.8 | 1.6× |
+| 32 | 226.3 | 153.9 | **1.5×** |
 
-(The `:only` vs Fortran CPU column divides the grid solver's Fortran CPU times
-above by `:ad :only`'s wallclock. The advantage over Fortran grows with `N_BASIS`
-— from slightly slower at `N_BASIS=6` to ~10× at `N_BASIS=32` — because Fortran's
-dense eigenproblem scales worst. The advantage over the GPU `grid` path, however,
-*shrinks* with `N_BASIS` (2.0× → 1.5×): `:only` is itself compute-bound, so its
-own wallclock rises with `N_BASIS`.)
+Both run on the same 5-node GPU layout, so this wallclock ratio is apples-to-apples.
+It *shrinks* with `N_BASIS` (2.0× → 1.5×) because `:ad :only` is itself
+compute-bound — its per-radius eigensolve cost grows with matrix size, so its
+wallclock *rises* with `N_BASIS` (~154 s for the full 20-radius profile at
+`N_BASIS=32`).
 
-The grid GPU eigensolver wins decisively over Fortran as the dense eigenproblem
-grows (**6.8×** at `N_BASIS=32`). `:ad :only` then wins again on top of that —
-~154 s for the full 20-radius profile at `N_BASIS=32`, ~1.5× faster than grid-GPU
-and ~10× faster than the Fortran CPU reference (1546 s) — **but only because it
-skips the width-extension and confirm work** that the production `:ad :locate`
-does. In node-hours (the layout-independent cost) `:ad :only` is the cheapest tier
-of all (~20× below Fortran at `N_BASIS=32`), but the wallclock advantage is modest
-because the AD eigensolve is compute-bound. Use `:only` for fast iteration; use
-`:ad :locate` (or `:wide` for bulk) when the result must be trusted — the honest
-production comparison is the node-hours table above (`:ad :wide` ~9×, `:ad
-:locate` ~4.7× below Fortran). Running the AD path on an MPS
+Against **Fortran** the fair comparison is **node-hours**, not wallclock (Fortran
+runs on 10 CPU nodes, the GPU tiers on 5), reported in the node-hours plot/section
+above. There, at `N_BASIS=32`, `:ad :only` is **~20× below Fortran** — the cheapest
+tier of all — versus `:ad :wide` ~9× and `:ad :locate` ~4.7×. `:ad :only` earns this
+purely by skipping the width-extension and confirm work; use it for fast iteration,
+and `:ad :locate` (or `:wide` for bulk) when the result must be trusted. Running the
+AD path on an MPS
 team instead is *slower* (≈4.5 min at `N_BASIS=32`, and it worsens with `N_BASIS`):
 the per-radius AD parallel regions are small and the descent is sequential, so the
 team-spawn / remote-call overhead is never amortized. **Rule of thumb: `grid` → MPS,
