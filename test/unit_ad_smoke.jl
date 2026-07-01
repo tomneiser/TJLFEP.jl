@@ -63,4 +63,41 @@ using TJLFEP
             saved === nothing ? delete!(ENV, "AD_EXTEND_MODE") : (ENV["AD_EXTEND_MODE"] = saved)
         end
     end
+
+    # Remaining production solver tiers on CPU at the cheapest setting (nb=2,
+    # single radius). The one-time ForwardDiff compile is amortized by the :only
+    # solve above, so each tier here adds only a few seconds. This covers the
+    # width-extension branches of _mainsub_ad (:wide, :locate) and the otherwise
+    # 0%-covered _mainsub_robust_ad path.
+    @testset "AD tiers: :ad :wide / :ad :locate / :robust_ad (nb=2)" begin
+        root = normpath(@__DIR__, "..")
+        gac  = joinpath(root, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
+        tgl  = joinpath(@__DIR__, "fixtures", "scan2", "input_scan2_nb2.TGLFEP")
+        @test isfile(gac) && isfile(tgl)
+
+        saved = get(ENV, "AD_EXTEND_MODE", nothing)
+        try
+            for mode in ("wide", "locate")
+                ENV["AD_EXTEND_MODE"] = mode
+                out = mktempdir()
+                r = run_gacode_scan_task(gac, tgl, 1; out_dir=out, use_gpu=false,
+                                         printout=false, solver=:ad)
+                @test r.ir == 2
+                @test isfinite(r.sfmin) && r.sfmin > 0
+                @test isfinite(r.width) && r.width > 0
+                rm(out; recursive=true, force=true)
+            end
+        finally
+            saved === nothing ? delete!(ENV, "AD_EXTEND_MODE") : (ENV["AD_EXTEND_MODE"] = saved)
+        end
+
+        # Production adaptive-refinement solver (its own mainsub branch).
+        out = mktempdir()
+        r = run_gacode_scan_task(gac, tgl, 1; out_dir=out, use_gpu=false,
+                                 printout=false, solver=:robust_ad, refine_rounds=1)
+        @test r.ir == 2
+        @test isfinite(r.sfmin) && r.sfmin > 0
+        @test isfinite(r.width) && r.width > 0
+        rm(out; recursive=true, force=true)
+    end
 end
