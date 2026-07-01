@@ -138,6 +138,14 @@ function _configure_inputTJLF_for_ky!(inputTJLF, inputsEP)
     return inputTJLF
 end
 
+# Resolve the TGLF-EP drive selector (MODE_IN) an AD building block should pass to
+# TJLF_map / TJLFEP_ky. Explicit `override` wins; otherwise honor `inputsEP.MODE_IN`
+# (set by mainsub: 2 = EP drive only for PROCESS_IN=5, 4 = thermal+EP / ITG-TEM for
+# PROCESS_IN=6), defaulting to 2 when unset — reproducing the historical behavior where
+# TJLF_map forced MODE_IN=2 for the AD path.
+_resolve_ad_mode_in(inputsEP, override::Union{Nothing,Int}) =
+    override !== nothing ? override : coalesce(inputsEP.MODE_IN, 2)
+
 # ── Promote a Float64 value/array to the Dual element type (constants) ───────
 _to_dual_val(v::AbstractFloat, ::Type{D}) where {D<:ForwardDiff.Dual} = D(v)
 _to_dual_val(v::AbstractArray{<:AbstractFloat}, ::Type{D}) where {D<:ForwardDiff.Dual} = D.(v)
@@ -209,8 +217,10 @@ Returns a `NamedTuple`:
 `inputsEP.IR`, `FACTOR_IN`, `KYHAT_IN`, and `WIDTH_IN` must be set on entry (as
 the scan sets them). `inputsEP`/`inputsPR` are not mutated.
 """
-function gamma_dgamma_dfactor(inputsEP::Options{Float64}, inputsPR::profile{Float64}; use_gpu::Bool = false)
+function gamma_dgamma_dfactor(inputsEP::Options{Float64}, inputsPR::profile{Float64}; use_gpu::Bool = false,
+                              mode_in_override::Union{Nothing,Int} = nothing)
     f0 = Float64(inputsEP.FACTOR_IN)
+    mi = _resolve_ad_mode_in(inputsEP, mode_in_override)
 
     Tag = typeof(ForwardDiff.Tag(gamma_dgamma_dfactor, Float64))
     D   = ForwardDiff.Dual{Tag, Float64, 1}
@@ -220,8 +230,10 @@ function gamma_dgamma_dfactor(inputsEP::Options{Float64}, inputsPR::profile{Floa
     epD = _to_dual_options(inputsEP, s, nr)
     prD = _to_dual_profile(inputsPR, D)
 
-    # Differentiate through the full factor→TGLF-input map.
-    inputD = TJLF_map(epD, prD)
+    # Differentiate through the full factor→TGLF-input map. `mode_in_override` honors the
+    # PROCESS_IN drive selector (2 = EP drive only, 4 = thermal+EP / ITG-TEM); without it
+    # TJLF_map would force MODE_IN=2 regardless of what the caller set.
+    inputD = TJLF_map(epD, prD; mode_in_override = mi)
     inputD isa Integer && error("gamma_dgamma_dfactor: TJLF_map rejected IR=$(inputsEP.IR) (out of range)")
     _configure_inputTJLF_for_ky!(inputD, epD)
 
@@ -290,9 +302,11 @@ scan sets them). `inputsEP`/`inputsPR` are not mutated.
 """
 function gamma_grad(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                     vars::NTuple{N,Symbol} = _GAMMA_GRAD_VARS,
-                    use_gpu::Bool = false) where {N}
+                    use_gpu::Bool = false,
+                    mode_in_override::Union{Nothing,Int} = nothing) where {N}
     all(v -> v in _GAMMA_GRAD_VARS, vars) ||
         error("gamma_grad: vars must be a subset of $_GAMMA_GRAD_VARS; got $vars")
+    mi = _resolve_ad_mode_in(inputsEP, mode_in_override)
 
     Tag = typeof(ForwardDiff.Tag(gamma_grad, Float64))
     D   = ForwardDiff.Dual{Tag, Float64, N}
@@ -307,7 +321,8 @@ function gamma_grad(inputsEP::Options{Float64}, inputsPR::profile{Float64};
     epD = _to_dual_options_seeded(inputsEP, seeds, D, nr)
     prD = _to_dual_profile(inputsPR, D)
 
-    inputD = TJLF_map(epD, prD)
+    # See gamma_dgamma_dfactor: honor the MODE_IN drive selector rather than forcing 2.
+    inputD = TJLF_map(epD, prD; mode_in_override = mi)
     inputD isa Integer && error("gamma_grad: TJLF_map rejected IR=$(inputsEP.IR) (out of range)")
     _configure_inputTJLF_for_ky!(inputD, epD)
 
@@ -645,12 +660,17 @@ end
 function keep_at(inputsEP::Options{Float64}, inputsPR::profile{Float64}, factor::Float64;
                  kyhat::Float64 = Float64(inputsEP.KYHAT_IN),
                  width::Float64 = Float64(inputsEP.WIDTH_IN),
-                 use_gpu::Bool = false)
+                 use_gpu::Bool = false,
+                 mode_in_override::Union{Nothing,Int} = nothing)
     ep = deepcopy(inputsEP)
     ep.KYHAT_IN  = kyhat
     ep.WIDTH_IN  = width
     ep.FACTOR_IN = factor
-    g, f, = TJLFEP_ky(ep, inputsPR, "", 0; eigen_cache = nothing, use_gpu = use_gpu)
+    # Honor the MODE_IN drive selector through the faithful (IFLUX=true) single-ky path so
+    # the keep filters see the correct drive; TJLFEP_ky/TJLF_map otherwise force MODE_IN=2.
+    mi = _resolve_ad_mode_in(inputsEP, mode_in_override)
+    g, f, = TJLFEP_ky(ep, inputsPR, "", 0; eigen_cache = nothing, use_gpu = use_gpu,
+                      mode_in_override = mi)
     nm = ep.NMODES
     keep = collect(@view ep.LKEEP[1:nm])
     return (; factor, any_keep = any(keep), LKEEP = keep,
@@ -1811,8 +1831,10 @@ used to rank drive (>0) vs damping (<0) terms.
 """
 function gamma_input_sensitivities(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                                    knobs::Union{Nothing,AbstractVector} = nothing,
-                                   use_gpu::Bool = false)
-    inputF = TJLF_map(inputsEP, inputsPR)
+                                   use_gpu::Bool = false,
+                                   mode_in_override::Union{Nothing,Int} = nothing)
+    mi = _resolve_ad_mode_in(inputsEP, mode_in_override)
+    inputF = TJLF_map(inputsEP, inputsPR; mode_in_override = mi)
     inputF isa Integer && error("gamma_input_sensitivities: TJLF_map rejected IR=$(inputsEP.IR)")
     _configure_inputTJLF_for_ky!(inputF, inputsEP)
 

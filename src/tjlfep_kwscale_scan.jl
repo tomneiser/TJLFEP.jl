@@ -22,7 +22,7 @@ function _kw_combo(i::Int, k::Int, k_max::Int, nfactor::Int, nefwid::Int,
                    factor::AbstractVector{T}, efwid::AbstractVector{T}, kyhat::AbstractVector{T},
                    inputsEP::Options{T}, inputsPR::profile{T},
                    ikyhat_write::Int, iefwid_write::Int, ifactor_write::Int,
-                   printout::Bool; use_gpu::Bool = false) where {T<:Real}
+                   printout::Bool; use_gpu::Bool = false, mode_in::Int = 2) where {T<:Real}
     local_inputsEP = deepcopy(inputsEP)  # thread/process-local; avoids races on FACTOR_IN/KYHAT_IN/WIDTH_IN/LKEEP/etc.
 
     l_wavefunction_out = 0
@@ -57,8 +57,11 @@ function _kw_combo(i::Int, k::Int, k_max::Int, nfactor::Int, nefwid::Int,
 
     # eigen_cache=nothing: the sequential-seeding optimization is incompatible with the
     # parallel (threaded or distributed) execution here, so each combo starts cold.
+    # mode_in threads the drive selector to TJLF_map (2 = EP drive only for PROCESS_IN=5;
+    # 4 = thermal+EP gradients on + FILTER=2 for the PROCESS_IN=6 ITG/TEM variant).
     gamma_out, freq_out, inputTJLF, _, wavefunction_buffer, dep_out, ep_flux_out =
-        TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out; eigen_cache=nothing, use_gpu=use_gpu)
+        TJLFEP_ky(local_inputsEP, inputsPR, str_wf_file, l_wavefunction_out; eigen_cache=nothing,
+                  use_gpu=use_gpu, mode_in_override=mode_in)
 
     NM = local_inputsEP.NMODES
     return (
@@ -156,8 +159,10 @@ end
 function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool = true;
                       use_gpu::Bool = false, inner::Symbol = :threads,
                       team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
-                      ql_flux_scan::Bool = false,
+                      ql_flux_scan::Bool = false, mode_in::Int = 2,
                       nfactor::Int = 8, nefwid::Int = 8, nkyhat::Int = 4, k_max::Int = 4) where {T<:Real}
+    # mode_in is the TGLF-EP drive selector passed to TJLF_map: 2 (EP drive only, the
+    # PROCESS_IN=5 default) or 4 (thermal+EP gradients on + ITG/TEM FILTER=2, PROCESS_IN=6).
     # These are for testing purposes:
     #baseDirectory = "/Users/benagnew/TJLF.jl/outputs/tglfep_tests/input.MTGLF"
     #inputsPR = readMTGLF(baseDirectory)
@@ -269,7 +274,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
             results = _inner_team_map(team, nkwf) do i
                 _kw_combo(i, k, k_max, nfactor, nefwid, factor, efwid, kyhat,
                           inputsEP, inputsPR, ikyhat_write, iefwid_write, ifactor_write,
-                          printout; use_gpu=use_gpu)
+                          printout; use_gpu=use_gpu, mode_in=mode_in)
             end
         else
             results = Vector{Any}(undef, nkwf)
@@ -277,7 +282,7 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                 Threads.@threads for i = 1:nkwf
                     results[i] = _kw_combo(i, k, k_max, nfactor, nefwid, factor, efwid, kyhat,
                                            inputsEP, inputsPR, ikyhat_write, iefwid_write, ifactor_write,
-                                           printout; use_gpu=use_gpu)
+                                           printout; use_gpu=use_gpu, mode_in=mode_in)
                 end
             end
         end

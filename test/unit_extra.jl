@@ -99,8 +99,9 @@ using TJLFEP
     @testset "mainsub unsupported PROCESS_IN + solver guard" begin
         ep = Options{Float64}(1, false, 5, 1, 1, 1)
         pr = profile{Float64}(1, 1)
-        # PROCESS_IN 1/2/4/6 are unported Fortran modes -> actionable error.
-        for pin in (1, 2, 4, 6)
+        # PROCESS_IN 0/1/2/4/7 are unported Fortran modes -> actionable error. (3 = spectrum,
+        # 5 = EP-only threshold, 6 = thermal+EP/ITG-TEM threshold are the ported modes.)
+        for pin in (0, 1, 2, 4, 7)
             ep.PROCESS_IN = pin
             err = try
                 TJLFEP.mainsub(ep, pr, false); nothing
@@ -114,6 +115,51 @@ using TJLFEP
         # Unknown solver is rejected before any dispatch.
         ep.PROCESS_IN = 5
         @test_throws ErrorException TJLFEP.mainsub(ep, pr, false; solver=:bogus)
+        # PROCESS_IN=6 (MODE_IN=4 thermal+EP / ITG-TEM variant) is grid-only: the AD engines
+        # model the EP-drive-only onset, so a non-grid solver must be rejected before the scan.
+        for slv in (:ad, :robust_ad, :truth)
+            ep.PROCESS_IN = 6
+            err = try
+                TJLFEP.mainsub(ep, pr, false; solver=slv); nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("PROCESS_IN=6", err.msg)
+            @test occursin("solver=:grid", err.msg)
+        end
+    end
+
+    @testset "PROCESS_IN=6 drive (MODE_IN=4) threads to TJLF_map" begin
+        # Mode 6 folds onto the mode-5 kwscale_scan but with MODE_IN=4 instead of 2. The
+        # physical distinction lives entirely in TJLF_map: MODE_IN=2 (mode 5) zeroes the
+        # thermal gradients (EP drive only) and leaves FILTER=0; MODE_IN=4 (mode 6) keeps the
+        # thermal+EP gradients and turns on the ITG/TEM FILTER=2. Verify both here directly
+        # (no eigensolve) so the mode_in threading through kwscale_scan is exercised cheaply.
+        root = normpath(@__DIR__, "..")
+        gac  = joinpath(root, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
+        tgl  = joinpath(@__DIR__, "fixtures", "scan2", "input_scan2_nb2.TGLFEP")
+        @test isfile(gac) && isfile(tgl)
+
+        opts, prof, _ = preprocess_gacode_inputs(gac, tgl)
+        ir = opts.IR_EXP[1]
+        is = opts.IS_EP + 1   # EP species slot in InputTJLF
+
+        ep2 = deepcopy(opts); ep2.IR = ir
+        ep4 = deepcopy(opts); ep4.IR = ir
+        inp2 = TJLF_map(ep2, deepcopy(prof); mode_in_override=2, ky_model_override=3)
+        inp4 = TJLF_map(ep4, deepcopy(prof); mode_in_override=4, ky_model_override=3)
+        @test !(inp2 isa Integer) && !(inp4 isa Integer)
+
+        # ITG/TEM filter: off for EP-only (mode 5), on for mode 6.
+        @test inp2.FILTER == 0.0
+        @test inp4.FILTER == 2.0
+
+        # Thermal species (i != EP slot) gradients: zeroed to ~1e-6 for mode 5, kept for mode 6.
+        thermal = [i for i in 1:prof.NS if i != is]
+        @test !isempty(thermal)
+        @test all(i -> inp2.RLNS[i] == 1.0e-6 && inp2.RLTS[i] == 1.0e-6, thermal)
+        @test any(i -> inp4.RLNS[i] != 1.0e-6 || inp4.RLTS[i] != 1.0e-6, thermal)
     end
 
     @testset "slurm_array_task_id (env parsing)" begin

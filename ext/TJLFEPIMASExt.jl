@@ -77,7 +77,7 @@ function TJLFEP.preprocess_imas_inputs(dd::IMAS.dd, rho::AbstractVector{Float64}
         Options.NTOROIDAL = 3
     end
 
-    if OptionsDict["PROCESS_IN"] == 4 || OptionsDict["PROCESS_IN"] == 5
+    if OptionsDict["PROCESS_IN"] in (4, 5, 6)
         Options.NN = OptionsDict["nn"]
     end
 

@@ -589,7 +589,11 @@ function _gacode_alpha_postprocess!(
     dndr_crit_out = fill(NaN, profile.NR)
     dpdr_crit_out = fill(NaN, profile.NR)
 
-    if Options.THRESHOLD_FLAG != 0 || !((Options.PROCESS_IN == 4) || (Options.PROCESS_IN == 5))
+    # PROCESS_IN 6 (MODE_IN=4 variant) shares the mode-5 threshold post-processing. Unlike the
+    # in-process paths, finalize_gacode_scan re-reads the input file and never runs mainsub, so
+    # PROCESS_IN is still the pre-fold 6 here (it is not collapsed to 5) and must be handled.
+    if Options.THRESHOLD_FLAG != 0 ||
+       !((Options.PROCESS_IN == 4) || (Options.PROCESS_IN == 5) || (Options.PROCESS_IN == 6))
         return SFmin, dndr_crit_out, dpdr_crit_out
     end
 
@@ -647,7 +651,7 @@ function _gacode_alpha_postprocess!(
         end
         for i in 1:scan_n
             if SFmin[i] < 9000.0
-                if (Options.PROCESS_IN == 4) || (Options.PROCESS_IN == 5)
+                if (Options.PROCESS_IN == 4) || (Options.PROCESS_IN == 5) || (Options.PROCESS_IN == 6)
                     dpdr_scale = if Options.SCAN_METHOD == 1
                         SFmin[i]
                     elseif Options.SCAN_METHOD == 2

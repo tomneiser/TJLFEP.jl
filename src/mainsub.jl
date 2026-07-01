@@ -1,7 +1,14 @@
 """
     mainsub(inputsEP, inputsPR, printout=true; solver=:grid, kwargs...)
 
-Single-radius TGLF-EP driver. `solver` selects the critical-factor engine:
+Single-radius TGLF-EP driver. Dispatches on `inputsEP.PROCESS_IN`: `3` runs the linear
+γ/ω spectrum diagnostic ([`_mainsub_spectrum`](@ref)); `5` and `6` run the
+critical-EP-density-gradient threshold scan, differing only in the drive selector —
+`5` uses `MODE_IN=2` (EP drive only) while `6` uses `MODE_IN=4` (thermal+EP gradients on,
+ITG/TEM basis via `FILTER=2`). Both fold to `PROCESS_IN=5` before the scan (matching Fortran
+`TGLFEP_mainsub` `case(5:6)`), so downstream output is identical. Mode 6 is only supported
+with `solver=:grid` (the AD engines model the EP-drive-only onset). `solver` selects the
+critical-factor engine (PROCESS_IN=5 only):
 
   - `:grid` (default) — the Fortran-equivalent `kwscale_scan` `(kyhat × width ×
     factor)` grid sweep (full `IFLUX=true` per combo). The trusted reference path.
@@ -42,12 +49,33 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
     x = inputsEP.PROCESS_IN
     if (x == 3)
         return _mainsub_spectrum(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
-    elseif (x == 5)
+    elseif (x == 5 || x == 6)
+        # Fortran TGLFEP_mainsub case(5:6): both run the (kyhat,width,factor) kwscale_scan,
+        # differing only in the drive selector — PROCESS_IN=5 uses MODE_IN=2 (EP drive only),
+        # PROCESS_IN=6 uses MODE_IN=4 (thermal+EP gradients on, ITG/TEM basis via FILTER=2).
+        # Both then collapse to PROCESS_IN=5 so all downstream threshold output is identical
+        # (mirrors the Fortran `process_in = 5` right before the scan). The upstream FACTOR
+        # rescale in preprocessing keys on the *pre-fold* PROCESS_IN (5 skips it; 6 rescales
+        # like 4), so this fold must happen here and not in the input preprocessing.
+        mode_in = x == 6 ? 4 : 2
         inputsEP.WIDTH_IN_FLAG = false
-        inputsEP.MODE_IN = 2
+        inputsEP.MODE_IN = mode_in
         inputsEP.KY_MODEL = 3
+        inputsEP.PROCESS_IN = 5
         dbgmsg("mainsub ir=", inputsEP.IR, " suffix=", inputsEP.SUFFIX,
-            " SCAN_N=", inputsEP.SCAN_N, " N_BASIS=", inputsEP.N_BASIS)
+            " SCAN_N=", inputsEP.SCAN_N, " N_BASIS=", inputsEP.N_BASIS, " MODE_IN=", mode_in)
+
+        # The AD building blocks now *honor* MODE_IN (they thread it into TJLF_map/TJLFEP_ky),
+        # but the AD engines' onset/IFT math is still built around the EP-drive-only (MODE_IN=2)
+        # AE picture: with thermal gradients on (MODE_IN=4) the critical EP factor is no longer a
+        # clean γ(factor) threshold crossing, so the descent/marginal logic is not yet validated
+        # for mode 6. Keep it grid-only until that onset behavior is checked; drop this guard once
+        # the AD path is validated for the thermal+EP case.
+        if mode_in == 4 && solver != :grid
+            error("mainsub: PROCESS_IN=6 (MODE_IN=4 thermal+EP / ITG-TEM threshold) is only " *
+                  "supported with solver=:grid; got solver=$(solver). Use PROCESS_IN=5 for the " *
+                  "AD solvers, or set solver=:grid.")
+        end
 
         if solver == :ad
             return _mainsub_ad(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team,
@@ -61,23 +89,24 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
 
         growthrate, inputsEP, inputsPR, marginal_ql, scalefactor_buffer, wavebuffer_all =
             kwscale_scan(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team,
-                         ql_flux_scan=ql_flux_scan)
+                         ql_flux_scan=ql_flux_scan, mode_in=mode_in)
         return (growthrate, inputsEP, inputsPR, marginal_ql), (scalefactor_buffer, wavebuffer_all)
     else
         _process_in_unsupported(x)
     end
 end
 
-# Fortran TGLFEP defines PROCESS_IN modes 1, 2, 4, and 6, but only the linear
-# spectrum diagnostic (3) and the critical-EP-density-gradient threshold scan (5)
-# have been ported to TJLFEP. Callers destructure a `(growth, ep, pr, ...)` tuple,
-# so silently returning a sentinel would crash downstream with a cryptic
-# MethodError; throw an actionable error naming the supported modes instead.
+# Fortran TGLFEP defines PROCESS_IN modes 0–7, but TJLFEP ports only the linear spectrum
+# diagnostic (3) and the critical-EP-density-gradient threshold scan (5, plus its MODE_IN=4
+# thermal+EP / ITG-TEM variant 6, which folds onto the same kwscale_scan). Callers
+# destructure a `(growth, ep, pr, ...)` tuple, so silently returning a sentinel would crash
+# downstream with a cryptic MethodError; throw an actionable error naming the supported modes.
 function _process_in_unsupported(x)
     error("mainsub: PROCESS_IN=$(x) is not implemented in TJLFEP. Supported modes are " *
-          "3 (linear γ/ω spectrum diagnostic) and 5 (critical-EP-density-gradient " *
-          "threshold scan). Fortran TGLFEP modes 1, 2, 4, and 6 have not been ported; " *
-          "use PROCESS_IN=5 for critical-gradient scans or PROCESS_IN=3 for the spectrum.")
+          "3 (linear γ/ω spectrum diagnostic), 5 (critical-EP-density-gradient threshold " *
+          "scan, EP drive only), and 6 (the same scan with thermal+EP gradients / ITG-TEM " *
+          "basis). Fortran TGLFEP modes 0, 1, 2, 4, and 7 have not been ported; use " *
+          "PROCESS_IN=5 or 6 for critical-gradient scans or PROCESS_IN=3 for the spectrum.")
 end
 
 """

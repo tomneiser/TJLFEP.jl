@@ -42,6 +42,34 @@ using TJLFEP
         @test TJLFEP._knob_label(:RLNS, 2, 3) == "RLNS[i1]"
     end
 
+    @testset "AD leaves honor mode_in_override (MODE_IN=2 vs 4)" begin
+        # The AD building blocks default to forcing MODE_IN=2 (EP drive only), but must honor an
+        # explicit override so the PROCESS_IN=6 (MODE_IN=4 thermal+EP / ITG-TEM) drive can be
+        # threaded through them. Verify the override actually reaches TJLF_map/TJLFEP_ky by
+        # checking the growth-rate spectrum changes (thermal gradients on + FILTER=2).
+        root = normpath(@__DIR__, "..")
+        gac  = joinpath(root, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
+        tgl  = joinpath(@__DIR__, "fixtures", "scan2", "input_scan2_nb2.TGLFEP")
+        @test isfile(gac) && isfile(tgl)
+
+        opts, prof, _ = preprocess_gacode_inputs(gac, tgl)
+        ep = deepcopy(opts)
+        ep.IR = ep.IR_EXP[1]
+        ep.FACTOR_IN = ep.FACTOR[1]
+        ep.KYHAT_IN = 0.25
+        ep.WIDTH_IN = 1.5
+
+        g2 = TJLFEP.gamma_dgamma_dfactor(ep, prof; mode_in_override=2)
+        g4 = TJLFEP.gamma_dgamma_dfactor(ep, prof; mode_in_override=4)
+        # Different drive/filter => different eigenvalue spectrum (not silently identical).
+        @test g2.gamma != g4.gamma
+
+        # Faithful keep path (TJLFEP_ky) likewise honors the override.
+        k2 = TJLFEP.keep_at(ep, prof, ep.FACTOR_IN; mode_in_override=2)
+        k4 = TJLFEP.keep_at(ep, prof, ep.FACTOR_IN; mode_in_override=4)
+        @test k2.gamma != k4.gamma
+    end
+
     @testset "single-radius :ad solve (end-to-end)" begin
         root = normpath(@__DIR__, "..")
         cd = joinpath(root, "examples", "DIIID_202017C42_500ms_v3.1")
