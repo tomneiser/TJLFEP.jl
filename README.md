@@ -162,6 +162,16 @@ Absolute node-hours at `N_BASIS=32` (1-node-backfill layout, 4 GPU workers drain
 (the gap widens at higher `N_BASIS`, where the faithful confirms cost more). The
 per-backend tables below give the raw wallclock seconds.
 
+**Best-throughput layout depends on the solver** (for these `SCAN_N=20` runs):
+- **`:grid` and `:ad :only` → 5 GPU nodes.** Per-radius cost is uniform, so
+  spreading the 20 radii across 5 nodes (~4 radii/node) minimizes wallclock with
+  no wasted node-hours.
+- **`:ad :locate` and `:ad :wide` → 1 GPU node, backfill.** Their edge radii take
+  much longer (the narrow-width `w<1` locate is triggered there), so a fixed
+  multi-node split would leave nodes idle waiting on the straggler edge radii.
+  Running a single node with 4 workers draining a shared 20-radius claim queue
+  keeps every GPU busy and gives the lowest node-hours.
+
 **Grid solver**: Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
 SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
 
