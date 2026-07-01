@@ -54,7 +54,6 @@ For the full API reference, see the
 | `utils/` | Preprocessing-comparison utilities (see `utils/README.md`). |
 | `test/` | Regression tests, incl. the nb6 Fortran-match fixture. |
 | `docs/` | Verification/reproduction notes + benchmark assets. |
-| `attic/` | Quarantined development scratch (gitignored, recoverable). |
 
 ## Installation
 
