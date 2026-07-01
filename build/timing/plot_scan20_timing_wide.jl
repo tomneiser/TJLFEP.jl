@@ -1,19 +1,20 @@
 #!/usr/bin/env julia
-# Node-hours vs N_BASIS for the SCAN_N=20 DIII-D scan, adding the fast width-aware :ad :wide mode to
-# the established 1-node-backfill series. All series here use the SAME node-hours-minimal layout
-# (1 node, 4 GPU-workers draining a 20-radius claim queue, MPS team reused across radii) so the
-# comparison is apples-to-apples for NN-database generation cost:
-#   * Fortran (reference baseline; its own node count from the CSV)
-#   * Julia grid MPS              (julia_gpu_nh)
-#   * Julia robust_ad MPS         (julia_gpu_robust_ad_nh) -- production truth-tier width solver
-#   * Julia :ad :locate (extended)(julia_gpu_ad_nh)        -- multistart locate-grid width extension
-#   * Julia :ad :wide  (kdesc=2)  -- parsed from the WIDE backfill logs written by this work
-# :wide trades a small accuracy gap (see ad/ad_wide_accuracy_nb32.png) for materially lower node-hours
-# than :locate / robust_ad, with the gap widening at higher N_BASIS (confirms get more expensive).
+# Node-hours vs N_BASIS for the SCAN_N=20 DIII-D scan. Plots the 2x2 solver-selection
+# options (+ the Fortran baseline) so the figure maps onto the README decision matrix:
+#   * Fortran (CPU, reference baseline; its own node count from the CSV)
+#   * Julia :grid       (julia_gpu_nh)   -- matches Fortran (w>=1 box)
+#   * Julia :ad :only   -- approximates :grid (bare w>=1 AD), parsed from the ONLY logs
+#   * Julia :ad :locate (julia_gpu_ad_nh)-- extends Fortran with narrow w<1 AE modes (default)
+#   * Julia :ad :wide   (kdesc=2)        -- fast approximation of :locate, parsed from WIDE logs
+# The robust_ad/truth reference tiers are intentionally omitted: :ad :locate matches their
+# accuracy at lower cost, so the plot guides users along the four matrix options.
+# Node-hours (nodes x wallclock) is the fair metric regardless of node count (Fortran CPU on
+# 10 nodes, the GPU tiers on 5), so the legend just tags (CPU)/(GPU).
 #   julia --project=. build/timing/plot_scan20_timing_wide.jl
 using Pkg
 Pkg.activate(normpath(@__DIR__, "..", ".."))
 using Plots, Printf
+using Plots.PlotMeasures: mm
 
 const BUILD = normpath(@__DIR__, "..")
 const CSV   = joinpath(BUILD, "timing_runs", "scan20_timing.csv")
@@ -78,24 +79,25 @@ end
 only = [only_nh(nb) for nb in basis]
 
 default(legendfontsize=9, guidefontsize=11, tickfontsize=9, dpi=200, fontfamily="Computer Modern")
-ys = filter(!isnan, vcat(fort, grid, locate, robust, truth, wide, only))
+# Plot only the 2x2 solver-selection options (+ Fortran baseline): the reference tiers
+# robust_ad/truth are omitted here because :ad :locate matches their accuracy at lower cost.
+ys = filter(!isnan, vcat(fort, grid, locate, wide, only))
 ymax = (isempty(ys) ? 1.0 : maximum(ys)) * 1.12
 p = plot(xlabel="N_BASIS", ylabel="Node-hours (nodes × wallclock)",
-         title="SCAN_N=20 node-hours vs N_BASIS — DIII-D",
-         xticks=basis, legend=:topleft, ylim=(0, ymax), size=(900, 560))
-plot!(p, basis, fort;   label="Fortran",                marker=:circle,   linewidth=2, markersize=6, color=:steelblue)
-plot!(p, basis, grid;   label="Julia grid MPS (GPU)",   marker=:diamond,  linewidth=2, markersize=6, color=:seagreen)
-plot!(p, basis, robust; label="Julia robust_ad (GPU)",  marker=:star6,    linewidth=2, markersize=7, color=:firebrick, linestyle=:dash)
-plot!(p, basis, locate; label="Julia :ad :locate (GPU)",marker=:utriangle,linewidth=2, markersize=6, color=:purple,    linestyle=:dash)
-plot!(p, basis, wide;   label="Julia :ad :wide (GPU)", marker=:star5, linewidth=2.5, markersize=8, color=:darkorange)
-any(!isnan, only) && plot!(p, basis, only; label="Julia :ad :only (GPU, 5-node)", marker=:rect, linewidth=2, markersize=4, color=:saddlebrown, linestyle=:dot)
-any(!isnan, truth) && plot!(p, basis, truth; label="Julia truth MPS (GPU)", marker=:pentagon, linewidth=2, markersize=6, color=:gray55, linestyle=:dashdot)
+         title="SCAN_N=20 node-hours vs N_BASIS: DIII-D",
+         xticks=basis, legend=:topleft, ylim=(0, ymax), size=(900, 560),
+         left_margin=4mm, bottom_margin=4mm)
+plot!(p, basis, fort;   label="Fortran (CPU)",          marker=:circle,   linewidth=2, markersize=6, color=:steelblue)
+plot!(p, basis, grid;   label="Julia :grid (GPU)",      marker=:diamond,  linewidth=2, markersize=6, color=:gray55, linestyle=:dash)
+any(!isnan, only) && plot!(p, basis, only; label="Julia :ad :only (GPU)", marker=:rect, linewidth=2, markersize=5, color=:darkorange, linestyle=:dot)
+plot!(p, basis, locate; label="Julia :ad :locate (GPU)",marker=:utriangle,linewidth=2, markersize=6, color=:seagreen,   linestyle=:solid)
+plot!(p, basis, wide;   label="Julia :ad :wide (GPU)", marker=:star5, linewidth=2.5, markersize=8, color=:firebrick)
 savefig(p, OUT)
 println("Wrote ", OUT)
 
-println("\n N_BASIS  Fortran   grid     robust   :locate   :wide   (locate/wide)")
+println("\n N_BASIS  Fortran   :grid    :only    :locate   :wide   (locate/wide)")
 for i in eachindex(basis)
     c(x) = isnan(x) ? "  —   " : @sprintf("%6.3f", x)
     rat = (!isnan(locate[i]) && !isnan(wide[i]) && wide[i] > 0) ? @sprintf("%5.2fx", locate[i]/wide[i]) : "  —  "
-    @printf("  %4d   %s  %s  %s  %s  %s   %s\n", basis[i], c(fort[i]), c(grid[i]), c(robust[i]), c(locate[i]), c(wide[i]), rat)
+    @printf("  %4d   %s  %s  %s  %s  %s   %s\n", basis[i], c(fort[i]), c(grid[i]), c(only[i]), c(locate[i]), c(wide[i]), rat)
 end

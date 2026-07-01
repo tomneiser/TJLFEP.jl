@@ -10,38 +10,38 @@ until a marginally unstable Alfvénic mode appears, yielding the critical EP
 density/pressure gradients used for EP transport and stability studies.
 
 It is a close, jointly-maintained translation of the Fortran GACODE add-on
-`TGLF-EP` — verified against it bit-for-bit — and adds a **CUDA GPU eigensolver**
+`TGLF-EP` (verified against it bit-for-bit), and adds a **CUDA GPU eigensolver**
 plus Julia-native **autodiff (`ad`) solvers**. Together these make TJLFEP much
-faster than the Fortran CPU reference, and — through the `ad` solvers — *more
+faster than the Fortran CPU reference and, through the `ad` solvers, *more
 accurate*: they resolve the narrow-width (`w<1`) EP-driven Alfvén modes that
 Fortran's fixed `w≥1` factor grid cannot.
 
-**Which solver?** Choose along two axes — do you want to *match* Fortran or
-*improve* on it, and do you want the faithful value or a faster approximation:
+**Which solver?** Choose along two axes. Do you want to *match* Fortran or
+*improve* on it, and do you want the faithful value or a faster approximation?
 
 |                                          | Faithful                                       | Faster approximation                          |
 | ---------------------------------------- | ---------------------------------------------- | --------------------------------------------- |
-| **Match Fortran** (`w≥1` box)            | **`:grid`** — reproduces Fortran, **~13×**     | **`:ad :only`** — approximates `:grid`, **~20×** |
-| **Extend Fortran** (adds `w<1` AE modes) | **`:ad :locate`** *(default)* — **~4.7×**      | **`:ad :wide`** — **~9×**                     |
+| **Match Fortran** (`w≥1` box)            | **`:grid`** reproduces Fortran (**~13×**)      | **`:ad :only`** approximates `:grid` (**~20×**) |
+| **Extend Fortran** (adds `w<1` AE modes) | **`:ad :locate`** *(default)* (**~4.7×**)      | **`:ad :wide`** (**~9×**)                     |
 
 Speedups are **node-hours vs the Fortran CPU reference** at `N_BASIS=32` (the fair,
 node-count-normalized cost; see the [benchmark](#benchmark-cost-vs-n_basis-diii-d-scan_n20)
 below). `:ad :locate` is the production default (the `ActorTJLFEP` default) and
-tracks the `robust_ad` reference essentially bit-for-bit.
+reports the faithful narrow-width value.
 
 For the full API reference, see the
 [online documentation](https://projecttorreypines.github.io/TJLFEP.jl/dev).
 
 ## Capabilities
 
-1. **Verification against Fortran TGLF-EP** — run the same case through the
+1. **Verification against Fortran TGLF-EP**: run the same case through the
    canonical Fortran `TGLFEP_driver` and Julia and overlay the results.
 2. **Run + validate** on an `input.gacode` + `input.TGLFEP` pair.
 3. **Database generation** on GPU (NVIDIA MPS, 1 radius/worker).
 4. **Timing vs `N_BASIS`** benchmark (Fortran CPU / Julia CPU / Julia GPU), for
    both the `grid` and autodiff (`ad`) solvers.
 5. **Sysimage** build + run (removes JIT cost for production).
-6. **FUSE-native IMAS `dd`** path — run from an IMAS data dictionary using the
+6. **FUSE-native IMAS `dd`** path: run from an IMAS data dictionary using the
    same preprocessing/`runTHD` routines as the `input.gacode` path.
 
 ## Repository layout
@@ -79,7 +79,7 @@ point `JULIA_DEPOT_PATH` at a larger scratch location before instantiating.
 ```julia
 using TJLFEP
 
-# File-based path (loaded standalone, TJLFEP stays light — no IMAS/FUSE):
+# File-based path (loaded standalone, TJLFEP stays light, no IMAS/FUSE):
 runTHD("input.TGLFEP", "input.MTGLF", "input.EXPRO"; use_gpu=true)
 
 # Directly from an input.gacode + scan-control input.TGLFEP:
@@ -119,51 +119,50 @@ one radius against the archived Fortran golden output. Full steps:
 ## Benchmark: cost vs N_BASIS (DIII-D, SCAN_N=20)
 
 20-radius scan on Perlmutter, all with sysimages. **Cost is reported in node-hours**
-(nodes × wallclock) — the fair, layout-independent metric (Fortran runs on 10 CPU
-nodes, the GPU tiers on 5). Each solver runs on its fastest parallel layout — **rule
-of thumb: `grid` → MPS team, `ad` → in-process threads** (an MPS team only adds
-overhead to `ad`; see below).
+(nodes × wallclock), the fair, layout-independent metric (Fortran runs on 10 CPU
+nodes, the GPU tiers on 5). Each solver runs on its fastest parallel layout
+(**rule of thumb: `grid` → MPS team, `ad` → in-process threads**; an MPS team only
+adds overhead to `ad`, see below).
 
 The solvers, with node-hours vs Fortran at `N_BASIS=32`:
 
 | Solver | vs Fortran | What it computes |
 | --- | ---: | --- |
-| **`:ad :only`** | **~20×** | Approximates `:grid` — a smooth, de-quantized version of the `w≥1` result (median `:only/grid ≈ 0.9`). Fast iteration only; misses the `w<1` edge modes. |
+| **`:ad :only`** | **~20×** | Approximates `:grid`: a smooth, de-quantized version of the `w≥1` result (median `:only/grid ≈ 0.9`). Fast iteration only; misses the `w<1` edge modes. |
 | **`:grid`** | **~13×** | The verified Fortran-equivalent `(kyhat × width × factor)` sweep (thousands of eigensolves/radius). |
-| **`:ad :wide`** | **~9×** | Adds the narrow `w<1` AE modes in one log-seeded pass; conservative (≥ `robust_ad`, within ~1–2×). Bulk NN-DB generation. |
-| **`:ad :locate`** *(default)* | **~4.7×** | Adds the narrow `w<1` AE modes; tracks `robust_ad` bit-for-bit. Production. |
-| `robust_ad` | ~3× | Always-finite width-extended reference. |
-| `truth` | ~3× | `robust_ad` + a separable `nbasis` sweep `{32,40,48,56}`; validation tier. |
+| **`:ad :wide`** | **~9×** | Adds the narrow `w<1` AE modes in one log-seeded pass; conservative (within ~1–2× of `:ad :locate`, never below it). Bulk NN-DB generation. |
+| **`:ad :locate`** *(default)* | **~4.7×** | Adds the narrow `w<1` AE modes; the faithful narrow-width value. Production. |
 
 The `ad` solvers are **grid-independent**: rather than reading `sfmin` off the coarse
 factor grid, they locate the instability onset directly (Newton root-find with exact
 forward-mode AD derivatives). `:grid`/`:ad :only` stay in the Fortran `w≥1` box;
-`:ad :locate`/`:ad :wide`/`robust_ad` additionally resolve the narrow-width (`w<1`)
-EP-driven modes it excludes — the *entire* `sfmin` reduction below grid (up to ~11× at
-the edge). `robust_ad`/`truth` form the top of a `grid → robust_ad → truth`
-cost/fidelity ladder; `truth`'s extra `nbasis` correction only matters at the ~5 outer
-narrow-AE radii. Details:
+`:ad :locate`/`:ad :wide` additionally resolve the narrow-width (`w<1`)
+EP-driven modes it excludes (the *entire* `sfmin` reduction below grid, up to ~12× at
+the edge). Higher-fidelity internal reference tiers (`robust_ad`, and the
+`nbasis`-converged `truth`) sit above `:ad :locate`, which matches them essentially
+bit-for-bit; they are documented for reference in
 [`docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`](https://github.com/ProjectTorreyPines/TJLFEP.jl/blob/master/docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md).
 
-**Accuracy** — `sfmin(IR)` for all solvers at `N_BASIS=32`:
+**Accuracy**: `sfmin(IR)` for all solvers at `N_BASIS=32`:
 
-![sfmin vs radius: grid vs robust_ad vs :ad :locate vs :ad :wide](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ad_wide_accuracy_nb32.png?v=2)
+![sfmin vs radius: Fortran vs grid vs :ad :only vs :ad :locate vs :ad :wide](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ad_wide_accuracy_nb32.png?v=5)
 
-`:ad :locate` (green) overlays `robust_ad` (black) almost exactly, both dropping well
-below the Fortran-equivalent `grid` (gray dashed) into the narrow-width modes at the
-outer radii (IR ≳ 65; up to ~10× below grid). `:ad :wide` (red) recovers nearly all of
-that in a single pass — within ~1–2× of `:locate`/`robust_ad` (a mild, conservative
-over-prediction, e.g. ~1.7× at IR=64) and never below them.
+`:ad :locate` (green) drops well below `grid` (grey, which reproduces the blue Fortran
+reference bit-for-bit) and `:ad :only` (orange) into the narrow-width modes at the outer
+radii (IR ≳ 65; up to ~12× below grid). `:ad :wide` (dark red) recovers nearly all of that
+in a single pass, within ~1–2× of `:ad :locate` (a mild, conservative over-prediction,
+e.g. ~1.7× at IR=64) and never below it. Colors and legend order match the node-hours
+plot below for quick cross-reference.
 
-![Node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/scan20_timing_wide_lines.png?v=3)
+![Node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/scan20_timing_wide_lines.png?v=6)
 
-Absolute node-hours at `N_BASIS=32` (1-node-backfill layout — 4 GPU workers draining a
+Absolute node-hours at `N_BASIS=32` (1-node-backfill layout, 4 GPU workers draining a
 20-radius queue): Fortran ≈4.3; `grid` ≈0.31, `:ad :only` ≈0.21, `:ad :wide` ≈0.46,
-`:ad :locate` ≈0.92, `robust_ad`/`truth` ≈1.38. `:ad :wide` is ~2× cheaper than `:locate`
+`:ad :locate` ≈0.92. `:ad :wide` is ~2× cheaper than `:locate`
 (the gap widens at higher `N_BASIS`, where the faithful confirms cost more). The
 per-backend tables below give the raw wallclock seconds.
 
-**Grid solver** — Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
+**Grid solver**: Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
 SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
 
 | N_BASIS | Fortran CPU (s) | Julia CPU (s) | Julia GPU MPS (s) | GPU speedup vs Fortran (wallclock) |
@@ -176,7 +175,7 @@ SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
 (Wallclock here compares a 5-node GPU run to a 10-node Fortran run; the fair
 node-hours comparison is in the node-hours plot/section above.)
 
-**`:ad :only` (bare `w≥1` AD, no faithful confirm)** — Julia GPU (5 A100 nodes,
+**`:ad :only` (bare `w≥1` AD, no faithful confirm)**: Julia GPU (5 A100 nodes,
 **in-process threads**), vs the grid GPU path (both 5-node, so this wallclock ratio is
 apples-to-apples):
 
@@ -190,25 +189,13 @@ apples-to-apples):
 The vs-grid wallclock advantage *shrinks* with `N_BASIS` (2.0× → 1.5×) because
 `:ad :only`'s wallclock grows faster with `N_BASIS` than the grid MPS path's. Note this
 is the *same* `ad` solver run two ways: on an **MPS team** instead of threads it is
-*slower* (≈4.5 min at `N_BASIS=32`, worsening with `N_BASIS`) — the per-radius AD regions
+*slower* (≈4.5 min at `N_BASIS=32`, worsening with `N_BASIS`): the per-radius AD regions
 are small and the descent is sequential, so team-spawn/remote-call overhead never
 amortizes. **Rule of thumb: `grid` → MPS, `ad` → threads.**
 
-**Physical-truth solver** — Julia GPU (5 A100 nodes, **MPS team**); the accuracy tier,
-not the speed tier:
-
-| N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | Truth GPU MPS (s) |
-|--------:|-----------------:|----------------------------:|------------------:|
-| 6  | 140.4 | 69.3  | 397.7 |
-| 8  | 149.0 | 69.5  | 429.5 |
-| 16 | 161.7 | 103.8 | 667.0 |
-| 32 | 226.3 | 153.9 | **2039.3** |
-
-`truth` costs ~34 min for the full profile at `N_BASIS=32` (vs ~3.8 min `grid` MPS and
-~2.6 min `:ad :only` threads), because per radius it runs an extended-width `(ky,w)` search plus a
-4-point `nbasis` convergence sweep `{32,40,48,56}`. Use it when the true narrow-width EP
-threshold is required (it is ~1.9× below grid on the median radius, up to ~11× at the edge);
-otherwise the `:triggered` policy pays this cost only at the flagged near-marginal radii.
+The `nbasis`-converged `truth` reference tier (validation only, ~34 min for the full
+profile at `N_BASIS=32`) is documented in
+[`docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`](https://github.com/ProjectTorreyPines/TJLFEP.jl/blob/master/docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md).
 
 Data: `docs/plots/scan20_timing.csv`. Reproduce: grid sweep with
 `build/timing/submit_timing_vs_nbasis.sh`, AD sweep with
@@ -218,7 +205,7 @@ Data: `docs/plots/scan20_timing.csv`. Reproduce: grid sweep with
 
 Besides the critical-gradient **threshold** scans (`PROCESS_IN=4/5`), TJLFEP supports
 the TGLF-EP **spectrum diagnostic** (`PROCESS_IN=3`). It does *not* scan or search for a
-critical factor — it just computes the linear growth-rate / real-frequency spectra
+critical factor; it just computes the linear growth-rate / real-frequency spectra
 γ(ky), ω(ky) at fixed plasma conditions, by running the full TGLF transport model over a
 fixed `ky` grid (`nky=30`, `ky=0.15`, `KY_MODEL=0`, `NBASIS=32`) at three drives:
 
@@ -234,7 +221,7 @@ Comparing the three shows which part of the spectrum is EP-driven (AE/EPM) vs th
 max-growth-rate width (and marks `kymark`), then the spectrum is computed at that width.
 
 Because it yields spectra rather than an `SFmin`/critical gradient, this mode is **not**
-routed through `ActorTJLFEP` (which would error) — call TJLFEP directly. A single radius
+routed through `ActorTJLFEP` (which would error); call TJLFEP directly. A single radius
 runs in a few minutes on a CPU login node; a full radial scan, a GPU run, or any long
 job should go to Slurm (NERSC login nodes are shared and kill heavy/long processes).
 
@@ -251,7 +238,7 @@ julia --project=. -t 8 --startup-file=no
 ```
 
 ```julia
-using TJLFEP   # loaded standalone, TJLFEP stays light (no IMAS/FUSE) — CPU-only here
+using TJLFEP   # loaded standalone, TJLFEP stays light (no IMAS/FUSE), CPU-only here
 
 CASE   = "examples/DIIID_202017C42_500ms_v3.1"
 gacode = joinpath(CASE, "input.gacode")
@@ -288,7 +275,7 @@ julia --project=. -t 32 --startup-file=no -e '
 
 For GPU, use `-C gpu`, load `cudatoolkit`, and pass `use_gpu=true`. At `NBASIS=32` the
 per-`ky` eigenmatrix is `(NS−NS0+1)·15·NBASIS = 1440²` (complex), so the GPU eigensolver
-helps each solve — but the `ky` solves *serialize* on one GPU (no cross-`ky` batching),
+helps each solve, but the `ky` solves *serialize* on one GPU (no cross-`ky` batching),
 so the real GPU payoff is across many radii via the same `inner=:threads`/`:mps_team`
 multi-GPU layout used by the `PROCESS_IN=5` scans.
 
@@ -296,7 +283,7 @@ multi-GPU layout used by the `PROCESS_IN=5` scans.
 
 `test/runtests_regression_spectrum.jl` compares the Julia spectra to a Fortran golden
 (`test/fixtures/spectrum/out.eigenvalue_m{1,2,4}_r040`); agreement is ~3e-5 relative.
-See `test/fixtures/spectrum/README.md` for how the golden was generated — note the public
+See `test/fixtures/spectrum/README.md` for how the golden was generated. Note the public
 Fortran `TGLFEP_driver` has a bug on the `PROCESS_IN=3` + EXPRO path (`q_scale`
 uninitialized → zeroed `q` → `DSYEV` failure), so a one-line-patched reference binary was
 used.
