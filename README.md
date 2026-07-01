@@ -21,10 +21,11 @@ marginal factor rather than a value quantized to the coarse factor grid. The
 production default **`:ad :locate`** tracks the `robust_ad` reference essentially
 bit-for-bit while running the full 20-radius profile at **~4.7× lower node-hours
 than Fortran** (and the bulk-generation **`:ad :wide`** at ~9×). For fast
-iteration, the bare **`:ad :only`** tier runs that same profile in ~43 s at
-`N_BASIS=32` — **~36× faster than the Fortran CPU reference** — though it skips
-the narrow-width edge modes, so it is meant for quick turnaround rather than
-production. See the benchmark below.
+iteration, the bare **`:ad :only`** tier is the cheapest of all — **~20× lower
+node-hours than Fortran** at `N_BASIS=32` — though it skips the narrow-width edge
+modes, so it is meant for quick turnaround rather than production. (Being
+compute-bound, its wallclock *rises* with `N_BASIS`, unlike the lower tiers.) See
+the benchmark below.
 
 For the full API reference, see the
 [online documentation](https://projecttorreypines.github.io/TJLFEP.jl/dev).
@@ -143,13 +144,15 @@ profile at a fraction of the cost — the speed/accuracy sweet spot, and now the
 log-seeded multistart pass, `wide_kdesc=2`) is **~2× faster than `:locate`** while staying
 conservative — always ≥ `robust_ad`, within ~1–2×, never under-predicting. For quick
 iteration / fast turnaround there is also **`:ad :only`** — the "bare" AD config (the
-canonical `w≥1` box, `extend_width=false` and no faithful confirm): the fastest tier, but it
+canonical `w≥1` box, `extend_width=false` and no faithful confirm): the cheapest tier in
+node-hours (~20× below Fortran), though only modestly faster than the GPU `grid` path in
+wallclock (~1.5× at `N_BASIS=32`, since the AD eigensolve is compute-bound). It
 **misses the narrow-width edge modes** so it should not be used for production or NN-DB
 generation. Keep `robust_ad` as the always-finite reference and `truth` (the
 `nbasis`-converged tier) for validation. The plot overlays `sfmin(IR)` for all four solvers
 at `N_BASIS=32`:
 
-![sfmin vs radius: grid vs robust_ad vs :ad :locate vs :ad :wide](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ad_wide_accuracy_nb32.png?v=1)
+![sfmin vs radius: grid vs robust_ad vs :ad :locate vs :ad :wide](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ad_wide_accuracy_nb32.png?v=2)
 
 `:ad :locate` (green) overlays `robust_ad` (black) almost exactly across the entire
 profile, both dropping well below the Fortran-equivalent `grid` (gray dashed) into the
@@ -158,7 +161,7 @@ recovers nearly all of that narrow-width accuracy in a single pass — tracking
 `:locate`/`robust_ad` to within ~1–2× (a mild, conservative over-prediction at the outer
 radii, e.g. ~1.7× at IR=64) and never falling below them.
 
-![Node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/scan20_timing_wide_lines.png?v=2)
+![Node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/scan20_timing_wide_lines.png?v=3)
 
 The plot reports each solver's **cost in node-hours** (nodes × wallclock) on the identical
 1-node-backfill layout (4 GPU workers draining a 20-radius claim queue), so the comparison
@@ -181,36 +184,42 @@ SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
 | 32 | 1546.0 | 1029.2  | 226.3 | **6.83×** |
 
 **Fast-turnaround `:ad :only` (bare AD: `w≥1` box, no faithful confirm)** — Julia GPU
-(5 A100 nodes, **in-process threads**), vs the grid GPU path above. This is the
-fastest tier — the AE-onset + IFT `(kyhat,width)` descent on the canonical `w≥1`
-box with no width-extension and no faithful-confirm steps — meant for quick
-iteration. *It is **not** production-accurate:* it misses the narrow-width edge
-modes, so its `sfmin` matches neither `:ad :locate`/`robust_ad` nor (necessarily)
-the `grid` keep-flag value. The production `:ad :locate` adds the narrow-width
-`(kyhat,width)` locate **and** faithful confirms, so it costs more (≈0.92 vs grid
-≈0.31 node-hours, per the node-hours table above) in exchange for `robust_ad`-level
-accuracy.
+(5 A100 nodes, **in-process threads**), vs the grid GPU path above. Pick a solver by
+what you want:
+
+- **Match Fortran (`w≥1` physics):** `:grid` (exact) or **`:ad :only`** (a fast,
+  de-quantized surrogate — it tracks `grid` to median `:only/grid ≈ 0.9` in the core).
+  `:ad :only` is the cheapest tier in node-hours (~0.21 at `N_BASIS=32`, ~20× below
+  Fortran), but it does **not** apply itself to `w<1`, so it misses the narrow-width
+  AE modes.
+- **Higher accuracy + narrow (`w<1`) AE modes:** **`:ad :locate`** (default) or
+  **`:ad :wide`** for speed.
 
 | N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | `:only` vs grid-GPU | `:only` vs Fortran CPU |
 |--------:|-----------------:|----------------------------:|--------------------:|-----------------------:|
-| 6  | 140.4 | 65.6 | 2.1× | 0.95× |
-| 8  | 149.0 | 57.9 | 2.6× | 1.7× |
-| 16 | 161.7 | 47.4 | 3.4× | 7.3× |
-| 32 | 226.3 | 42.7 | **5.3×** | **36×** |
+| 6  | 140.4 | 69.3  | 2.0× | 0.90× |
+| 8  | 149.0 | 69.5  | 2.1× | 1.4× |
+| 16 | 161.7 | 103.8 | 1.6× | 3.3× |
+| 32 | 226.3 | 153.9 | **1.5×** | **10×** |
 
 (The `:only` vs Fortran CPU column divides the grid solver's Fortran CPU times
-above by `:ad :only`'s wallclock; the advantage grows with `N_BASIS` as the dense
-eigenproblem comes to dominate — from slightly slower at `N_BASIS=6` to ~36× at
-`N_BASIS=32`.)
+above by `:ad :only`'s wallclock. The advantage over Fortran grows with `N_BASIS`
+— from slightly slower at `N_BASIS=6` to ~10× at `N_BASIS=32` — because Fortran's
+dense eigenproblem scales worst. The advantage over the GPU `grid` path, however,
+*shrinks* with `N_BASIS` (2.0× → 1.5×): `:only` is itself compute-bound, so its
+own wallclock rises with `N_BASIS`.)
 
 The grid GPU eigensolver wins decisively over Fortran as the dense eigenproblem
 grows (**6.8×** at `N_BASIS=32`). `:ad :only` then wins again on top of that —
-~43 s for the full 20-radius profile at `N_BASIS=32`, 5.3× faster than grid-GPU and
-~36× faster than the Fortran CPU reference (1546 s) — **but only because it skips
-the width-extension and confirm work** that the production `:ad :locate` does. Use
-`:only` for fast iteration; use `:ad :locate` (or `:wide` for bulk) when the result
-must be trusted — the honest production comparison is the node-hours table above
-(`:ad :wide` ~9×, `:ad :locate` ~4.7× below Fortran). Running the AD path on an MPS
+~154 s for the full 20-radius profile at `N_BASIS=32`, ~1.5× faster than grid-GPU
+and ~10× faster than the Fortran CPU reference (1546 s) — **but only because it
+skips the width-extension and confirm work** that the production `:ad :locate`
+does. In node-hours (the layout-independent cost) `:ad :only` is the cheapest tier
+of all (~20× below Fortran at `N_BASIS=32`), but the wallclock advantage is modest
+because the AD eigensolve is compute-bound. Use `:only` for fast iteration; use
+`:ad :locate` (or `:wide` for bulk) when the result must be trusted — the honest
+production comparison is the node-hours table above (`:ad :wide` ~9×, `:ad
+:locate` ~4.7× below Fortran). Running the AD path on an MPS
 team instead is *slower* (≈4.5 min at `N_BASIS=32`, and it worsens with `N_BASIS`):
 the per-radius AD parallel regions are small and the descent is sequential, so the
 team-spawn / remote-call overhead is never amortized. **Rule of thumb: `grid` → MPS,
@@ -221,13 +230,13 @@ not the speed tier:
 
 | N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | Truth GPU MPS (s) |
 |--------:|-----------------:|----------------------------:|------------------:|
-| 6  | 140.4 | 65.6 | 397.7 |
-| 8  | 149.0 | 57.9 | 429.5 |
-| 16 | 161.7 | 47.4 | 667.0 |
-| 32 | 226.3 | 42.7 | **2039.3** |
+| 6  | 140.4 | 69.3  | 397.7 |
+| 8  | 149.0 | 69.5  | 429.5 |
+| 16 | 161.7 | 103.8 | 667.0 |
+| 32 | 226.3 | 153.9 | **2039.3** |
 
 `truth` costs ~34 min for the full profile at `N_BASIS=32` (vs ~3.8 min `grid` MPS and
-~0.7 min `:ad :only` threads), because per radius it runs an extended-width `(ky,w)` search plus a
+~2.6 min `:ad :only` threads), because per radius it runs an extended-width `(ky,w)` search plus a
 4-point `nbasis` convergence sweep `{32,40,48,56}`. Use it when the true narrow-width EP
 threshold is required (it is ~1.9× below grid on the median radius, up to ~11× at the edge);
 otherwise the `:triggered` policy pays this cost only at the flagged near-marginal radii.

@@ -33,6 +33,8 @@ series = [
         :seagreen, :solid, :utriangle),
     (":ad :wide (2x faster than :locate)", joinpath(BUILD, "gacode_nb32_scan20_1node_ad_54979250_tasks", "sfmin_scan.txt"),
         :firebrick, :solid, :star5),
+    (":ad :only (bare w≥1, fast-turnaround)", joinpath(BUILD, "ad", "ad_threads_sfmin_nb32_ad_only.txt"),
+        :darkorange, :dot, :rect),
 ]
 
 default(legendfontsize=9, guidefontsize=11, tickfontsize=9, dpi=200, fontfamily="Computer Modern")

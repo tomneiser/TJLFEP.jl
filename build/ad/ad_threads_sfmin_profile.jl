@@ -17,7 +17,12 @@ const GACODE  = joinpath(CASE, "input.gacode")
 const TGLFEP  = joinpath(CASE, "input_scan20_nb32.TGLFEP")
 const SOLVER  = Symbol(get(ENV, "SOLVER", "robust_ad"))
 const REFINE  = parse(Int, get(ENV, "REFINE_ROUNDS", "1"))
-const TAG     = SOLVER === :robust_ad ? "robust_ad_r$(REFINE)" : String(SOLVER)
+const EXTMODE = get(ENV, "AD_EXTEND_MODE", "locate")   # :ad extend strategy (locate|wide|only)
+# Tag the output by solver, and for :ad also by extend mode (so :only/:wide do not
+# clobber the default :ad/:locate profile). Legacy :ad/:locate keeps the bare "ad" tag.
+const TAG     = SOLVER === :robust_ad ? "robust_ad_r$(REFINE)" :
+                SOLVER === :ad ? (EXTMODE == "locate" ? "ad" : "ad_$(EXTMODE)") :
+                String(SOLVER)
 const OUT_DIR = joinpath(@__DIR__, "ad_threads_sfmin_nb32_$(TAG)_tasks")
 const OUT_TXT = joinpath(@__DIR__, "ad_threads_sfmin_nb32_$(TAG).txt")
 

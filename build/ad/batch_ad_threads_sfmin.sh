@@ -29,7 +29,8 @@ nvidia-smi -L 2>/dev/null | head -1 || true
 
 export SOLVER="${SOLVER:-robust_ad}"
 export REFINE_ROUNDS="${REFINE_ROUNDS:-1}"
-echo "SOLVER=${SOLVER} REFINE_ROUNDS=${REFINE_ROUNDS}"
+export AD_EXTEND_MODE="${AD_EXTEND_MODE:-locate}"   # :ad extend strategy (locate|wide|only)
+echo "SOLVER=${SOLVER} REFINE_ROUNDS=${REFINE_ROUNDS} AD_EXTEND_MODE=${AD_EXTEND_MODE}"
 
 stdbuf -oL -eL julia --startup-file=no --project=. -t 8 build/ad/ad_threads_sfmin_profile.jl
 echo "=== ad_threads_sfmin done (exit $?) ==="

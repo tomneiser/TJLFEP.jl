@@ -53,17 +53,42 @@ function wide_nh(nb::Int)
 end
 wide = [wide_nh(nb) for nb in basis]
 
+# --- :ad :only (bare w>=1, no confirm) series ---
+# :only needs no backfill (few solves, fast), so it is submitted on the 5-node MPS
+# layout (5 nodes x 4 GPU = 20 GPUs, one radius each, wall = slowest radius), same as
+# grid/:wide. Node-hours = nodes x full-scan wallclock, parsed from the fresh sysimage
+# 5-node logs (time_scan20_nb<nb>_julia_gpu_ad_ONLY_<jobid>.out). Falls back to the
+# legacy bare-AD 5-node-threads measurement until the fresh runs land.
+const ONLY_5NODE_S = Dict(6 => 65.6, 8 => 57.9, 16 => 47.4, 32 => 42.7)
+function only_nh(nb::Int)
+    pat = Regex("time_scan20_nb$(nb)_julia_gpu_ad_ONLY_[0-9]+\\.out")
+    files = sort(filter(f -> occursin(pat, f), readdir(BUILD)))
+    for f in reverse(files)                       # newest job id wins
+        for ln in eachline(joinpath(BUILD, f))
+            occursin("phase=scan", ln) || continue
+            m = match(r"seconds=\s*([0-9.]+)", ln)
+            n = match(r"nodes=([0-9]+)", ln)
+            m === nothing && continue
+            nodes = n === nothing ? 5.0 : parse(Float64, n.captures[1])
+            return parse(Float64, m.captures[1]) * nodes / 3600
+        end
+    end
+    return haskey(ONLY_5NODE_S, nb) ? ONLY_5NODE_S[nb] * 5 / 3600 : NaN   # legacy fallback
+end
+only = [only_nh(nb) for nb in basis]
+
 default(legendfontsize=9, guidefontsize=11, tickfontsize=9, dpi=200, fontfamily="Computer Modern")
-ys = filter(!isnan, vcat(fort, grid, locate, robust, truth, wide))
+ys = filter(!isnan, vcat(fort, grid, locate, robust, truth, wide, only))
 ymax = (isempty(ys) ? 1.0 : maximum(ys)) * 1.12
 p = plot(xlabel="N_BASIS", ylabel="Node-hours (nodes × wallclock)",
-         title="SCAN_N=20 node-hours vs N_BASIS (1-node backfill) — DIII-D",
+         title="SCAN_N=20 node-hours vs N_BASIS — DIII-D",
          xticks=basis, legend=:topleft, ylim=(0, ymax), size=(900, 560))
 plot!(p, basis, fort;   label="Fortran",                marker=:circle,   linewidth=2, markersize=6, color=:steelblue)
 plot!(p, basis, grid;   label="Julia grid MPS (GPU)",   marker=:diamond,  linewidth=2, markersize=6, color=:seagreen)
 plot!(p, basis, robust; label="Julia robust_ad (GPU)",  marker=:star6,    linewidth=2, markersize=7, color=:firebrick, linestyle=:dash)
 plot!(p, basis, locate; label="Julia :ad :locate (GPU)",marker=:utriangle,linewidth=2, markersize=6, color=:purple,    linestyle=:dash)
 plot!(p, basis, wide;   label="Julia :ad :wide (GPU)", marker=:star5, linewidth=2.5, markersize=8, color=:darkorange)
+any(!isnan, only) && plot!(p, basis, only; label="Julia :ad :only (GPU, 5-node)", marker=:rect, linewidth=2, markersize=4, color=:saddlebrown, linestyle=:dot)
 any(!isnan, truth) && plot!(p, basis, truth; label="Julia truth MPS (GPU)", marker=:pentagon, linewidth=2, markersize=6, color=:gray55, linestyle=:dashdot)
 savefig(p, OUT)
 println("Wrote ", OUT)
