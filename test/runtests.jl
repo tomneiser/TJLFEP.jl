@@ -15,6 +15,9 @@ using Test
     include("unit_io.jl")
     include("unit_ad_smoke.jl")
 
+    # Small multi-radius scan + finalize (mirror of FUSE's ActorTJLFEP smoke test).
+    include("unit_scan_finalize.jl")
+
     # End-to-end regression against the Fortran TGLF-EP reference (one radius).
     include("runtests_regression_nb6.jl")
     include("runtests_regression_spectrum.jl")
