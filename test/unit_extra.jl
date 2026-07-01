@@ -139,6 +139,58 @@ using TJLFEP
         @test (growth, ep, mt, mql) == (:g, :ep, :mt, :mql)
     end
 
+    @testset "ql_extract scalar helpers (pure)" begin
+        # _gyrobohm_D: rho_s^2 * cs / a_m, all positive.
+        d = TJLFEP._gyrobohm_D(1.0e5, 2.5, 0.6)
+        @test isfinite(d) && d > 0
+        # bunit=0 must not divide-by-zero (eps guard).
+        @test isfinite(TJLFEP._gyrobohm_D(1.0e5, 0.0, 0.6))
+
+        # _ne_19_ref is a constant reference density.
+        @test TJLFEP._ne_19_ref(profile{Float64}(1, 1), 1) == 5.0
+
+        # _default_flux_scan_factors: 3 factors around fmark, clamped to [0.01, fmax].
+        f = TJLFEP._default_flux_scan_factors(1.0, 10.0)
+        @test f == [0.5, 1.0, 1.5]
+        @test all(TJLFEP._default_flux_scan_factors(1.0, 0.02) .== 0.02)   # upper clamp
+        fz = TJLFEP._default_flux_scan_factors(0.0, 10.0)                  # f0 floored at 0.05
+        @test fz ≈ [0.025, 0.05, 0.075]
+
+        # Build an EP/profile pair and walk _chi_gB_profile / _gyrobohm_from_profile branches.
+        ep = Options{Float64}(1, false, 5, 1, 1, 1)
+        ep.IR = 1
+        ep.IS_EP = 1
+        ep.F_REAL = [2.0]
+
+        pr = profile{Float64}(1, 3)
+        pr.RMIN = [0.6]
+        pr.RLNS = fill(2.0, 1, 3)
+        pr.AS = fill(0.5, 1, 3)
+
+        # (a) RHO_STAR + RMAJ present -> full chi_gB.
+        pr.RHO_STAR = [0.01]; pr.RMAJ = [3.0]; pr.B_UNIT = [2.5]
+        chi_full = TJLFEP._chi_gB_profile(ep, pr, 1)
+        @test isfinite(chi_full) && chi_full > 0
+        @test isfinite(TJLFEP._gyrobohm_from_profile(ep, pr, 1))
+        # _ep_particle_flux_phys and _rg_n_sd_19 build on the above.
+        @test TJLFEP._ep_particle_flux_phys(1.0, ep, pr, 1) >= 0
+        @test TJLFEP._rg_n_sd_19(pr, ep, 1) ≈ abs(2.0 * (0.5 * 5.0) / 0.6)
+
+        # (b) RHO_STAR present, RMAJ missing -> rho_s^2 / a_m branch.
+        pr.RMAJ = missing
+        @test isfinite(TJLFEP._chi_gB_profile(ep, pr, 1))
+        @test isfinite(TJLFEP._gyrobohm_from_profile(ep, pr, 1))
+
+        # (c) RHO_STAR + B_UNIT missing -> gyrobohm fallback = 1.0.
+        pr.RHO_STAR = missing; pr.B_UNIT = missing
+        @test TJLFEP._gyrobohm_from_profile(ep, pr, 1) == 1.0
+
+        # _diff_star_fallback: uses D_gb=1.0 here so the branches are exact.
+        @test TJLFEP._diff_star_fallback(2.0, 0.0, ep, pr, 1) == 2.0    # slope branch
+        @test TJLFEP._diff_star_fallback(0.0, 3.0, ep, pr, 1) == 3.0    # dep fallback
+        @test TJLFEP._diff_star_fallback(0.0, 0.0, ep, pr, 1) == 0.0    # nothing usable
+    end
+
     @testset "_write_radius_buffers" begin
         tmp = mktempdir()
         # nothing / empty -> no files written.
