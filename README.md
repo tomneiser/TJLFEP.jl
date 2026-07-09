@@ -73,6 +73,23 @@ On HPC systems Julia and CUDA are typically provided as modules (e.g.
 `julia/1.11.7`). If your shared filesystem has a small or slow home directory,
 point `JULIA_DEPOT_PATH` at a larger scratch location before instantiating.
 
+> **Depot-path gotcha (don't clobber your home depot).** When `JULIA_DEPOT_PATH`
+> is unset, Julia defaults to `~/.julia` (where most users already have their
+> packages/artifacts). A bare `export JULIA_DEPOT_PATH=$PSCRATCH/.julia`
+> *replaces* that default, so Julia then looks **only** in scratch and silently
+> stops seeing everything in your home depot. Always **prepend/append** instead
+> of overwriting, and include `$HOME/.julia` explicitly:
+>
+> ```bash
+> # keep the home depot (Julia's default) AND add scratch:
+> export JULIA_DEPOT_PATH="$HOME/.julia:$PSCRATCH/.julia${JULIA_DEPOT_PATH:+:$JULIA_DEPOT_PATH}"
+> ```
+>
+> The first entry is where Julia writes (precompile cache, downloads); later
+> entries are search-only. This same rule is what lets a prebuilt sysimage find
+> its JLL artifacts — see "Sharing a sysimage with other users" in
+> `build/README.md`.
+
 ## Quick start
 
 ```julia
@@ -241,7 +258,7 @@ A ready example input is `examples/DIIID_202017C42_500ms_v3.1/input_spectrum.TGL
 
 ```bash
 module load julia/1.11.7
-export JULIA_DEPOT_PATH=$PSCRATCH/.julia
+export JULIA_DEPOT_PATH="$HOME/.julia:$PSCRATCH/.julia${JULIA_DEPOT_PATH:+:$JULIA_DEPOT_PATH}"
 cd TJLFEP
 julia --project=. -t 8 --startup-file=no
 ```
@@ -271,7 +288,7 @@ Use a job when running many radii, on GPU, or unattended:
 #!/bin/bash -l
 #SBATCH -N 1 -n 1 -c 128 -C cpu -q debug -t 00:30:00 -A m3739 -J spectrum
 module load julia/1.11.7
-export JULIA_DEPOT_PATH=$PSCRATCH/.julia
+export JULIA_DEPOT_PATH="$HOME/.julia:$PSCRATCH/.julia${JULIA_DEPOT_PATH:+:$JULIA_DEPOT_PATH}"
 cd TJLFEP
 julia --project=. -t 32 --startup-file=no -e '
   using TJLFEP

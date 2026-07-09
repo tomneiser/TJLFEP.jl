@@ -49,9 +49,11 @@ echo "=== verifying CPU image ==="
 julia --startup-file=no --sysimage="${SO}" --project="${TJLFEP_ROOT}" -e '
     t=time(); using TJLF, TJLFEP
     println("load(using TJLF,TJLFEP)=", round(time()-t;digits=3), "s")
-    println("TJLFEP._FILE_ONLY=", TJLFEP._FILE_ONLY)
     @assert isdefined(TJLF, :run_tjlf) "TJLF not baked"
     @assert isdefined(TJLFEP, :run_gacode_scan_task) "TJLFEP not baked"
-    println("CPU sysimage OK: TJLF + TJLFEP baked")'
+    heavy = filter(m -> nameof(m) in (:FUSE, :IMAS), Base.loaded_modules_array())
+    println("file-only check: heavy deps loaded = ", isempty(heavy) ? "none" : nameof.(heavy))
+    @assert isempty(heavy) "file-only image pulled in FUSE/IMAS"
+    println("CPU sysimage OK: TJLF + TJLFEP baked (file-only)")'
 
 echo "=== full CPU sysimage build OK: ${SO} ==="

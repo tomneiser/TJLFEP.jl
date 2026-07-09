@@ -181,3 +181,53 @@ sbatch sysimage/batch_build_cpu_sysimage.sh            # -> build_cpu_sysimage.j
 Batch scripts auto-detect the image via `TJLFEP_GPU_SYSIMAGE` / `TJLFEP_SYSIMAGE`
 (falling back to JIT if missing). `common/julia_sysimage.inc.sh` is the shared
 helper that exports `JULIA_SYSIMAGE_ARGS`.
+
+### Sharing a sysimage with other users (artifacts / `JULIA_DEPOT_PATH`)
+
+A sysimage does **not** embed its JLL artifacts — at load time each baked JLL
+(`OpenSSL_jll`, `CUDA_*_jll`, …) runs its `__init__` and resolves a **fixed**
+artifact hash by searching every depot on `JULIA_DEPOT_PATH` for
+`artifacts/<hash>`. If that hash isn't in any depot the process aborts before
+`main`, e.g.:
+
+```
+InitError(mod=:OpenSSL_jll, error=ErrorException("Artifact "OpenSSL" was not found
+  by looking in the path ".../.julia/artifacts/5aa05123…"))
+```
+
+The hash is pinned to the exact JLL **version** the image was built against, so a
+colleague's own `Pkg.instantiate()` does **not** reliably fix it: if their
+manifest resolves a different `OpenSSL_jll` version they fetch a *different*
+artifact and the baked one is still missing. (You cannot embed artifacts into the
+`.so`; `PackageCompiler.create_sysimage` resolves them from the depot at runtime.)
+
+For turnkey sharing on Perlmutter there is a **companion depot** published next to
+the images on CFS, containing every artifact the images need (group `m3739`,
+group-readable):
+
+- Images: `/global/cfs/cdirs/m3739/TJLFEP/TJLFEP_gpu_sysimage.so` (+ generic / CPU)
+- **Companion depot: `/global/cfs/cdirs/m3739/TJLFEP/depot`**
+
+Any `m3739` member loads the image with no `instantiate` and no downloads by
+**appending** the companion depot to their own depot:
+
+```bash
+module load julia/1.11.7
+# own (writable) depot FIRST, then the shared read-only artifact depot:
+export JULIA_DEPOT_PATH="$HOME/.julia:/global/cfs/cdirs/m3739/TJLFEP/depot${JULIA_DEPOT_PATH:+:$JULIA_DEPOT_PATH}"
+
+julia --startup-file=no \
+  --project=/path/to/their/TJLFEP \
+  --sysimage=/global/cfs/cdirs/m3739/TJLFEP/TJLFEP_gpu_sysimage.so \
+  -e 'using TJLF, TJLFEP; println("OK")'
+```
+
+> **Do not `export JULIA_DEPOT_PATH=$PSCRATCH/.julia` (bare).** When
+> `JULIA_DEPOT_PATH` is unset (the common case), Julia defaults to `~/.julia`;
+> overwriting it with a single scratch path makes Julia look **only** there and
+> drop the user's home depot (and any shared NERSC depot). Always keep
+> `$HOME/.julia` first and *append* extra depots, as above. To refresh the
+> companion depot after rebuilding an image, rsync the builder's
+> `~/.julia/artifacts/` (or `$PSCRATCH/.julia/artifacts/`) into
+> `/global/cfs/cdirs/m3739/TJLFEP/depot/artifacts/`, then
+> `chgrp -R m3739` + `chmod -R g+rX` it.

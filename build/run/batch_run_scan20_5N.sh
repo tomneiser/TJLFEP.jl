@@ -22,10 +22,35 @@ set -uo pipefail
 
 module load cudatoolkit/12.9
 module load julia/1.11.7
-export JULIA_DEPOT_PATH="${PSCRATCH}/.julia${JULIA_DEPOT_PATH:+:${JULIA_DEPOT_PATH}}"
+# Depot search path (order = precedence; first entry is writable). Keep the caller's
+# own depot(s) first, then scratch, then the shared m3739 companion depot that carries
+# the prebuilt-sysimage JLL artifacts (OpenSSL_jll, CUDA_*_jll, ...). Without the
+# companion depot a colleague using the shared TJLFEP_gpu_sysimage.so aborts at load
+# with `Artifact "OpenSSL" was not found`. Never clobber $HOME/.julia (Julia's default
+# when JULIA_DEPOT_PATH is unset). Override TJLFEP_DEPOT to point elsewhere.
+export JULIA_DEPOT_PATH="${JULIA_DEPOT_PATH:-$HOME/.julia}:${PSCRATCH}/.julia:${TJLFEP_DEPOT:-/global/cfs/cdirs/m3739/TJLFEP/depot}"
 
 export TJLFEP_FILE_ONLY=1 USE_GPU=1 TJLFEP_DEBUG=0 TJLFEP_PRINTOUT=0
-export INNER=mps_team
+# Solver + within-radius parallelism are overridable at submit time, e.g.
+#   SOLVER=ad sbatch run/batch_run_scan20_5N.sh
+# SOLVER: grid (default, Fortran-equivalent) | ad | robust_ad | truth.
+# REFINE_ROUNDS only affects robust_ad/truth. INNER pairs to the solver unless set
+# explicitly: grid/robust_ad/truth amortize an MPS team; ad is few-eval + sequential
+# Newton, so it wants in-process threads (an MPS team only adds spawn overhead there).
+export SOLVER="${SOLVER:-grid}"
+export REFINE_ROUNDS="${REFINE_ROUNDS:-1}"
+# AD-only (SOLVER=ad) width-extension tier (cost/accuracy ladder):
+#   locate (default) - dense narrow-width locate, tracks robust_ad ~bit-for-bit (most accurate)
+#   wide             - cheap single-pass width extension, ~7x cheaper, conservative
+#   only             - bare w>=1 box, NO width extension / NO faithful confirm (fastest, least
+#                      accurate; quick iteration only, NOT production / NN-DB generation)
+# AD_WIDE_KDESC is the :wide multistart breadth (default 2). All ignored unless SOLVER=ad.
+export AD_EXTEND_MODE="${AD_EXTEND_MODE:-locate}"   # locate | wide | only
+export AD_WIDE_KDESC="${AD_WIDE_KDESC:-2}"
+if [[ -z "${INNER:-}" ]]; then
+    if [[ "${SOLVER}" == "ad" ]]; then INNER=threads; else INNER=mps_team; fi
+fi
+export INNER
 export GPUS_PER_RADIUS=1
 export MPS_TEAM="${MPS_TEAM:-8}"
 export JULIA_WORKER_THREADS="${JULIA_WORKER_THREADS:-2}"
@@ -55,7 +80,7 @@ export CUDA_MPS_PIPE_DIRECTORY="/tmp/nvidia-mps.$SLURM_JOB_ID"
 export CUDA_MPS_LOG_DIRECTORY="/tmp/nvidia-log.$SLURM_JOB_ID"
 
 cd "${TJLFEP_ROOT}/build"
-echo "=== 5N: SCAN_N=20 on ${SLURM_NNODES:-5} nodes, 4 radii/node, 1 GPU/radius, MPS_TEAM=${MPS_TEAM} (8/GPU) x ${JULIA_WORKER_THREADS}t ==="
+echo "=== 5N: SCAN_N=20 on ${SLURM_NNODES:-5} nodes, 4 radii/node, 1 GPU/radius, SOLVER=${SOLVER}$( [[ ${SOLVER} == ad ]] && echo " AD_EXTEND_MODE=${AD_EXTEND_MODE}") INNER=${INNER} MPS_TEAM=${MPS_TEAM} (8/GPU) x ${JULIA_WORKER_THREADS}t ==="
 t_start=$(date +%s)
 
 srun --export=ALL --label -n "${SLURM_NTASKS:-20}" --ntasks-per-node=4 --cpu-bind=cores \
