@@ -439,10 +439,7 @@ function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::D
                 dndr_crit, dndr_crit_out, ir_dum_1, ir_dum_2, l_accept_profile = tjlfep_complete_output(dndr_crit, Options, profile)
                 
                 if (printout)
-                    io4 = open("alpha_dndr_crit.input", "w")
-                    println(io4, "Density critical gradient (10^19/m^4)")
-                    println(io4, dndr_crit_out)
-                    close(io4)
+                    write_crit_grad("alpha_dndr_crit.input", "Density critical gradient (10^19/m^4)", dndr_crit_out)
                 end
             end
             
@@ -466,10 +463,7 @@ function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::D
                 dpdr_crit, dpdr_crit_out, ir_dum_1, ir_dum_2, l_accept_profile = tjlfep_complete_output(dpdr_crit, Options, profile)
                 
                 if (printout)
-                    io5 = open("alpha_dpdr_crit.input", "w")
-                    println(io5, "Pressure critical gradient (10 kPa/m)")
-                    println(io5, dpdr_crit_out)
-                    close(io5)
+                    write_crit_grad("alpha_dpdr_crit.input", "Pressure critical gradient (10 kPa/m)", dpdr_crit_out)
                 end
             end # end prof. method 2
             if (printout)

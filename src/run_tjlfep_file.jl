@@ -408,10 +408,7 @@ function _runTHD_core!(
                 end
                 dndr_crit, dndr_crit_out, _, _, _ = tjlfep_complete_output(dndr_crit, Options, profile)
                 if printout
-                    open("alpha_dndr_crit.input", "w") do io4
-                        println(io4, "Density critical gradient (10^19/m^4)")
-                        println(io4, dndr_crit_out)
-                    end
+                    write_crit_grad("alpha_dndr_crit.input", "Density critical gradient (10^19/m^4)", dndr_crit_out)
                 end
             end
 
@@ -440,10 +437,7 @@ function _runTHD_core!(
                 end
                 dpdr_crit, dpdr_crit_out, _, _, _ = tjlfep_complete_output(dpdr_crit, Options, profile)
                 if printout
-                    open("alpha_dpdr_crit.input", "w") do io5
-                        println(io5, "Pressure critical gradient (10 kPa/m)")
-                        println(io5, dpdr_crit_out)
-                    end
+                    write_crit_grad("alpha_dpdr_crit.input", "Pressure critical gradient (10 kPa/m)", dpdr_crit_out)
                 end
             end
 
@@ -637,10 +631,7 @@ function _gacode_alpha_postprocess!(
         end
         dndr_crit, dndr_crit_out, _, _, _ = tjlfep_complete_output(dndr_crit, Options, profile)
         if printout
-            open(joinpath(out_dir, "alpha_dndr_crit.input"), "w") do io
-                println(io, "Density critical gradient (10^19/m^4)")
-                println(io, dndr_crit_out)
-            end
+            write_crit_grad(joinpath(out_dir, "alpha_dndr_crit.input"), "Density critical gradient (10^19/m^4)", dndr_crit_out)
         end
 
         dpdr_crit = fill(10000.0, scan_n)
@@ -669,10 +660,7 @@ function _gacode_alpha_postprocess!(
         end
         dpdr_crit, dpdr_crit_out, _, _, _ = tjlfep_complete_output(dpdr_crit, Options, profile)
         if printout
-            open(joinpath(out_dir, "alpha_dpdr_crit.input"), "w") do io
-                println(io, "Pressure critical gradient (10 kPa/m)")
-                println(io, dpdr_crit_out)
-            end
+            write_crit_grad(joinpath(out_dir, "alpha_dpdr_crit.input"), "Pressure critical gradient (10 kPa/m)", dpdr_crit_out)
         end
     end
 

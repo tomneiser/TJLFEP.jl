@@ -110,7 +110,7 @@ export TJLFEP_generate_input, readline_values
 export preprocess_imas_inputs, save_imas_preprocessed_inputs, remap_extraEP_for_fortran_save!
 export runTHD_dd_radius
 
-export make_crit_grad_plots
+export make_crit_grad_plots, read_crit_grad, write_crit_grad
 export TJLF
 
 # Collect the exported names for the auto-generated API reference (docs/make.jl).

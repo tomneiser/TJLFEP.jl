@@ -1,15 +1,68 @@
-function read_crit_grad(filepath::String; code::String="julia")
+"""
+    read_crit_grad(filepath; code="auto") -> (header, values)
+
+Read a TGLF-EP critical-gradient profile file (`alpha_dndr_crit.input` /
+`alpha_dpdr_crit.input`).
+
+Two on-disk layouts are supported and auto-detected (`code="auto"`, the
+default):
+
+  * Fortran `TGLFEP`/`Alpha` format — one value per line (`F12.4`) after the
+    header (this is what TJLFEP now writes; see [`write_crit_grad`](@ref)).
+  * Legacy Julia array-literal format — line 2 is `[v1, v2, ...]`.
+
+Pass `code="julia"` or `code="fortran"` to force a specific layout.
+"""
+function read_crit_grad(filepath::String; code::String="auto")
     lines = readlines(filepath)
     header = lines[1]
-    if code == "julia"
+    body = length(lines) >= 2 ? strip(lines[2]) : ""
+    use_julia = code == "julia" || (code == "auto" && startswith(body, "["))
+    if use_julia
         # Line 2 is a Julia array literal: [v1, v2, ...]
         arr_str = strip(strip(lines[2]), ['[', ']'])
-        vals = parse.(Float64, split(arr_str, ","))
+        vals = [parse(Float64, strip(x)) for x in split(arr_str, ",") if !isempty(strip(x))]
     else
         # Fortran format: one value per line starting at line 2
-        vals = parse.(Float64, strip.(lines[2:end]))
+        vals = Float64[]
+        for ln in @view lines[2:end]
+            s = strip(ln)
+            isempty(s) && continue
+            x = tryparse(Float64, s)
+            x === nothing || push!(vals, x)
+        end
     end
     return header, vals
+end
+
+"""
+    write_crit_grad(io::IO, header, values)
+    write_crit_grad(path::AbstractString, header, values)
+
+Write a TGLF-EP critical-gradient profile (`alpha_dndr_crit.input` /
+`alpha_dpdr_crit.input`) in the Fortran `TGLFEP_driver` layout so the Fortran
+`Alpha` solver can read it: a one-line `header`, then one value per line
+formatted as `F12.4`.
+
+This matches `TGLFEP_driver.f90` (`write(22,'(F12.4)') <profile>`) and is what
+`Alpha_read_input.f90` expects (it reads the first 5 header chars — `Densi` /
+`Press` — followed by `read(6,'(F12.4,A6)')` per value). The previous TJLFEP
+behaviour (`println(io, values)`, a single-line Julia array literal) is not
+readable by the Fortran `Alpha`; use this helper instead.
+"""
+function write_crit_grad(io::IO, header::AbstractString, values::AbstractVector)
+    println(io, header)
+    for v in values
+        @printf(io, "%12.4f\n", float(v))
+    end
+    return nothing
+end
+
+function write_crit_grad(path::AbstractString, header::AbstractString, values::AbstractVector)
+    open(path, "w") do io
+        write_crit_grad(io, header, values)
+    end
+    return nothing
 end
 
 """
