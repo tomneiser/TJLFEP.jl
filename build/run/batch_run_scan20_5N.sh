@@ -2,8 +2,10 @@
 # Production layout candidate 5N: SCAN_N=20 on 5 GPU nodes, 4 radii/node, 1 A100/radius, MPS
 # team of 8 workers x 2 threads per radius (8 clients/GPU). Densest packing -> lowest node-hours
 # if wall stays acceptable. All 20 radii run in one parallel wave. SCAN_INDEX = global procid+1.
+# Set TJLFEP_GPU_SYSIMAGE to skip JIT; STAGE=1 (default) sbcasts it to node-local /tmp to cut the
+# concurrent-Lustre-read startup tail (see the sysimage/STAGE block below).
 #
-#   cd build && sbatch run/batch_run_scan20_5N.sh
+#   cd build && TJLFEP_GPU_SYSIMAGE=build/TJLFEP_gpu_sysimage.so sbatch run/batch_run_scan20_5N.sh
 #
 #SBATCH -A m3739_g
 #SBATCH -q premium
@@ -61,6 +63,23 @@ export TJLFEP_PROBE="${TJLFEP_PROBE:-0}"
 # in run_gacode_scan20_mps_task.jl; the master gets the flag below. Unset -> JIT (reproducible
 # baseline). Set to build/TJLFEP_gpu_generic_sysimage.so to skip ~110 s/team of cold JIT.
 GPU_SYSIMG="${TJLFEP_GPU_SYSIMAGE:-}"
+# STAGE=1 (default): sbcast the sysimage to node-local /tmp once per node, so the 4 radii x
+# MPS_TEAM workers/node load it from local disk instead of all reading the 1.1 GB image off
+# Lustre at once (the dominant startup cost). Measured ~-80 s of scan wall on the 20-node
+# layout (team8 234->152 s); the win is larger the more workers/node contend. sbcast itself
+# is a ~10 s one-time in-fabric broadcast. No-op when JIT (no sysimage). Set STAGE=0 to disable.
+STAGE="${STAGE:-1}"
+if [[ "${STAGE}" == "1" && -n "${GPU_SYSIMG}" && -f "${GPU_SYSIMG}" ]]; then
+    STAGED_SO="/tmp/tjlfep_gpusys_${SLURM_JOB_ID}.so"
+    echo "STAGE=1: sbcast ${GPU_SYSIMG} -> ${STAGED_SO} (all nodes)"
+    t_bcast=$(date +%s)
+    if sbcast -f "${GPU_SYSIMG}" "${STAGED_SO}"; then
+        GPU_SYSIMG="${STAGED_SO}"
+        echo "sbcast done in $(( $(date +%s) - t_bcast )) s"
+    else
+        echo "sbcast failed; falling back to shared path ${GPU_SYSIMG}"
+    fi
+fi
 if [[ -n "${GPU_SYSIMG}" && -f "${GPU_SYSIMG}" ]]; then
     export TJLFEP_GPU_SYSIMAGE="${GPU_SYSIMG}"
     MASTER_SYSIMG_ARGS=(--sysimage="${GPU_SYSIMG}")
@@ -80,7 +99,7 @@ export CUDA_MPS_PIPE_DIRECTORY="/tmp/nvidia-mps.$SLURM_JOB_ID"
 export CUDA_MPS_LOG_DIRECTORY="/tmp/nvidia-log.$SLURM_JOB_ID"
 
 cd "${TJLFEP_ROOT}/build"
-echo "=== 5N: SCAN_N=20 on ${SLURM_NNODES:-5} nodes, 4 radii/node, 1 GPU/radius, SOLVER=${SOLVER}$( [[ ${SOLVER} == ad ]] && echo " AD_EXTEND_MODE=${AD_EXTEND_MODE}") INNER=${INNER} MPS_TEAM=${MPS_TEAM} (8/GPU) x ${JULIA_WORKER_THREADS}t ==="
+echo "=== 5N: SCAN_N=20 on ${SLURM_NNODES:-5} nodes, 4 radii/node, 1 GPU/radius, SOLVER=${SOLVER}$( [[ ${SOLVER} == ad ]] && echo " AD_EXTEND_MODE=${AD_EXTEND_MODE}") INNER=${INNER} MPS_TEAM=${MPS_TEAM} (8/GPU) x ${JULIA_WORKER_THREADS}t STAGE=${STAGE} ==="
 t_start=$(date +%s)
 
 srun --export=ALL --label -n "${SLURM_NTASKS:-20}" --ntasks-per-node=4 --cpu-bind=cores \
