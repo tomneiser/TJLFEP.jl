@@ -44,8 +44,8 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
                  ql_flux_scan::Bool = false, solver::Symbol = :grid, refine_rounds::Int = 1,
                  extend_mode::Union{Nothing,Symbol} = nothing, wide_kdesc::Union{Nothing,Int} = nothing,
                  faithful_confirm::Union{Nothing,Bool} = nothing)
-    solver in (:grid, :ad, :robust_ad, :truth) ||
-        error("mainsub: solver must be :grid, :ad, :robust_ad, or :truth (got $solver)")
+    solver in (:grid, :ad, :robust_ad, :truth, :dfsane, :nlopt) ||
+        error("mainsub: solver must be :grid, :ad, :robust_ad, :truth, :dfsane, or :nlopt (got $solver)")
     x = inputsEP.PROCESS_IN
     if (x == 3)
         return _mainsub_spectrum(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
@@ -85,6 +85,10 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
                                       inner=inner, team=team, refine_rounds=refine_rounds)
         elseif solver == :truth
             return _mainsub_truth(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
+        elseif solver == :dfsane
+            return _mainsub_dfsane(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
+        elseif solver == :nlopt
+            return _mainsub_nlopt(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
         end
 
         growthrate, inputsEP, inputsPR, marginal_ql, scalefactor_buffer, wavebuffer_all =
@@ -380,4 +384,85 @@ function _mainsub_truth(inputsEP::Options, inputsPR::profile, printout::Bool;
     end
 
     return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, nothing)
+end
+
+# ── shared adopt+report tail for the derivative-free (ky,w) solvers ──
+# `res` is the `critical_factor_dfsane`/`critical_factor_nlopt` contract. Like :robust_ad/:truth,
+# adopt the onset onto inputsEP only for a genuine interior onset (status===:ok); otherwise leave
+# FACTOR_IN untouched so the radius falls back to its prior value / the grid path.
+function _finalize_nls_result!(inputsEP::Options, inputsPR::profile, printout::Bool,
+                               res, header::String)
+    sfmin  = res.sfmin
+    kymark = res.kyhat
+    wmark  = res.width
+    genuine = res.status === :ok && isfinite(sfmin)
+    if genuine
+        inputsEP.FACTOR_IN = sfmin
+        inputsEP.KYMARK    = kymark
+        isfinite(wmark) && (inputsEP.WIDTH_IN = wmark)
+    end
+    growthrate  = fill(NaN, (5, 10, 10, inputsEP.NMODES))
+    marginal_ql = nothing
+    sf_buf = String[]
+    if printout
+        push!(sf_buf, header)
+        push!(sf_buf, "ir = $(inputsEP.IR)")
+        push!(sf_buf, "sfmin = $(sfmin)")
+        push!(sf_buf, "kymark = $(kymark)")
+        push!(sf_buf, "width = $(wmark)")
+        push!(sf_buf, "binding = $(res.binding)")
+        push!(sf_buf, "status = $(res.status)")
+        push!(sf_buf, "n_samples = $(res.n_samples)  n_confirm = $(res.n_confirm)")
+        push!(sf_buf, "evals_full = $(res.total_evals_full)  evals_eig = $(res.total_evals_eig)")
+    end
+    return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, nothing)
+end
+
+"""
+    _mainsub_dfsane(inputsEP, inputsPR, printout; use_gpu=false, inner=:threads, team=nothing)
+
+Derivative-free (`:dfsane`) branch of [`mainsub`](@ref) (PROCESS_IN==5). Runs
+[`critical_factor_dfsane`](@ref): a cheap AE-onset multistart over a narrow-width-extended
+`(kyhat,width)` grid, `SimpleDFSane` local descents (finite-difference stationarity of the
+bracketing `marginal_factor_df`), and a faithful early-stop confirm. Env knobs (kwargs override):
+`DFSANE_KDESCEND` (seeds, default 3), `DFSANE_MAXITERS` (default 25), `NLS_ROOTSOLVER`
+(`itp`|`brent`|`bisection`, default `itp`).
+"""
+function _mainsub_dfsane(inputsEP::Options, inputsPR::profile, printout::Bool;
+                         use_gpu::Bool = false, inner::Symbol = :threads,
+                         team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+    kdesc = parse(Int, get(ENV, "DFSANE_KDESCEND", "3"))
+    maxit = parse(Int, get(ENV, "DFSANE_MAXITERS", "25"))
+    rsolv = Symbol(get(ENV, "NLS_ROOTSOLVER", "itp"))
+    nky   = parse(Int, get(ENV, "NLS_NSEED_KY", "6"))
+    nw    = parse(Int, get(ENV, "NLS_NSEED_W", "10"))
+    res = critical_factor_dfsane(inputsEP, inputsPR; use_gpu = use_gpu, inner = inner, team = team,
+                                 k_descend = kdesc, dfsane_maxiters = maxit, rootsolver = rsolv,
+                                 nseed_ky = nky, nseed_w = nw,
+                                 scan_lo = Float64(inputsEP.FACTOR_IN) / 512.0)
+    return _finalize_nls_result!(inputsEP, inputsPR, printout, res,
+                                 "# TJLFEP derivative-free solver (critical_factor_dfsane: SimpleDFSane + marginal_factor_df + faithful confirm)")
+end
+
+"""
+    _mainsub_nlopt(inputsEP, inputsPR, printout; use_gpu=false, inner=:threads, team=nothing)
+
+Derivative-free (`:nlopt`) branch of [`mainsub`](@ref) (PROCESS_IN==5). Runs
+[`critical_factor_nlopt`](@ref): NLopt global derivative-free search on the cheap AE-onset surface
+(narrow-width extended), optional local polish, then a faithful early-stop confirm. Env knobs
+(kwargs override): `NLOPT_ALGO` (default `GN_DIRECT_L`), `NLOPT_LOCAL` (local polish algo, unset =
+none), `NLOPT_MAXEVAL` (global evals, default 40).
+"""
+function _mainsub_nlopt(inputsEP::Options, inputsPR::profile, printout::Bool;
+                        use_gpu::Bool = false, inner::Symbol = :threads,
+                        team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+    algo  = Symbol(get(ENV, "NLOPT_ALGO", "GN_DIRECT_L"))
+    lstr  = get(ENV, "NLOPT_LOCAL", "")
+    lalgo = isempty(lstr) ? nothing : Symbol(lstr)
+    mev   = parse(Int, get(ENV, "NLOPT_MAXEVAL", "40"))
+    res = critical_factor_nlopt(inputsEP, inputsPR; use_gpu = use_gpu, inner = inner, team = team,
+                                algo = algo, local_algo = lalgo, max_evals = mev,
+                                scan_lo = Float64(inputsEP.FACTOR_IN) / 512.0)
+    return _finalize_nls_result!(inputsEP, inputsPR, printout, res,
+                                 "# TJLFEP derivative-free solver (critical_factor_nlopt: NLopt $(algo) + faithful confirm)")
 end

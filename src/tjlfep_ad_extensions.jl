@@ -580,6 +580,131 @@ function marginal_factor(inputsEP::Options{Float64}, inputsPR::profile{Float64};
 end
 
 """
+    marginal_factor_df(inputsEP, inputsPR; kwargs...) -> NamedTuple
+
+Derivative-FREE analogue of [`marginal_factor`](@ref): the marginal EP scale
+factor `f★` at which the AE-band leading growth rate crosses threshold,
+
+    γ_AE(f★) = gamma_thresh ,
+
+found by **bracketing + a derivative-free root solver** (`SimpleNonlinearSolve`
+`ITP`/`Brent`/`Bisection`) instead of the safeguarded Newton. This is the direct
+replacement for the `:grid` engine's coarse 8-point factor scan + single linear
+interpolation (see the "How `:grid` homes in on the threshold" analysis): it
+converges to the true threshold at arbitrary precision in a handful of eigensolves
+and — because it only ever *brackets* the up-crossing — it cannot overshoot the
+narrow AE `γ_AE(f)` bump the way a monotone-assuming interpolation can.
+
+It shares `marginal_factor`'s bracketing preamble (a warm `f_start` geometric
+expansion for neighbor-radius continuation, else a log-spaced `nscan` scan for the
+first `γ_AE(f)-γ*` up-crossing), but evaluates only the growth rate (the AD
+`dγ/df` is never used by the root solver). Defaults to `ae_band=true` since the
+derivative-free solvers track the AE band.
+
+Keywords mirror [`marginal_factor`](@ref): `gamma_thresh`, `bracket`, `f_start`,
+`scan_lo=1e-3`, `scan_hi=10.0`, `nscan=8`, `ae_band=true`, plus
+`rootsolver=:itp` (`:itp` | `:brent` | `:bisection`), `tol=1e-6`, `maxiter=100`,
+`use_gpu=false`, `verbose=false`.
+
+Returns the same shape as [`marginal_factor`](@ref):
+`(; factor, gamma_lead, gamma, freq, iters, evals, converged, bracket)`.
+"""
+function marginal_factor_df(inputsEP::Options{Float64}, inputsPR::profile{Float64};
+                            gamma_thresh::Union{Nothing,Float64} = nothing,
+                            bracket::Union{Nothing,Tuple{Float64,Float64}} = nothing,
+                            f_start::Union{Nothing,Float64} = nothing,
+                            scan_lo::Float64 = 1.0e-3, scan_hi::Float64 = 10.0, nscan::Int = 8,
+                            ae_band::Bool = true, rootsolver::Symbol = :itp,
+                            tol::Float64 = 1.0e-6, maxiter::Int = 100,
+                            use_gpu::Bool = false, verbose::Bool = false)
+    gamma_thresh = gamma_thresh === nothing ? _gamma_thresh_for(inputsEP, inputsPR) : gamma_thresh
+    evals = Ref(0)
+    last_r = Ref{Any}(nothing)
+    # γ-only evaluation (the root solver needs no derivative). We reuse the AD leaf so the
+    # onset is numerically identical to `marginal_factor`/`_ae_unstable_window`; the unused
+    # dγ/df is discarded (a fraction of one eigensolve), so the derivative-free win here is
+    # solver ROBUSTNESS + precision, not per-eval cost.
+    gl_of = f -> begin
+        gl, _dgl, r = _gamma_lead_dfactor(inputsEP, inputsPR, f; use_gpu = use_gpu, ae_band = ae_band)
+        evals[] += 1
+        last_r[] = r
+        verbose && @info "mf_df eval" factor=f gamma_lead=gl gobj=(gl - gamma_thresh)
+        gl
+    end
+    g = f -> gl_of(f) - gamma_thresh
+
+    # ── Establish a bracket [a,b] with g(a) < 0 < g(b) (γ-only; no derivative) ──
+    local a, b, ga, gb
+    a = b = NaN
+    if bracket === nothing && f_start !== nothing && scan_lo < f_start < scan_hi
+        # Warm continuation: geometric expansion around the previous radius's root.
+        gs = g(f_start)
+        if gs >= 0
+            b, gb = f_start, gs
+            fa = f_start
+            for _ in 1:8
+                fa = max(scan_lo, fa / 1.5)
+                gfa = g(fa)
+                if gfa < 0; a, ga = fa, gfa; break end
+                fa <= scan_lo && break
+            end
+        else
+            a, ga = f_start, gs
+            fb = f_start
+            for _ in 1:8
+                fb = min(scan_hi, fb * 1.5)
+                gfb = g(fb)
+                if gfb >= 0; b, gb = fb, gfb; break end
+                fb >= scan_hi && break
+            end
+        end
+    end
+    if isnan(a) || isnan(b)
+        a = b = NaN
+        if bracket === nothing
+            # Log-spaced scan for the FIRST up-crossing of γ_AE(f)=γ*. No monotone
+            # top-of-range early-out: the AE-band γ_AE(f) is a narrow bump (rises then
+            # restabilises), so a sub-threshold scan_hi does NOT imply stability.
+            fs = exp.(range(log(scan_lo), log(scan_hi); length = nscan))
+            prev_f = fs[1]; prev_g = g(prev_f)
+            for f in fs[2:end]
+                gf = g(f)
+                if prev_g < 0 && gf >= 0
+                    a, ga, b, gb = prev_f, prev_g, f, gf
+                    break
+                end
+                prev_f, prev_g = f, gf
+            end
+            if isnan(a)
+                verbose && @warn "marginal_factor_df: no sign change of γ_AE-thresh in [$scan_lo,$scan_hi] (always stable/unstable); returning best endpoint"
+                r = last_r[]
+                return (; factor = prev_g < 0 ? scan_hi : scan_lo, gamma_lead = prev_g + gamma_thresh,
+                        gamma = r === nothing ? Float64[] : r.gamma, freq = r === nothing ? Float64[] : r.freq,
+                        iters = 0, evals = evals[], converged = false, bracket = (scan_lo, scan_hi))
+            end
+        else
+            a, b = bracket
+            ga = g(a); gb = g(b)
+            ga < 0 < gb || error("marginal_factor_df: provided bracket ($a,$b) does not satisfy g(a)<0<g(b): g(a)=$ga g(b)=$gb")
+        end
+    end
+
+    # ── derivative-free bracketing root solve on [a,b] ──
+    alg = rootsolver === :brent     ? SimpleNonlinearSolve.Brent() :
+          rootsolver === :bisection ? SimpleNonlinearSolve.Bisection() :
+                                      SimpleNonlinearSolve.ITP()
+    prob = SimpleNonlinearSolve.IntervalNonlinearProblem((u, _p) -> g(u), (a, b))
+    sol = SimpleNonlinearSolve.solve(prob, alg; abstol = tol * (1 + abs(gamma_thresh)), maxiters = maxiter)
+    f = sol.u
+    gl = gl_of(f)   # refresh last_r at the root for the returned spectrum
+    r = last_r[]
+    converged = SimpleNonlinearSolve.SciMLBase.successful_retcode(sol)
+    return (; factor = f, gamma_lead = gl, gamma = r === nothing ? Float64[] : r.gamma,
+            freq = r === nothing ? Float64[] : r.freq,
+            iters = 0, evals = evals[], converged = converged, bracket = (a, b))
+end
+
+"""
     critical_factor_grid(inputsEP, inputsPR; kwargs...) -> NamedTuple
 
 AD analogue of the inner `kwscale_scan`: the critical EP scale factor is the

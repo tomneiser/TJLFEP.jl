@@ -15,10 +15,13 @@ using StaticArrays
 using TJLF
 using TJLF: InputTJLF  # consolidated single input type (re-exported below)
 using Plots
+import SimpleNonlinearSolve   # derivative-free bracketing roots (ITP/Brent) + SimpleDFSane for the :dfsane solver
+import NLopt                  # derivative-free (ky,w) global/local search for the :nlopt solver
 
 include("tjlfep_modules.jl")
 include("tjlfep_inputs.jl")
 include("tjlfep_ad_extensions.jl")
+include("tjlfep_nls_extensions.jl")
 include("tjlfep_read_inputs.jl")
 include("tjlfep_debug.jl")
 include("EXPROconst.jl")
@@ -94,7 +97,7 @@ export expro_bound_deriv, expro_log_gradients, read_expro_for_alpha, compute_alp
 export tjlfep_complete_output
 export runTHD, runTHD_from_gacode
 export TJLFEP_TM, TJLFEP_ky_widthscan
-export gamma_dgamma_dfactor, gamma_grad, marginal_factor, marginal_factor_faithful, critical_factor_grid, critical_factor_optimize, critical_factor_robust, critical_factor_confirm, critical_factor_profile, gamma_input_sensitivities, critical_factor_ad_f1seed, critical_factor_truth, critical_factor_triggered
+export gamma_dgamma_dfactor, gamma_grad, marginal_factor, marginal_factor_df, marginal_factor_faithful, critical_factor_grid, critical_factor_optimize, critical_factor_robust, critical_factor_confirm, critical_factor_profile, gamma_input_sensitivities, critical_factor_ad_f1seed, critical_factor_truth, critical_factor_triggered, critical_factor_dfsane, critical_factor_nlopt
 export MarginalQLData, extract_marginal_ql, build_alpha_ql_modes
 export ql_flux_scan_at_marginal, diff_star_from_D_W
 export populate_tjlfep_profile!

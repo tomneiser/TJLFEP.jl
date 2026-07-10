@@ -128,4 +128,63 @@ using TJLFEP
         @test isfinite(r.width) && r.width > 0
         rm(out; recursive=true, force=true)
     end
+
+    @testset "marginal_factor_df agrees with marginal_factor (derivative-free inner)" begin
+        root = normpath(@__DIR__, "..")
+        gac  = joinpath(root, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
+        tgl  = joinpath(@__DIR__, "fixtures", "scan2", "input_scan2_nb2.TGLFEP")
+        @test isfile(gac) && isfile(tgl)
+
+        opts, prof, _ = preprocess_gacode_inputs(gac, tgl)
+        ep = deepcopy(opts)
+        ep.IR = ep.IR_EXP[1]
+        ep.FACTOR_IN = ep.FACTOR[1]
+        gth = TJLFEP._gamma_thresh_for(ep, prof)
+        shi = Float64(ep.FACTOR_IN); slo = shi / 512.0
+
+        # The bracketing ITP root must match the safeguarded-Newton root wherever an onset exists,
+        # and both must agree that a point with no in-range onset is not converged. Check a couple
+        # of (ky,w) points spanning feasible / infeasible.
+        for (ky, w) in ((0.9, 1.9), (0.5, 1.5))
+            e = deepcopy(ep); e.KYHAT_IN = ky; e.WIDTH_IN = w
+            mfn = marginal_factor(e, prof; gamma_thresh=gth, ae_band=true, scan_lo=slo, scan_hi=shi)
+            mfd = marginal_factor_df(e, prof; gamma_thresh=gth, ae_band=true, scan_lo=slo, scan_hi=shi)
+            @test mfd.evals > 0
+            @test mfn.converged == mfd.converged
+            if mfn.converged
+                @test isapprox(mfn.factor, mfd.factor; rtol=2e-2)
+            end
+        end
+    end
+
+    # End-to-end coverage of the two derivative-free (ky,w) solver branches (_mainsub_dfsane /
+    # _mainsub_nlopt + _finalize_nls_result!). Seed grid / iteration knobs are shrunk via ENV so the
+    # nb=2 single-radius solve stays fast; correctness (finite onset) is the assertion, not accuracy.
+    @testset "derivative-free solvers: :dfsane / :nlopt (nb=2)" begin
+        root = normpath(@__DIR__, "..")
+        gac  = joinpath(root, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
+        tgl  = joinpath(@__DIR__, "fixtures", "scan2", "input_scan2_nb2.TGLFEP")
+        @test isfile(gac) && isfile(tgl)
+
+        saved = Dict(k => get(ENV, k, nothing) for k in
+                     ("NLS_NSEED_KY", "NLS_NSEED_W", "DFSANE_KDESCEND", "DFSANE_MAXITERS", "NLOPT_MAXEVAL"))
+        ENV["NLS_NSEED_KY"] = "3"; ENV["NLS_NSEED_W"] = "4"
+        ENV["DFSANE_KDESCEND"] = "1"; ENV["DFSANE_MAXITERS"] = "4"
+        ENV["NLOPT_MAXEVAL"] = "16"
+        try
+            for solver in (:nlopt, :dfsane)
+                out = mktempdir()
+                r = run_gacode_scan_task(gac, tgl, 1; out_dir=out, use_gpu=false,
+                                         printout=false, solver=solver)
+                @test r.ir == 2
+                @test isfinite(r.sfmin) && r.sfmin > 0
+                @test isfinite(r.width) && r.width > 0
+                rm(out; recursive=true, force=true)
+            end
+        finally
+            for (k, v) in saved
+                v === nothing ? delete!(ENV, k) : (ENV[k] = v)
+            end
+        end
+    end
 end
