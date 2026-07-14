@@ -33,6 +33,11 @@ critical-factor engine (PROCESS_IN=5 only):
     at near-marginal radii it can return a `sfmin` up to ~25× lower (more unstable)
     than `:grid`/`:robust_ad`. Use it for the most-unstable physical threshold rather
     than Fortran equivalence.
+  - `:multistart` / `:nlopt` — the derivative-free routes (no AD in the
+    `(kyhat,width)` search): [`critical_factor_multistart`](@ref) (cheap AE-onset
+    multistart + local BOBYQA/SBPLX descents) and [`critical_factor_nlopt`](@ref)
+    (DIRECT-L global + BOBYQA polish).
+    Both are narrow-width extended like `:truth` and faithful-confirm their optima.
 
 All AD solvers set `FACTOR_IN`/`KYMARK`/`WIDTH_IN` like the grid path and return
 the same `((growthrate, inputsEP, inputsPR, marginal_ql), (scalefactor_buffer,
@@ -44,8 +49,8 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
                  ql_flux_scan::Bool = false, solver::Symbol = :grid, refine_rounds::Int = 1,
                  extend_mode::Union{Nothing,Symbol} = nothing, wide_kdesc::Union{Nothing,Int} = nothing,
                  faithful_confirm::Union{Nothing,Bool} = nothing)
-    solver in (:grid, :ad, :robust_ad, :truth, :dfsane, :nlopt) ||
-        error("mainsub: solver must be :grid, :ad, :robust_ad, :truth, :dfsane, or :nlopt (got $solver)")
+    solver in (:grid, :ad, :robust_ad, :truth, :multistart, :nlopt) ||
+        error("mainsub: solver must be :grid, :ad, :robust_ad, :truth, :multistart, or :nlopt (got $solver)")
     x = inputsEP.PROCESS_IN
     if (x == 3)
         return _mainsub_spectrum(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
@@ -85,8 +90,8 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
                                       inner=inner, team=team, refine_rounds=refine_rounds)
         elseif solver == :truth
             return _mainsub_truth(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
-        elseif solver == :dfsane
-            return _mainsub_dfsane(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
+        elseif solver == :multistart
+            return _mainsub_multistart(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
         elseif solver == :nlopt
             return _mainsub_nlopt(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
         end
@@ -387,7 +392,7 @@ function _mainsub_truth(inputsEP::Options, inputsPR::profile, printout::Bool;
 end
 
 # ── shared adopt+report tail for the derivative-free (ky,w) solvers ──
-# `res` is the `critical_factor_dfsane`/`critical_factor_nlopt` contract. Like :robust_ad/:truth,
+# `res` is the `critical_factor_multistart`/`critical_factor_nlopt` contract. Like :robust_ad/:truth,
 # adopt the onset onto inputsEP only for a genuine interior onset (status===:ok); otherwise leave
 # FACTOR_IN untouched so the radius falls back to its prior value / the grid path.
 function _finalize_nls_result!(inputsEP::Options, inputsPR::profile, printout::Bool,
@@ -419,29 +424,30 @@ function _finalize_nls_result!(inputsEP::Options, inputsPR::profile, printout::B
 end
 
 """
-    _mainsub_dfsane(inputsEP, inputsPR, printout; use_gpu=false, inner=:threads, team=nothing)
+    _mainsub_multistart(inputsEP, inputsPR, printout; use_gpu=false, inner=:threads, team=nothing)
 
-Derivative-free (`:dfsane`) branch of [`mainsub`](@ref) (PROCESS_IN==5). Runs
-[`critical_factor_dfsane`](@ref): a cheap AE-onset multistart over a narrow-width-extended
-`(kyhat,width)` grid, `SimpleDFSane` local descents (finite-difference stationarity of the
-bracketing `marginal_factor_df`), and a faithful early-stop confirm. Env knobs (kwargs override):
-`DFSANE_KDESCEND` (seeds, default 3), `DFSANE_MAXITERS` (default 25), `NLS_ROOTSOLVER`
-(`itp`|`brent`|`bisection`, default `itp`).
+Derivative-free (`:multistart`) branch of [`mainsub`](@ref) (PROCESS_IN==5). Runs
+[`critical_factor_multistart`](@ref): a cheap AE-onset multistart over a narrow-width-extended
+`(kyhat,width)` grid, local derivative-free descents on the cheap onset surface (BOBYQA by
+default), and a faithful early-stop confirm. Env knobs (kwargs override): `NLS_LOCAL_ALGO`
+(`LN_BOBYQA`|`LN_SBPLX`|`LN_NELDERMEAD`, default `LN_BOBYQA`), `NLS_KDESCEND` (basins
+descended, default 3), `NLS_LOCAL_EVALS` (cheap evals per descent, default 15), `NLS_NSEED_KY` /
+`NLS_NSEED_W` (seed grid, defaults 6/10).
 """
-function _mainsub_dfsane(inputsEP::Options, inputsPR::profile, printout::Bool;
-                         use_gpu::Bool = false, inner::Symbol = :threads,
-                         team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
-    kdesc = parse(Int, get(ENV, "DFSANE_KDESCEND", "3"))
-    maxit = parse(Int, get(ENV, "DFSANE_MAXITERS", "25"))
-    rsolv = Symbol(get(ENV, "NLS_ROOTSOLVER", "itp"))
+function _mainsub_multistart(inputsEP::Options, inputsPR::profile, printout::Bool;
+                             use_gpu::Bool = false, inner::Symbol = :threads,
+                             team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+    lalgo = Symbol(get(ENV, "NLS_LOCAL_ALGO", "LN_BOBYQA"))
+    kdesc = parse(Int, get(ENV, "NLS_KDESCEND", "3"))
+    lev   = parse(Int, get(ENV, "NLS_LOCAL_EVALS", "15"))
     nky   = parse(Int, get(ENV, "NLS_NSEED_KY", "6"))
     nw    = parse(Int, get(ENV, "NLS_NSEED_W", "10"))
-    res = critical_factor_dfsane(inputsEP, inputsPR; use_gpu = use_gpu, inner = inner, team = team,
-                                 k_descend = kdesc, dfsane_maxiters = maxit, rootsolver = rsolv,
-                                 nseed_ky = nky, nseed_w = nw,
-                                 scan_lo = Float64(inputsEP.FACTOR_IN) / 512.0)
+    res = critical_factor_multistart(inputsEP, inputsPR; use_gpu = use_gpu, inner = inner, team = team,
+                                     local_algo = lalgo, k_descend = kdesc, local_evals = lev,
+                                     nseed_ky = nky, nseed_w = nw,
+                                     scan_lo = Float64(inputsEP.FACTOR_IN) / 512.0)
     return _finalize_nls_result!(inputsEP, inputsPR, printout, res,
-                                 "# TJLFEP derivative-free solver (critical_factor_dfsane: SimpleDFSane + marginal_factor_df + faithful confirm)")
+                                 "# TJLFEP derivative-free solver (critical_factor_multistart: $(lalgo) descents on cheap AE onset + faithful confirm)")
 end
 
 """
@@ -449,16 +455,16 @@ end
 
 Derivative-free (`:nlopt`) branch of [`mainsub`](@ref) (PROCESS_IN==5). Runs
 [`critical_factor_nlopt`](@ref): NLopt global derivative-free search on the cheap AE-onset surface
-(narrow-width extended), optional local polish, then a faithful early-stop confirm. Env knobs
-(kwargs override): `NLOPT_ALGO` (default `GN_DIRECT_L`), `NLOPT_LOCAL` (local polish algo, unset =
-none), `NLOPT_MAXEVAL` (global evals, default 40).
+(narrow-width extended), local BOBYQA polish, then a faithful early-stop confirm. Env knobs
+(kwargs override): `NLOPT_ALGO` (default `GN_DIRECT_L`), `NLOPT_LOCAL` (local polish algo, default
+`LN_BOBYQA`, `none` disables), `NLOPT_MAXEVAL` (global evals, default 40).
 """
 function _mainsub_nlopt(inputsEP::Options, inputsPR::profile, printout::Bool;
                         use_gpu::Bool = false, inner::Symbol = :threads,
                         team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
     algo  = Symbol(get(ENV, "NLOPT_ALGO", "GN_DIRECT_L"))
-    lstr  = get(ENV, "NLOPT_LOCAL", "")
-    lalgo = isempty(lstr) ? nothing : Symbol(lstr)
+    lstr  = get(ENV, "NLOPT_LOCAL", "LN_BOBYQA")
+    lalgo = (isempty(lstr) || lstr == "none") ? nothing : Symbol(lstr)
     mev   = parse(Int, get(ENV, "NLOPT_MAXEVAL", "40"))
     res = critical_factor_nlopt(inputsEP, inputsPR; use_gpu = use_gpu, inner = inner, team = team,
                                 algo = algo, local_algo = lalgo, max_evals = mev,

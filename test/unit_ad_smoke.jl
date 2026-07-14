@@ -157,24 +157,28 @@ using TJLFEP
         end
     end
 
-    # End-to-end coverage of the two derivative-free (ky,w) solver branches (_mainsub_dfsane /
-    # _mainsub_nlopt + _finalize_nls_result!). Seed grid / iteration knobs are shrunk via ENV so the
-    # nb=2 single-radius solve stays fast; correctness (finite onset) is the assertion, not accuracy.
-    @testset "derivative-free solvers: :dfsane / :nlopt (nb=2)" begin
+    # End-to-end coverage of the derivative-free (ky,w) solver branches (_mainsub_multistart /
+    # _mainsub_nlopt + _finalize_nls_result!).
+    # Seed grid / iteration knobs are shrunk via ENV so the nb=2 single-radius solve stays fast;
+    # correctness (finite onset) is the assertion, not accuracy.
+    @testset "derivative-free solvers: :multistart / :nlopt (nb=2)" begin
         root = normpath(@__DIR__, "..")
         gac  = joinpath(root, "examples", "DIIID_202017C42_500ms_v3.1", "input.gacode")
         tgl  = joinpath(@__DIR__, "fixtures", "scan2", "input_scan2_nb2.TGLFEP")
         @test isfile(gac) && isfile(tgl)
 
         saved = Dict(k => get(ENV, k, nothing) for k in
-                     ("NLS_NSEED_KY", "NLS_NSEED_W", "DFSANE_KDESCEND", "DFSANE_MAXITERS", "NLOPT_MAXEVAL"))
+                     ("NLS_NSEED_KY", "NLS_NSEED_W", "NLS_KDESCEND", "NLS_LOCAL_EVALS", "NLOPT_MAXEVAL"))
         ENV["NLS_NSEED_KY"] = "3"; ENV["NLS_NSEED_W"] = "4"
-        ENV["DFSANE_KDESCEND"] = "1"; ENV["DFSANE_MAXITERS"] = "4"
+        ENV["NLS_KDESCEND"] = "1"; ENV["NLS_LOCAL_EVALS"] = "4"
         ENV["NLOPT_MAXEVAL"] = "16"
+        # Honor the GPU eigensolve path when the batch job requests it (TJLFEP_TEST_USE_GPU=1);
+        # defaults to the CPU path so the CI depot-cache run stays host-only.
+        test_gpu = get(ENV, "TJLFEP_TEST_USE_GPU", "0") == "1"
         try
-            for solver in (:nlopt, :dfsane)
+            for solver in (:nlopt, :multistart)
                 out = mktempdir()
-                r = run_gacode_scan_task(gac, tgl, 1; out_dir=out, use_gpu=false,
+                r = run_gacode_scan_task(gac, tgl, 1; out_dir=out, use_gpu=test_gpu,
                                          printout=false, solver=solver)
                 @test r.ir == 2
                 @test isfinite(r.sfmin) && r.sfmin > 0

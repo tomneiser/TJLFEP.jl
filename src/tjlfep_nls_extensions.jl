@@ -2,13 +2,23 @@
 # playbook. These replace the AD gradients used by `critical_factor_optimize` at BOTH layers:
 #
 #   inner  (factor root)  : `marginal_factor_df` — bracketing ITP/Brent instead of AD-Newton
-#                           (defined in tjlfep_ad_extensions.jl, used here for f★(ky,w)).
-#   outer  ((ky,w) search): `critical_factor_dfsane` — SimpleDFSane on the finite-difference
-#                           stationarity of f★(ky,w), globalized by a cheap AE-onset multistart;
+#                           (defined in tjlfep_ad_extensions.jl).
+#   outer  ((ky,w) search): `critical_factor_multistart` — cheap AE-onset multistart + local
+#                           derivative-free descents (BOBYQA / SBPLX / Nelder-Mead)
+#                           on the CHEAP onset surface in (ky, log w) coordinates;
 #                           `critical_factor_nlopt`  — NLopt derivative-free global (GN_DIRECT_L /
-#                           GN_CRS2_LM) + optional local polish (LN_BOBYQA / LN_COBYLA).
+#                           GN_CRS2_LM) + local BOBYQA polish.
 #
-# Both search the width box EXTENDED below WIDTH_MIN (down to `w_lo`≈0.05, like :ad :locate /
+# Design note (why no DFSane route): DFSane is a spectral-residual solver for SQUARE nonlinear
+# systems — the FluxMatcher's flux-matching problem genuinely is one. The outer TJLFEP problem is
+# instead a 2D bound-constrained MINIMIZATION of a bumpy, expensive surface; recasting it as the
+# stationarity system ∇f★=0 costs 3 expensive `marginal_factor_df` solves per residual, is
+# attracted to saddles/maxima, and DFSane has no bound handling. Model-based (BOBYQA) or
+# noise-robust simplex (SBPLX) minimizers on the ~10-20× cheaper batched AE-onset surface — the
+# same surface `:grid`'s kwscale_scan ranks on — are the right tool, so the DFSane route was
+# removed; use `:multistart` (local BOBYQA/SBPLX/Nelder-Mead) or `:nlopt` instead.
+#
+# All solvers search the width box EXTENDED below WIDTH_MIN (down to `w_lo`≈0.05, like :ad :locate /
 # :robust_ad) to capture the narrow EP-driven AE modes the `w≥1` box misses, then faithful-confirm
 # (IFLUX=true) the candidate optima with an early-stop bound. They return the SAME contract as
 # `critical_factor_robust`/`critical_factor_direct` so the `_mainsub_*` branches consume them
@@ -53,17 +63,26 @@ end
 # ── shared: faithful (IFLUX=true) early-stop confirm of candidate (ky,w) optima ──
 # `cands` :: Vector of (ky, w, cheap_f), sorted ascending by cheap_f. The cheap AE-band onset
 # lower-bounds the faithful keep onset, so once a candidate's cheap_f ≥ the running faithful best
-# it (and all later) cannot win — an exact prune that bounds the confirm count. Returns the winning
-# faithful onset, marking, binding, the `marginal_factor_faithful` result, and eval tallies.
+# it (and all later) cannot win — an exact prune that bounds the confirm count. Candidates within
+# (`dedup_ky`, `dedup_logw`) of an already-confirmed point are skipped (local-descent samples
+# cluster tightly in the winning basin; re-confirming them buys nothing), and `max_confirm` hard-
+# caps the confirm count. Returns the winning faithful onset, marking, binding, the
+# `marginal_factor_faithful` result, and eval tallies.
 function _confirm_candidates(ep0::Options{Float64}, prof::profile{Float64}, gth::Float64,
                              cands::Vector{Tuple{Float64,Float64,Float64}};
-                             slo::Float64, shi::Float64, inner::Symbol, team, use_gpu::Bool)
+                             slo::Float64, shi::Float64, inner::Symbol, team, use_gpu::Bool,
+                             max_confirm::Int = typemax(Int),
+                             dedup_ky::Float64 = 0.05, dedup_logw::Float64 = 0.1)
     best_f = Inf; best_ky = NaN; best_w = NaN; best_bind = :none; best_faithful = nothing
     n_confirm = 0; total_full = 0; total_eig = 0
+    done = Tuple{Float64,Float64}[]
     for c in cands
         isfinite(c[3]) || continue
         stop_bound = isfinite(best_f) ? best_f : shi
         c[3] >= stop_bound && break
+        n_confirm >= max_confirm && break
+        any(d -> abs(c[1] - d[1]) < dedup_ky && abs(log(c[2]) - log(d[2])) < dedup_logw, done) && continue
+        push!(done, (c[1], c[2]))
         r = marginal_factor_faithful(ep0, prof; kyhat = c[1], width = c[2], gamma_thresh = gth,
                                      scan_lo = slo, scan_hi = shi, threaded = true,
                                      inner = inner, team = team, use_gpu = use_gpu)
@@ -81,42 +100,72 @@ end
 _nls_status(best_f, best_bind, shi) =
     (best_bind === :none || !isfinite(best_f)) ? :no_onset : (best_f >= 0.999 * shi ? :cap : :ok)
 
+# ── shared: cheap AE-onset objective for the outer DF minimizers ──
+# Returns `(; obj, samples, eig)`: `obj(ky,w)` runs one batched `_ae_unstable_window` (IFLUX=false)
+# and returns the onset f1, or the `PENALTY=shi` plateau where the AE band is stable. Every
+# evaluation is recorded in `samples` so the faithful confirm can consider ALL points the optimizer
+# visited, not just its final iterate; `eig[]` tallies eigensolves.
+function _make_cheap_objective(ep0::Options{Float64}, prof::profile{Float64}, gth::Float64;
+                               slo::Float64, shi::Float64, n_eig::Int,
+                               inner::Symbol, team, use_gpu::Bool)
+    samples = NamedTuple[]
+    eig = Ref(0)
+    obj = function (ky::Float64, w::Float64)
+        ep = deepcopy(ep0); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
+        win = _ae_unstable_window(ep, prof, gth; scan_lo = slo, scan_hi = shi,
+                                  n_eig = n_eig, threaded = true, use_gpu = use_gpu,
+                                  inner = inner, team = team)
+        eig[] += win.evals
+        f = win.unstable ? win.f1 : shi
+        push!(samples, (; ky = ky, w = w, f = f, unstable = win.unstable, pinned = win.pinned_lo))
+        return f
+    end
+    return (; obj = obj, samples = samples, eig = eig)
+end
+
 """
-    critical_factor_dfsane(inputsEP, inputsPR; kwargs...) -> NamedTuple
+    critical_factor_multistart(inputsEP, inputsPR; local_algo=:LN_BOBYQA, kwargs...) -> NamedTuple
 
-Derivative-free `(kyhat, width)` critical-factor search using **SimpleDFSane** (the
-derivative-free spectral-residual solver the FUSE FluxMatcher defaults to) as the per-seed local
-driver. The bumpy AE-onset surface `f★(ky,w)` is multimodal, so global-ness comes from a cheap
-AE-onset multistart (`_cheap_onset_seeds`), not from DFSane itself:
+Derivative-free `(kyhat, width)` critical-factor search: cheap AE-onset multistart + local
+derivative-free descents on the **cheap onset surface** + faithful early-stop confirm. The bumpy
+onset surface `f1(ky,w)` is multimodal, so global-ness comes from the multistart
+(`_cheap_onset_seeds`); the local driver only refines within a basin:
 
-  1. Cheap eigenvalue-only (`IFLUX=false`) AE-onset rank over a log-width (down to `w_lo`) × kyhat
-     grid → feasible seeds sorted by onset.
-  2. For the top `k_descend` well-separated non-pinned seeds, run `SimpleDFSane` on the 2D
-     stationarity residual `F(ky,w) = ∇f★(ky,w) = 0`, where the gradient is a forward finite
-     difference of `marginal_factor_df` (fully derivative-free) and `(ky,w)` is clamped to the box.
-     The lowest `f★` seen along each trajectory is tracked (DFSane can wander on the bumpy surface),
-     and both the DFSane optimum and the raw seed are kept as candidates (floor guard).
-  3. Faithful-confirm (`IFLUX=true`) the pooled candidates in ascending cheap order with an
-     early-stop bound (`_confirm_candidates`) → the critical factor.
+  1. Cheap eigenvalue-only (`IFLUX=false`) AE-onset rank over a (log+linear width, down to `w_lo`)
+     × kyhat grid → feasible seeds sorted by onset.
+  2. For the top `k_descend` well-separated non-pinned seeds, run a local derivative-free
+     minimization of the cheap onset in `(ky, log w)` coordinates (log-width matches the band's
+     natural scaling). `local_algo` selects the driver:
+       `:LN_BOBYQA` (default) — Powell quadratic trust-region model; most eval-efficient.
+       `:LN_SBPLX`            — Rowan subplex; noise-robust on the bumpiest surfaces.
+       `:LN_NELDERMEAD`       — plain simplex.
+     Every point the optimizer visits is recorded, and each cheap eval is ONE batched-parallel
+     `_ae_unstable_window` (~10-20× cheaper than a `marginal_factor_df` f★ solve).
+  3. Faithful-confirm (`IFLUX=true`) the pooled candidates — ALL feasible cheap seeds (floor
+     guards) plus all unstable descent samples — in ascending cheap order with an early-stop bound
+     (`_confirm_candidates`) → the critical factor.
 
-Keywords: `gamma_thresh=nothing`, `scan_lo=nothing`(→`shi/512`), `scan_hi=nothing`(→`FACTOR_IN`),
-`ky_lo=0.05`, `w_lo=0.05`, `nseed_ky=6`, `nseed_w=10`, `n_eig_seed=12`, `k_descend=3`,
-`dfsane_maxiters=25`, `rootsolver=:itp`, `inner=:threads`, `team=nothing`, `use_gpu=false`,
-`verbose=false`.
+Keywords: `local_algo=:LN_BOBYQA`, `gamma_thresh=nothing`, `scan_lo=nothing`(→`shi/512`),
+`scan_hi=nothing`(→`FACTOR_IN`), `ky_lo=0.05`, `w_lo=0.05`, `nseed_ky=6`, `nseed_w=10`,
+`n_eig_seed=12`, `n_eig=16`, `k_descend=3`, `local_evals=15`, `max_confirm=8`,
+`inner=:threads`, `team=nothing`, `use_gpu=false`, `verbose=false`.
+The faithful confirm is the wall-time driver: `max_confirm` hard-caps it (the early-stop prune
+plus basin dedup usually stop well before the cap).
 
 Returns `(; sfmin, kyhat, width, binding, status, converged, faithful, n_confirm, n_samples,
 total_evals_full, total_evals_eig)`, `status ∈ (:ok,:no_onset,:cap)`.
 """
-function critical_factor_dfsane(ep0::Options{Float64}, prof::profile{Float64};
-                                gamma_thresh::Union{Nothing,Float64} = nothing,
-                                scan_lo::Union{Nothing,Float64} = nothing,
-                                scan_hi::Union{Nothing,Float64} = nothing,
-                                ky_lo::Float64 = 0.05, w_lo::Float64 = 0.05,
-                                nseed_ky::Int = 6, nseed_w::Int = 10, n_eig_seed::Int = 12,
-                                k_descend::Int = 3, dfsane_maxiters::Int = 25,
-                                rootsolver::Symbol = :itp,
-                                inner::Symbol = :threads, team = nothing,
-                                use_gpu::Bool = false, verbose::Bool = false)
+function critical_factor_multistart(ep0::Options{Float64}, prof::profile{Float64};
+                                    local_algo::Symbol = :LN_BOBYQA,
+                                    gamma_thresh::Union{Nothing,Float64} = nothing,
+                                    scan_lo::Union{Nothing,Float64} = nothing,
+                                    scan_hi::Union{Nothing,Float64} = nothing,
+                                    ky_lo::Float64 = 0.05, w_lo::Float64 = 0.05,
+                                    nseed_ky::Int = 6, nseed_w::Int = 10, n_eig_seed::Int = 12,
+                                    n_eig::Int = 16, k_descend::Int = 3, local_evals::Int = 15,
+                                    max_confirm::Int = 8,
+                                    inner::Symbol = :threads, team = nothing,
+                                    use_gpu::Bool = false, verbose::Bool = false)
     gth = gamma_thresh === nothing ? _gamma_thresh_for(ep0, prof) : gamma_thresh
     shi = scan_hi === nothing ? Float64(ep0.FACTOR_IN) : scan_hi
     slo = scan_lo === nothing ? shi / 512.0 : scan_lo
@@ -134,18 +183,11 @@ function critical_factor_dfsane(ep0::Options{Float64}, prof::profile{Float64};
                 total_evals_full = 0, total_evals_eig = total_eig)
     end
 
-    # derivative-free f★(ky,w) via the bracketing inner solve; tracks the running minimum.
-    best = Ref((Inf, NaN, NaN))   # (f★, ky, w)
-    evals = Ref(0)
-    fstar = function (ky::Float64, w::Float64; f_start = nothing)
-        ep = deepcopy(ep0); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
-        mf = marginal_factor_df(ep, prof; gamma_thresh = gth, ae_band = true, f_start = f_start,
-                                scan_lo = slo, scan_hi = shi, rootsolver = rootsolver, use_gpu = use_gpu)
-        evals[] += mf.evals
-        f = (mf.converged && isfinite(mf.factor)) ? mf.factor : Inf
-        (isfinite(f) && f < best[][1]) && (best[] = (f, ky, w))
-        return f
-    end
+    # (2) local DF descents on the cheap onset, in u = (ky, log w) coordinates
+    co = _make_cheap_objective(ep0, prof, gth; slo = slo, shi = shi, n_eig = n_eig,
+                               inner = inner, team = team, use_gpu = use_gpu)
+    obj_u = u -> co.obj(_clamp_to(u[1], kylo, kyhi), _clamp_to(exp(u[2]), wlo, whi))
+    llo = [kylo, log(wlo)]; lhi = [kyhi, log(whi)]
 
     # greedily pick well-separated non-pinned seeds (distinct basins)
     picks = NamedTuple[]
@@ -158,55 +200,42 @@ function critical_factor_dfsane(ep0::Options{Float64}, prof::profile{Float64};
     end
     isempty(picks) && (picks = [cg.seeds[1]])
 
-    # Seed the candidate pool with EVERY feasible cheap onset (floor guards), like `_locate_extended`,
-    # so the faithful early-stop confirm considers all cheap basins — not just the DFSane-descended
-    # ones. DFSane optima for the top `k_descend` basins are appended below. Without this the winning
-    # basin can be pruned before it is confirmed.
-    cands = Tuple{Float64,Float64,Float64}[(s.ky, s.w, s.f) for s in cg.seeds]
     for s in picks
-        # 2D stationarity residual F(x)=∇f★ via forward differences, x clamped to the box.
-        resid! = function (F, u, _p)
-            ky = _clamp_to(u[1], kylo, kyhi); w = _clamp_to(u[2], wlo, whi)
-            f0 = fstar(ky, w)
-            if !isfinite(f0)
-                F[1] = 0.0; F[2] = 0.0; return F
-            end
-            hk = max(1.0e-3, 1.0e-2 * (kyhi - kylo))
-            hw = max(1.0e-3, 1.0e-2 * w)
-            kyp = ky + hk <= kyhi ? ky + hk : ky - hk        # one-sided step that stays in-box
-            wp  = w + hw  <= whi  ? w + hw  : w - hw
-            fpk = fstar(kyp, w; f_start = isfinite(f0) ? f0 : nothing)
-            fpw = fstar(ky, wp; f_start = isfinite(f0) ? f0 : nothing)
-            F[1] = isfinite(fpk) ? (fpk - f0) / (kyp - ky) : 0.0
-            F[2] = isfinite(fpw) ? (fpw - f0) / (wp - w) : 0.0
-            return F
-        end
-        u0 = [s.ky, s.w]
+        u0 = [s.ky, log(s.w)]
         try
-            prob = SimpleNonlinearSolve.NonlinearProblem(resid!, u0)
-            SimpleNonlinearSolve.solve(prob, SimpleNonlinearSolve.SimpleDFSane();
-                                       maxiters = dfsane_maxiters, abstol = 1.0e-6)
+            lopt = NLopt.Opt(local_algo, 2)
+            NLopt.lower_bounds!(lopt, llo)
+            NLopt.upper_bounds!(lopt, lhi)
+            NLopt.maxeval!(lopt, local_evals)
+            NLopt.initial_step!(lopt, [0.1 * (kyhi - kylo), 0.3])
+            NLopt.min_objective!(lopt, (x, grad) -> obj_u(x))
+            NLopt.optimize(lopt, u0)
         catch e
             e isa InterruptException && rethrow(e)
-            verbose && @warn "critical_factor_dfsane: SimpleDFSane failed at seed ($(s.ky),$(s.w)); using tracked best" exception=e
+            verbose && @warn "critical_factor_multistart: $local_algo descent failed at seed ($(s.ky),$(s.w)); seed and visited samples still confirmed" exception=e
         end
-        # append the DFSane-tracked minimum for this basin (raw seed already in `cands`)
-        bf, bky, bw = best[]
-        isfinite(bf) && push!(cands, (bky, bw, bf))
-        best[] = (Inf, NaN, NaN)   # reset per-seed so each basin contributes its own tracked min
     end
-    total_eig += evals[]
-    # de-dup + sort ascending by cheap/tracked onset for the early-stop confirm
+    total_eig += co.eig[]
+
+    # (3) candidate pool = EVERY feasible cheap seed (floor guards, like `_locate_extended`) plus
+    # every unstable point the descents visited — not just their final iterates — so the faithful
+    # early-stop confirm considers all cheap basins. Without the seeds the winning basin can be
+    # pruned before it is confirmed.
+    cands = Tuple{Float64,Float64,Float64}[(s.ky, s.w, s.f) for s in cg.seeds]
+    for p in co.samples
+        p.unstable && push!(cands, (p.ky, p.w, Float64(p.f)))
+    end
     sort!(cands, by = c -> c[3])
 
     conf = _confirm_candidates(ep0, prof, gth, cands; slo = slo, shi = shi,
-                               inner = inner, team = team, use_gpu = use_gpu)
+                               inner = inner, team = team, use_gpu = use_gpu,
+                               max_confirm = max_confirm)
     total_eig += conf.total_evals_eig
     status = _nls_status(conf.sfmin, conf.binding, shi)
-    verbose && @info "critical_factor_dfsane" sfmin=conf.sfmin ky=conf.kyhat w=conf.width binding=conf.binding status=status n_confirm=conf.n_confirm
+    verbose && @info "critical_factor_multistart" local_algo=local_algo sfmin=conf.sfmin ky=conf.kyhat w=conf.width binding=conf.binding status=status n_confirm=conf.n_confirm
     return (; sfmin = conf.sfmin, kyhat = conf.kyhat, width = conf.width, binding = conf.binding,
             status = status, converged = (status === :ok), faithful = conf.faithful,
-            n_confirm = conf.n_confirm, n_samples = cg.npts,
+            n_confirm = conf.n_confirm, n_samples = cg.npts + length(co.samples),
             total_evals_full = conf.total_evals_full, total_evals_eig = total_eig)
 end
 
@@ -221,17 +250,19 @@ algorithm and an optional local polish:
   1. `NLopt` global search (`algo`, default `:GN_DIRECT_L`; also `:GN_CRS2_LM`, `:GN_AGS`, ...) over
      `(ky,w)` minimizing the cheap AE onset `f1` (`_ae_unstable_window`, `IFLUX=false`; stable points
      penalized to `FACTOR_IN`), across the narrow-width-extended box `ky∈[ky_lo,1]`, `w∈[w_lo,WIDTH_MAX]`.
-  2. Optional local polish (`local_algo`, e.g. `:LN_BOBYQA`/`:LN_COBYLA`) seeded at the global best.
+  2. Local polish (`local_algo`, default `:LN_BOBYQA`; also `:LN_SBPLX`/`:LN_COBYLA`, `nothing`
+     disables) seeded at the global best — DIRECT-L brackets the winning basin but converges
+     slowly inside it; BOBYQA's quadratic model closes the last stretch in a handful of evals.
   3. Faithful-confirm (`IFLUX=true`) the sampled points in ascending cheap order with early stop.
 
-Keywords: `algo=:GN_DIRECT_L`, `local_algo=nothing`, `max_evals=40`, `local_evals=20`,
+Keywords: `algo=:GN_DIRECT_L`, `local_algo=:LN_BOBYQA`, `max_evals=40`, `local_evals=20`,
 `gamma_thresh=nothing`, `scan_lo=nothing`, `scan_hi=nothing`, `ky_lo=0.05`, `w_lo=0.05`,
 `n_eig=16`, `inner=:threads`, `team=nothing`, `use_gpu=false`, `verbose=false`.
 
-Returns the same contract as [`critical_factor_dfsane`](@ref).
+Returns the same contract as [`critical_factor_multistart`](@ref).
 """
 function critical_factor_nlopt(ep0::Options{Float64}, prof::profile{Float64};
-                               algo::Symbol = :GN_DIRECT_L, local_algo::Union{Nothing,Symbol} = nothing,
+                               algo::Symbol = :GN_DIRECT_L, local_algo::Union{Nothing,Symbol} = :LN_BOBYQA,
                                max_evals::Int = 40, local_evals::Int = 20,
                                gamma_thresh::Union{Nothing,Float64} = nothing,
                                scan_lo::Union{Nothing,Float64} = nothing,
@@ -244,19 +275,11 @@ function critical_factor_nlopt(ep0::Options{Float64}, prof::profile{Float64};
     slo = scan_lo === nothing ? shi / 512.0 : scan_lo
     kylo, kyhi = ky_lo, 1.0
     wlo, whi = w_lo, Float64(ep0.WIDTH_MAX)
-    PENALTY = shi
-
-    samples = NamedTuple[]
-    eig = Ref(0)
-    cheap_onset = function (ky, w)
-        ep = deepcopy(ep0); ep.KYHAT_IN = ky; ep.WIDTH_IN = w
-        win = _ae_unstable_window(ep, prof, gth; scan_lo = slo, scan_hi = shi,
-                                  n_eig = n_eig, threaded = true, use_gpu = use_gpu, inner = inner, team = team)
-        eig[] += win.evals
-        f = win.unstable ? win.f1 : PENALTY
-        push!(samples, (; ky = ky, w = w, f = f, unstable = win.unstable, pinned = win.pinned_lo))
-        return f
-    end
+    co = _make_cheap_objective(ep0, prof, gth; slo = slo, shi = shi, n_eig = n_eig,
+                               inner = inner, team = team, use_gpu = use_gpu)
+    cheap_onset = co.obj
+    samples = co.samples
+    eig = co.eig
 
     # (1) global derivative-free search
     opt = NLopt.Opt(algo, 2)
@@ -272,6 +295,8 @@ function critical_factor_nlopt(ep0::Options{Float64}, prof::profile{Float64};
         NLopt.lower_bounds!(lopt, [kylo, wlo])
         NLopt.upper_bounds!(lopt, [kyhi, whi])
         NLopt.maxeval!(lopt, local_evals)
+        # trust region sized to the basin, not the box (w can sit at ~0.05 near the narrow edge)
+        NLopt.initial_step!(lopt, [0.05 * (kyhi - kylo), max(0.05, 0.15 * minx[2])])
         NLopt.min_objective!(lopt, (x, grad) -> cheap_onset(x[1], x[2]))
         try
             NLopt.optimize(lopt, [minx[1], minx[2]])

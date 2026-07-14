@@ -1,12 +1,12 @@
 #!/usr/bin/env julia
-# Benchmark the derivative-free nonlinear-optimizer solvers (:dfsane, :nlopt) against the
-# reference tiers (:grid = Fortran-equivalent w>=1 wide box, :ad :locate = narrow-width AD) on the
-# 20-radius DIII-D 202017C42_500ms_v3.1 scan. For each solver x radius it records the critical
+# Benchmark the derivative-free nonlinear-optimizer solvers (:multistart, :nlopt) against
+# the reference tiers (:grid = Fortran-equivalent w>=1 wide box, :ad :locate = narrow-width AD) on
+# the 20-radius DIII-D 202017C42_500ms_v3.1 scan. For each solver x radius it records the critical
 # factor sfmin, the marking (kyhat, width), the eigensolve/confirm eval count, and wall time, then
 # prints a comparison table (ratios vs :ad :locate and :grid), writes a CSV, and an sfmin-vs-IR plot.
 #
-# The point is a HEAD-TO-HEAD of the borrowed FluxMatcher-style derivative-free search
-# (SimpleDFSane + NLopt) vs the AD path: does it track :ad :locate at the core, capture the
+# The point is a HEAD-TO-HEAD of the derivative-free search (multistart+BOBYQA, DIRECT-L+BOBYQA)
+# vs the AD path: does it track :ad :locate at the core, capture the
 # narrow-width edge modes the :grid box misses (IR >~ 65), and at what cost / robustness.
 #
 # Usage (module load julia/1.11.7; JULIA_DEPOT_PATH set per the workspace rule):
@@ -14,8 +14,9 @@
 # Env knobs:
 #   NB=32            N_BASIS (input_scan20_nb{NB}.TGLFEP; default 32)
 #   RADII=1,8,20     1-based scan indices to run (default: all SCAN_N)
-#   SOLVERS=grid,ad,dfsane,nlopt   which solvers (default all four)
-#   USE_GPU=1        use the GPU eigensolve path (default: auto = CUDA.functional())
+#   SOLVERS=grid,ad,multistart,nlopt   which solvers (default grid,ad,multistart,nlopt)
+#   USE_GPU=1        use the GPU eigensolve path (imports+inits CUDA; default off = CPU threads)
+#   NLS_LOCAL_ALGO=LN_BOBYQA local descent algo for :multistart (LN_SBPLX|LN_NELDERMEAD)
 #   NLOPT_ALGO=GN_DIRECT_L   global NLopt algorithm for :nlopt
 #   NLOPT_MAXEVAL=40         :nlopt global budget
 using Pkg
@@ -25,23 +26,25 @@ using Printf
 using Plots
 using Plots.PlotMeasures: mm
 
+# GPU eigensolve path. TJLF's GPU solve lives in a package extension that only activates once
+# `CUDA` is imported into the session; a bare `USE_GPU=1` without the import leaves it dormant and
+# `_gpu_solve!` throws "CUDA extension not loaded". Import CUDA at TOP LEVEL here (guarded by the
+# env flag) so the extension's methods are visible in the running world — doing the import inside a
+# function and immediately calling the freshly-loaded methods hits a world-age error instead.
+const _GPU_ENV = get(ENV, "USE_GPU", "")
+const USE_GPU  = isempty(_GPU_ENV) ? false : (_GPU_ENV != "0")
+if USE_GPU
+    import CUDA
+    CUDA.functional() || error("USE_GPU=$(_GPU_ENV) but CUDA.functional() is false on this host")
+    CUDA.device!(first(CUDA.devices()))
+end
+
 const CASE = normpath(@__DIR__, "..", "..", "examples", "DIIID_202017C42_500ms_v3.1")
 const NB   = parse(Int, get(ENV, "NB", "32"))
 const GAC  = joinpath(CASE, "input.gacode")
 const TGL  = joinpath(CASE, "input_scan20_nb$(NB).TGLFEP")
 
-_use_gpu() = begin
-    v = get(ENV, "USE_GPU", "")
-    isempty(v) || return v != "0"
-    try
-        @eval import CUDA
-        return Base.invokelatest(CUDA.functional)
-    catch
-        return false
-    end
-end
-const USE_GPU = _use_gpu()
-const INNER   = :threads
+const INNER   = Symbol(get(ENV, "INNER", "threads"))   # threads | batched_si | mps_team
 
 # Prepare one radius's Options exactly as mainsub's PROCESS_IN=5 path does, then hand it to a
 # low-level solver. Returns a fresh deepcopy per call so solvers don't cross-contaminate.
@@ -79,11 +82,12 @@ function run_ad(ep, prof)
     (; sfmin=sf, ky=res.kyhat, w=res.width, evals=res.evals, wall=t)
 end
 
-function run_dfsane(ep, prof)
+function run_multistart(ep, prof)
+    lalgo = Symbol(get(ENV, "NLS_LOCAL_ALGO", "LN_BOBYQA"))
     local res
     t = @elapsed begin
-        res = critical_factor_dfsane(ep, prof; scan_lo=Float64(ep.FACTOR_IN)/512.0,
-                    inner=INNER, use_gpu=USE_GPU)
+        res = critical_factor_multistart(ep, prof; local_algo=lalgo,
+                    scan_lo=Float64(ep.FACTOR_IN)/512.0, inner=INNER, use_gpu=USE_GPU)
     end
     (; sfmin=res.sfmin, ky=res.kyhat, w=res.width,
        evals=res.total_evals_full + res.total_evals_eig, wall=t)
@@ -101,9 +105,10 @@ function run_nlopt(ep, prof)
        evals=res.total_evals_full + res.total_evals_eig, wall=t)
 end
 
-const RUNNERS = Dict(:grid=>run_grid, :ad=>run_ad, :dfsane=>run_dfsane, :nlopt=>run_nlopt)
+const RUNNERS = Dict(:grid=>run_grid, :ad=>run_ad, :multistart=>run_multistart,
+                     :nlopt=>run_nlopt)
 const LABELS  = Dict(:grid=>"grid (wide box)", :ad=>"ad :locate (narrow)",
-                     :dfsane=>"dfsane", :nlopt=>"nlopt")
+                     :multistart=>"multistart", :nlopt=>"nlopt")
 
 function main()
     @assert isfile(GAC) && isfile(TGL) "missing case files:\n  $GAC\n  $TGL"
@@ -114,7 +119,7 @@ function main()
         isempty(r) ? collect(1:scan_n) : parse.(Int, split(r, ","))
     end
     solvers = let s = get(ENV, "SOLVERS", "")
-        isempty(s) ? [:grid, :ad, :dfsane, :nlopt] : Symbol.(split(s, ","))
+        isempty(s) ? [:grid, :ad, :multistart, :nlopt] : Symbol.(split(s, ","))
     end
 
     @printf("Benchmark: DIII-D 202017C42_500ms_v3.1  nb=%d  use_gpu=%s  radii=%s\n",
@@ -188,8 +193,10 @@ function main()
     println("\nWrote ", csv)
 
     # ── plot sfmin vs IR ──
-    colors = Dict(:grid=>:gray55, :ad=>:seagreen, :dfsane=>:firebrick, :nlopt=>:royalblue)
-    marks  = Dict(:grid=>:diamond, :ad=>:utriangle, :dfsane=>:star5, :nlopt=>:circle)
+    colors = Dict(:grid=>:gray55, :ad=>:seagreen, :multistart=>:darkorange,
+                  :nlopt=>:royalblue)
+    marks  = Dict(:grid=>:diamond, :ad=>:utriangle, :multistart=>:rect,
+                  :nlopt=>:circle)
     default(legendfontsize=9, guidefontsize=11, tickfontsize=9, dpi=200)
     p = plot(xlabel="radial grid index IR", ylabel="sfmin (critical factor)",
              title="Derivative-free solvers vs grid/ad @ nb=$(NB): DIII-D 202017C42_500ms",
