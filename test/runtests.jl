@@ -8,6 +8,16 @@ get(ENV, "TJLFEP_FILE_ONLY", "0") == "1" || (ENV["TJLFEP_FILE_ONLY"] = "1")
 
 using Test
 
+# When a GPU run is requested (TJLFEP_TEST_USE_GPU=1, e.g. the premium-GPU batch job), CUDA must be
+# imported HERE so TJLF's GPU-solve package extension activates for the whole session; otherwise the
+# use_gpu=true solves throw "CUDA extension not loaded" (the extension is a weakdep, dormant until
+# CUDA is loaded). No-op on the host-only CI path.
+if get(ENV, "TJLFEP_TEST_USE_GPU", "0") == "1"
+    using CUDA
+    CUDA.functional() || error("TJLFEP_TEST_USE_GPU=1 but CUDA.functional() is false on this host")
+    CUDA.device!(first(CUDA.devices()))
+end
+
 @testset "TJLFEP" begin
     # Fast, solve-free unit tests (parsers, structs, file IO) for broad coverage.
     include("unit_helpers.jl")

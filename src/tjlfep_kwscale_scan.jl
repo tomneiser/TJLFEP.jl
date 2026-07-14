@@ -85,6 +85,110 @@ function _kw_combo(i::Int, k::Int, k_max::Int, nfactor::Int, nefwid::Int,
     )
 end
 
+# ── Opt-in batched shift-invert eigensolver for the grid (inner=:batched_si) ──────────────────
+# Motivation: the grid's cost at large N_BASIS is dominated by the dense per-combo eigensolve
+# (serial Xgeev on GPU / geev on CPU). TJLF.si_eigvals_batch solves MANY pencils in one batched
+# GPU sweep (~7x faster per pencil than Xgeev at n=720; the margin grows with n). We collect every
+# combo's assembled (A,B) pencil, batch-solve for the dominant unstable modes, then replay the
+# combos with those eigenvalues. Deadlock-free (no cross-thread barrier): phase 1 runs each combo
+# to completion with the eigensolve returning a benign stable placeholder while recording the
+# pencil; phase 2 batch-solves; phase 3 re-runs each combo with the batched eigenvalues.
+#
+# The SI eigenvalues are approximate (dominant window only), so this is intended for the onset
+# scan (IFLUX=false). Optionally the winning configuration is dense-confirmed for an exact sfmin.
+
+const _SI_PLACEHOLDER = ComplexF64[-1.0 + 0.0im]  # phase-1: harmless "stable" spectrum
+
+# TJLF eigensolve hook (installed only during the batched-si round). Routes by task-local state
+# set per combo in the threaded loop body, so concurrent combos stay isolated.
+function _si_eigsolve_hook(A::Matrix{ComplexF64}, B::Matrix{ComplexF64})
+    st = get(task_local_storage(), :tjlfep_si, nothing)
+    st === nothing && error("batched-si hook fired without task-local state")
+    if st.mode === :collect
+        push!(st.store[st.id], (copy(A), copy(B)))
+        return _SI_PLACEHOLDER
+    else # :replay
+        c = st.counter[] += 1
+        evs = st.evals[st.id]
+        return c <= length(evs) ? evs[c] : _SI_PLACEHOLDER
+    end
+end
+
+# Run one k-round of combos through the batched shift-invert eigensolver. Returns results::Vector
+# in the same shape as the threaded path (one _kw_combo NamedTuple per combo).
+function _run_combos_batched_si(nkwf::Int, k::Int, k_max::Int, nfactor::Int, nefwid::Int,
+                                factor, efwid, kyhat, inputsEP, inputsPR,
+                                ikyhat_write::Int, iefwid_write::Int, ifactor_write::Int,
+                                printout::Bool; use_gpu::Bool, mode_in::Int,
+                                si_method::Symbol = :si, si_cfg::TJLF.SIConfig = TJLF.SIConfig(),
+                                contour_cfg::TJLF.ContourConfig = TJLF.ContourConfig(),
+                                csi_cfg::TJLF.CertifiedSIConfig = TJLF.CertifiedSIConfig())
+    store = [Vector{Tuple{Matrix{ComplexF64},Matrix{ComplexF64}}}() for _ in 1:nkwf]
+    results = Vector{Any}(undef, nkwf)
+
+    # Phase 1 — assemble: collect each combo's pencil(s); eigensolve returns the stable placeholder.
+    TJLF._EIGSOLVE_HOOK[] = _si_eigsolve_hook
+    try
+        TJLF.with_blas_threads(1) do
+            Threads.@threads for i = 1:nkwf
+                task_local_storage(:tjlfep_si, (mode = :collect, id = i, store = store))
+                _kw_combo(i, k, k_max, nfactor, nefwid, factor, efwid, kyhat,
+                          inputsEP, inputsPR, ikyhat_write, iefwid_write, ifactor_write,
+                          printout; use_gpu = false, mode_in = mode_in)
+            end
+        end
+    finally
+        TJLF._EIGSOLVE_HOOK[] = nothing
+    end
+
+    # Phase 2 — batched solve: flatten all pencils, one GPU sweep, scatter eigenvalues back.
+    flatA = Matrix{ComplexF64}[]; flatB = Matrix{ComplexF64}[]; owner = Tuple{Int,Int}[]
+    for i in 1:nkwf, (j, (A, B)) in enumerate(store[i])
+        push!(flatA, A); push!(flatB, B); push!(owner, (i, j))
+    end
+    evals = [Vector{Vector{ComplexF64}}(undef, length(store[i])) for i in 1:nkwf]
+    if !isempty(flatA)
+        # Batched solvers require a uniform matrix size; group by n and solve each group.
+        for n in unique(size.(flatA, 1))
+            idx = findall(p -> size(flatA[p], 1) == n, eachindex(flatA))
+            got = if si_method === :certified
+                # Coverage-certified adaptive SI: residual-certified eigenvalues with a
+                # per-pencil geometric coverage certificate; uncovered pencils fall back to
+                # the exact dense solve (per pencil, not per radius).
+                first(TJLF.certified_si_eigvals_batch(flatA[idx], flatB[idx]; cfg = csi_cfg,
+                                                      use_gpu = use_gpu, dense_fallback = :cpu))
+            elseif si_method === :contour
+                # Contour (SS-RR) solver: kept for reference; on real TJLF spectra the axis-
+                # hugging mode crowd saturates it and ~everything falls back dense.
+                first(TJLF.contour_eigvals_batch(flatA[idx], flatB[idx]; cfg = contour_cfg,
+                                                 use_gpu = use_gpu, dense_fallback = :cpu))
+            else
+                TJLF.si_eigvals_batch(flatA[idx], flatB[idx]; cfg = si_cfg, use_gpu = use_gpu)
+            end
+            for (g, p) in zip(got, idx)
+                (i, j) = owner[p]; evals[i][j] = g
+            end
+        end
+    end
+
+    # Phase 3 — replay: re-run each combo with the batched eigenvalues.
+    TJLF._EIGSOLVE_HOOK[] = _si_eigsolve_hook
+    try
+        TJLF.with_blas_threads(1) do
+            Threads.@threads for i = 1:nkwf
+                task_local_storage(:tjlfep_si,
+                    (mode = :replay, id = i, evals = evals, counter = Ref(0)))
+                results[i] = _kw_combo(i, k, k_max, nfactor, nefwid, factor, efwid, kyhat,
+                                       inputsEP, inputsPR, ikyhat_write, iefwid_write, ifactor_write,
+                                       printout; use_gpu = false, mode_in = mode_in)
+            end
+        end
+    finally
+        TJLF._EIGSOLVE_HOOK[] = nothing
+    end
+    return results
+end
+
 # Scatter one _kw_combo result into the shared per-combo arrays. Identical for the
 # threaded and distributed paths, so the reduction below the loop sees the same data.
 function _scatter_combo!(r, growthrate, frequency, dep_scan, lkeep_i, ltearing_i, l_th_pinch_i,
@@ -160,12 +264,36 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
                       use_gpu::Bool = false, inner::Symbol = :threads,
                       team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
                       ql_flux_scan::Bool = false, mode_in::Int = 2,
-                      nfactor::Int = 8, nefwid::Int = 8, nkyhat::Int = 4, k_max::Int = 4) where {T<:Real}
+                      nfactor::Int = 8, nefwid::Int = 8, nkyhat::Int = 4, k_max::Int = 4,
+                      si_dense_fallback::Bool = true, si_fallback_ratio::Real = 1.5,
+                      si_method::Symbol = :si,
+                      contour_cfg::TJLF.ContourConfig = TJLF.ContourConfig(),
+                      csi_cfg::TJLF.CertifiedSIConfig = TJLF.CertifiedSIConfig()) where {T<:Real}
     # mode_in is the TGLF-EP drive selector passed to TJLF_map: 2 (EP drive only, the
     # PROCESS_IN=5 default) or 4 (thermal+EP gradients on + ITG/TEM FILTER=2, PROCESS_IN=6).
     # These are for testing purposes:
     #baseDirectory = "/Users/benagnew/TJLF.jl/outputs/tglfep_tests/input.MTGLF"
     #inputsPR = readMTGLF(baseDirectory)
+
+    # Robust hybrid guard. The batched shift-invert eigensolver reproduces the dense grid EXACTLY
+    # where the AE drive is strong (marginal factor <~ nominal), but at WEAKLY-DRIVEN radii the
+    # near-marginal mode's growth rate is tiny and SI's worst-case absolute error swamps it — the
+    # (ky,width) mark stays correct but the factor-axis crossing drifts. Detect that regime (the
+    # hybrid returns a marginal well above the nominal drive) and redo the radius with the dense
+    # eigensolver so the marginal stays exact. Clearly-unstable radii (the common, expensive case)
+    # keep the SI speedup; only the stable-at-operating-point radii pay for a dense redo.
+    if inner === :batched_si && si_dense_fallback
+        nominal = inputsEP.FACTOR_IN
+        r = kwscale_scan(deepcopy(inputsEP), inputsPR, printout;
+                         use_gpu=use_gpu, inner=:batched_si, team=team, ql_flux_scan=ql_flux_scan,
+                         mode_in=mode_in, nfactor=nfactor, nefwid=nefwid, nkyhat=nkyhat, k_max=k_max,
+                         si_dense_fallback=false, si_method=si_method, contour_cfg=contour_cfg,
+                         csi_cfg=csi_cfg)
+        (isfinite(r[2].FACTOR_IN) && r[2].FACTOR_IN <= si_fallback_ratio * nominal) && return r
+        return kwscale_scan(inputsEP, inputsPR, printout;
+                            use_gpu=use_gpu, inner=:threads, team=team, ql_flux_scan=ql_flux_scan,
+                            mode_in=mode_in, nfactor=nfactor, nefwid=nefwid, nkyhat=nkyhat, k_max=k_max)
+    end
 
     # Grid resolution / refinement depth (defaults reproduce the canonical scan).
     # Exposed as kwargs so the factor-grid convergence of the marginal sfmin can be
@@ -270,7 +398,22 @@ function kwscale_scan(inputsEP::Options{T}, inputsPR::profile{T}, printout::Bool
         #                oversubscribe cores (scoped; short-circuits if already set).
         local results::Vector{Any}
         _t_map = _probe ? time_ns() : UInt64(0)
-        if inner === :mps_team && team !== nothing && !isempty(team)
+        # Hybrid batched-SI: the approximate SI growth rate can carry occasional large ABSOLUTE
+        # errors (max |dgamma| ~0.04) that perturb the gamma=gamma* crossing at weakly-driven radii,
+        # where the driving mode's gamma is itself ~0.05. Both the WIDE localization (first round)
+        # and the final PIN (last round) are done with the dense eigensolver so the marginal box is
+        # correctly bracketed and exactly resolved even for far-out marginals (e.g. edge radii whose
+        # marginal factor is several times the nominal drive). The fast batched SI accelerates only
+        # the INTERMEDIATE refinement rounds, where the box is already localized. For k_max <= 2
+        # this reduces to the all-dense grid (no intermediate round to accelerate).
+        if inner === :batched_si && 1 < k < k_max
+            results = _run_combos_batched_si(nkwf, k, k_max, nfactor, nefwid, factor, efwid, kyhat,
+                                             inputsEP, inputsPR, ikyhat_write, iefwid_write,
+                                             ifactor_write, printout;
+                                             use_gpu=use_gpu, mode_in=mode_in, si_method=si_method,
+                                             si_cfg=TJLF.SIConfig(), contour_cfg=contour_cfg,
+                                             csi_cfg=csi_cfg)
+        elseif inner === :mps_team && team !== nothing && !isempty(team)
             results = _inner_team_map(team, nkwf) do i
                 _kw_combo(i, k, k_max, nfactor, nefwid, factor, efwid, kyhat,
                           inputsEP, inputsPR, ikyhat_write, iefwid_write, ifactor_write,
