@@ -10,7 +10,7 @@ using TJLFEP: preprocess_gacode_inputs, kwscale_scan
 # @spawn on the shared pool is illegal). Each process therefore owns its own -t thread pool and its
 # own GPU — identical resourcing to the working fixed-shard runner (run_batched_si_sfmin.jl), so the
 # node-hours are directly comparable; only the radius->GPU assignment differs (dynamic vs static).
-CASE = normpath(@__DIR__, "..", "..", "examples", "DIIID_202017C42_500ms_v3.1")
+CASE = get(ENV, "CASE_DIR", normpath(@__DIR__, "..", "..", "examples", "DIIID_202017C42_500ms_v3.1"))
 NB   = parse(Int, get(ENV, "NB", "32"))
 GAC  = joinpath(CASE, "input.gacode")
 TGL  = joinpath(CASE, "input_scan20_nb$(NB).TGLFEP")

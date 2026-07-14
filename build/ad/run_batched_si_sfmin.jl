@@ -7,7 +7,7 @@ using TJLFEP: preprocess_gacode_inputs, kwscale_scan
 # given N_BASIS and write "idx IR sfmin" lines (same format as gacode_*_tasks/sfmin_scan.txt) so it
 # can be overlaid on the stored nb32 grid/Fortran reference. No dense golden is recomputed here —
 # the reference values already live in the repo (build/gacode_nb32_scan20_jgpu_*/sfmin_scan.txt).
-CASE = normpath(@__DIR__, "..", "..", "examples", "DIIID_202017C42_500ms_v3.1")
+CASE = get(ENV, "CASE_DIR", normpath(@__DIR__, "..", "..", "examples", "DIIID_202017C42_500ms_v3.1"))
 NB   = parse(Int, get(ENV, "NB", "32"))
 GAC  = joinpath(CASE, "input.gacode")
 TGL  = joinpath(CASE, "input_scan20_nb$(NB).TGLFEP")

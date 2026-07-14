@@ -348,7 +348,10 @@ function profile_from_gacode(
     rmin = read_gacode_scalar_field(gacode_file, "rmin", nr)
     rmaj = read_gacode_scalar_field(gacode_file, "rmaj", nr)
     q = read_gacode_scalar_field(gacode_file, "q", nr)
-    w0 = read_gacode_scalar_field(gacode_file, "w0", nr)
+    # w0 (toroidal rotation) is optional: some input.gacode files omit it. With rotation_flag=0
+    # a missing w0 is equivalent to zero rotation (only feeds gammaE/gammap, unused unless
+    # ROTATIONAL_SUPPRESSION_FLAG==1). Default to zeros so such cases run.
+    w0 = read_gacode_scalar_field(gacode_file, "w0", nr; default=0.0)
     ne = read_gacode_scalar_field(gacode_file, "ne", nr)
     te = read_gacode_scalar_field(gacode_file, "te", nr)
     ptot = read_gacode_scalar_field(gacode_file, "ptot", nr)
@@ -1170,15 +1173,24 @@ function TJLF_map(inputsEP::Options{T}, inputsPR::profile{T};
     return inputTJLF
 end
 """
-    read_gacode_scalar_field(path, field, nr) -> Vector{Float64}
+    read_gacode_scalar_field(path, field, nr; default=nothing) -> Vector{Float64}
 
 Read a single-column GACODE `dump.gacode` block (`ne`, `te`, `rmin`, …).
+
+If the block is absent and `default` is given (not `nothing`), return `fill(default, nr)`
+instead of erroring. Used for optional fields like `w0` (toroidal rotation), which some
+`input.gacode` files omit; with `rotation_flag = 0` a missing `w0` is equivalent to zero
+rotation (it only feeds `gammaE`/`gammap`, unused unless `ROTATIONAL_SUPPRESSION_FLAG == 1`).
 """
-function read_gacode_scalar_field(path::AbstractString, field::AbstractString, nr::Integer)
+function read_gacode_scalar_field(path::AbstractString, field::AbstractString, nr::Integer; default=nothing)
     lines = readlines(path)
     header = "# $field |"
     start_i = findfirst(l -> startswith(strip(l), header), lines)
-    start_i === nothing && error("block $header not found in $path")
+    if start_i === nothing
+        default === nothing && error("block $header not found in $path")
+        @info "GACODE block $header not found in $path; defaulting to $default (nr=$nr)"
+        return fill(Float64(default), nr)
+    end
     vals = fill(NaN, nr)
     for line in lines[(start_i + 1):end]
         s = strip(line)
@@ -1282,8 +1294,13 @@ function read_expro_for_alpha(
     expro_is = expro_species_for_gacode_is_ep(is_EP_gacode)
     1 <= expro_is <= prof.NS || error("is_EP=$is_EP_gacode -> EXPRO species $expro_is out of range NS=$(prof.NS)")
 
+    # readEXPRO only exposes the first 4 species selectors (ni1..ni4), but its per-species
+    # ni/Ti are DISCARDED below (recomputed from gacode_file, or prof.AS/TAUS). The values we
+    # keep (cs, rmin_ex, gammaE, gammap, omegaGAM) are species-INDEPENDENT, so clamp the
+    # selector into readEXPRO's supported 1..4 range to support cases with >4 EXPRO species
+    # (e.g. e + 4 ions, IS_EP=4 -> expro_is=5).
     _, _Ti, _, _, cs, rmin_ex, gammaE, gammap, omegaGAM =
-        readEXPRO(expro_file, expro_is)
+        readEXPRO(expro_file, clamp(expro_is, 1, 4))
 
     if gacode_file !== nothing && isfile(gacode_file)
         rmin = read_gacode_scalar_field(gacode_file, "rmin", nr)

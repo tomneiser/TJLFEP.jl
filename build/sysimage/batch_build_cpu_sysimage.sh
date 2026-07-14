@@ -37,7 +37,7 @@ echo "TJLFEP: $(git -C "${TJLFEP_ROOT}" log -1 --oneline 2>/dev/null)"
 julia --project="${TJLFEP_ROOT}" -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 julia --project="${TJLFEP_ROOT}" -t "${SLURM_CPUS_PER_TASK:-128}" sysimage/build_cpu_sysimage.jl
 
-SO="${TJLFEP_ROOT}/build/TJLFEP_cpu_sysimage.so"
+SO="${CPU_SYSIMAGE_OUT:-${TJLFEP_ROOT}/build/TJLFEP_cpu_sysimage.so}"
 if [[ ! -f "${SO}" ]]; then
     echo "ERROR: sysimage not found at ${SO}"
     exit 1

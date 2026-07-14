@@ -11,23 +11,30 @@ density/pressure gradients used for EP transport and stability studies.
 
 It is a close, jointly-maintained translation of the Fortran GACODE add-on
 `TGLF-EP` (verified against it bit-for-bit), and adds a **CUDA GPU eigensolver**
-plus Julia-native **autodiff (`ad`) solvers**. Together these make TJLFEP much
-faster than the Fortran CPU reference and, through the `ad` solvers, *more
-accurate*: they resolve the narrow-width (`w<1`) EP-driven Alfvén modes that
-Fortran's fixed `w≥1` factor grid cannot.
+plus Julia-native **autodiff (`ad`) solvers**. On the reactor-relevant
+`UCP_complete` case these make TJLFEP substantially **faster** than a *fully
+MPI-parallel* Fortran CPU reference (`-n 1280`) — ~4–8× in node-hours at
+`N_BASIS=32` — and, through the `ad` solvers, **more accurate**: they resolve the
+narrow-width (`w<1`) EP-driven Alfvén modes that Fortran's fixed `w≥1` factor grid
+cannot.
 
 **Which solver?** Choose along two axes. Do you want to *match* Fortran or
 *improve* on it, and do you want the faithful value or a faster approximation?
 
 |                                          | Faithful                                       | Faster approximation                          |
 | ---------------------------------------- | ---------------------------------------------- | --------------------------------------------- |
-| **Match Fortran** (`w≥1` box)            | **`:grid`** reproduces Fortran (**~13×**)      | **`:ad :only`** approximates `:grid` (**~20×**) |
-| **Extend Fortran** (adds `w<1` AE modes) | **`:ad :locate`** *(default)* (**~4.7×**)      | **`:ad :wide`** (**~9×**)                     |
+| **Match Fortran** (`w≥1` box)            | **`:grid`** reproduces Fortran (**~4.4×**)     | **`:ad :only`** approximates `:grid` (**~8×**) |
+| **Extend Fortran** (adds `w<1` AE modes) | **`:ad :locate`** *(default)* (**~1.7×**)      | **`:ad :wide`** (**~5.4×**)                    |
 
-Speedups are **node-hours vs the Fortran CPU reference** at `N_BASIS=32` (the fair,
-node-count-normalized cost; see the [benchmark](#benchmark-cost-vs-n_basis-diii-d-scan_n20)
-below). `:ad :locate` is the production default (the `ActorTJLFEP` default) and
-reports the faithful narrow-width value.
+Multipliers are **node-hours vs the fully MPI-parallel Fortran CPU reference**
+(`-n 1280`, 10 CPU nodes) at `N_BASIS=32` on the reactor-relevant `UCP_complete`
+case (the fair, node-count-normalized cost; see the
+[benchmark](#benchmark-cost-vs-n_basis-ucp-scan_n20) below). The GPU advantage
+grows with eigenmatrix size, so it is largest for reactor cases at production
+`N_BASIS`; on the smaller DIII-D case the margins are thinner (see
+[`docs/README_DIII-D_example.md`](docs/README_DIII-D_example.md)). `:ad :locate` is
+the production default (the `ActorTJLFEP` default) and reports the faithful
+narrow-width value.
 
 For the full API reference, see the
 [online documentation](https://projecttorreypines.github.io/TJLFEP.jl/dev).
@@ -132,28 +139,36 @@ one radius against the archived Fortran golden output. Full steps:
 `docs/REPRODUCE_FORTRAN_MATCH.md`; physics-parity notes:
 `docs/FORTRAN_JULIA_COMPARISON.md`.
 
-## Benchmark: cost vs N_BASIS (DIII-D, SCAN_N=20)
+## Benchmark: cost vs N_BASIS (UCP, SCAN_N=20)
 
-20-radius scan on Perlmutter, all with sysimages. **Cost is reported in node-hours**
-(nodes × wallclock), the fair, layout-independent metric (Fortran runs on 10 CPU
-nodes, the GPU tiers on 5). Each solver runs on its fastest parallel layout
-(**rule of thumb: `grid` → MPS team, `ad` → in-process threads**; an MPS team only
-adds overhead to `ad`, see below).
+Timing/accuracy on the **reactor-relevant `UCP_complete`** case (4 thermal ion
+species + energetic particles), a 20-radius scan on Perlmutter with sysimages.
+This is the headline benchmark because the GPU eigensolver's payoff scales with
+the eigenmatrix size (species × `N_BASIS`): UCP's per-`ky` eigenmatrix is `2400²`
+(complex) at `N_BASIS=32` vs `1440²` for DIII-D, so each eigensolve is several×
+heavier and the GPU pulls decisively ahead. The smaller DIII-D verification case,
+where the margin is thinner, is in
+[`docs/README_DIII-D_example.md`](docs/README_DIII-D_example.md).
 
-The solvers, with node-hours vs Fortran at `N_BASIS=32`:
+**Cost is reported in node-hours** (nodes × wallclock), the fair,
+layout-independent metric (Fortran `-n 1280` on 10 CPU nodes, the GPU tiers on 5 or
+1). Each solver runs on its fastest parallel layout (**rule of thumb: `grid` → MPS
+team, `ad` → in-process threads**; an MPS team only adds overhead to `ad`).
+
+The solvers, with node-hours vs the fully MPI-parallel Fortran (`-n 1280`) at `N_BASIS=32`:
 
 | Solver | vs Fortran | What it computes |
 | --- | ---: | --- |
-| **`:ad :only`** | **~20×** | Approximates `:grid`: a smooth, de-quantized version of the `w≥1` result (median `:only/grid ≈ 0.9`). Fast iteration only; misses the `w<1` edge modes. |
-| **`:grid`** | **~13×** | The verified Fortran-equivalent `(kyhat × width × factor)` sweep (thousands of eigensolves/radius). |
-| **`:ad :wide`** | **~9×** | Adds the narrow `w<1` AE modes in one log-seeded pass; conservative (within ~1–2× of `:ad :locate`, never below it). Bulk NN-DB generation. |
-| **`:ad :locate`** *(default)* | **~4.7×** | Adds the narrow `w<1` AE modes; the faithful narrow-width value. Production. |
+| **`:ad :only`** | **~8×** | Approximates `:grid`: a smooth, de-quantized version of the `w≥1` result (median `:only/grid ≈ 0.9`). Fast iteration only; misses the `w<1` edge modes. |
+| **`:ad :wide`** | **~5.4×** | Adds the narrow `w<1` AE modes in one log-seeded pass; conservative (within ~1–2× of `:ad :locate`, never below it). Bulk NN-DB generation. |
+| **`:grid`** | **~4.4×** | The verified Fortran-equivalent `(kyhat × width × factor)` sweep (thousands of eigensolves/radius). |
+| **`:ad :locate`** *(default)* | **~1.7×** | Adds the narrow `w<1` AE modes; the faithful narrow-width value. Production default. |
 
 The `ad` solvers are **grid-independent**: rather than reading `sfmin` off the coarse
 factor grid, they locate the instability onset directly (Newton root-find with exact
 forward-mode AD derivatives). `:grid`/`:ad :only` stay in the Fortran `w≥1` box;
 `:ad :locate`/`:ad :wide` additionally resolve the narrow-width (`w<1`)
-EP-driven modes it excludes (the *entire* `sfmin` reduction below grid, up to ~12× at
+EP-driven modes it excludes (the *entire* `sfmin` reduction below grid, up to ~16× at
 the edge). Higher-fidelity internal reference tiers (`robust_ad`, and the
 `nbasis`-converged `truth`) sit above `:ad :locate`, which matches them essentially
 bit-for-bit; they are documented for reference in
@@ -161,21 +176,27 @@ bit-for-bit; they are documented for reference in
 
 **Accuracy**: `sfmin(IR)` for all solvers at `N_BASIS=32`:
 
-![sfmin vs radius: Fortran vs grid vs :ad :only vs :ad :locate vs :ad :wide](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ad_wide_accuracy_nb32.png?v=5)
+![UCP sfmin vs radius: Fortran vs grid vs :ad :only vs :ad :locate vs :ad :wide](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ucp_accuracy_nb32.png?v=1)
 
-`:ad :locate` (green) drops well below `grid` (grey, which reproduces the blue Fortran
-reference bit-for-bit) and `:ad :only` (orange) into the narrow-width modes at the outer
-radii (IR ≳ 65; up to ~12× below grid). `:ad :wide` (dark red) recovers nearly all of that
-in a single pass, within ~1–2× of `:ad :locate` (a mild, conservative over-prediction,
-e.g. ~1.7× at IR=64) and never below it. Colors and legend order match the node-hours
-plot below for quick cross-reference.
+`:grid` (grey) reproduces the Fortran reference (blue) bit-for-bit, and `:ad :only`
+(orange) tracks it closely (the de-quantized `w≥1` value). `:ad :locate` (green) and
+`:ad :wide` (dark red) drop well below `grid` into the narrow-width `w<1` modes at the
+outer radii (IR ≳ 40; ~10× below grid at IR≈117, up to ~16× at IR≈180). `:ad :wide`
+stays within ~1–2× of `:ad :locate` and never below it. Colors and legend order match
+the node-hours plot below for quick cross-reference.
 
-![Node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/scan20_timing_wide_lines.png?v=7)
+![UCP node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ucp_scan20_timing_nodehours.png?v=1)
 
-Absolute node-hours at `N_BASIS=32` (1-node-backfill layout, 4 GPU workers draining a
-20-radius queue): Fortran ≈4.3; `grid` ≈0.31, `:ad :only` ≈0.18, `:ad :wide` ≈0.46,
-`:ad :locate` ≈0.92. `:ad :wide` is ~2× cheaper than `:locate`
-(the gap widens at higher `N_BASIS`, where the faithful confirms cost more). The
+Absolute node-hours at `N_BASIS=32`, each solver on its fastest layout (Fortran
+`-n 1280` on 10 CPU nodes; `grid`/`:ad :only` on 5 MPS GPU nodes; `:ad
+:locate`/`:ad :wide` on a 1-node backfill with 4 GPU workers draining a 20-radius
+queue): Fortran ≈2.47; `:ad :only` ≈0.31, `:ad :wide` ≈0.46, `grid` ≈0.57,
+`:ad :locate` ≈1.49 — so **every GPU tier beats the fully-parallel Fortran**
+(~8× / ~5.4× / ~4.4× / ~1.7×). Julia `:grid` on **CPU** (≈14.6, same 10 nodes as
+Fortran) is ~6× *slower* than Fortran: the GPU eigensolver is what makes the Julia
+port competitive. The GPU advantage *grows* with `N_BASIS` (Fortran is cheaper at
+`N_BASIS ≤ 8`, break-even is near 16, and the GPU pulls ~4–8× ahead by 32) as the
+eigenmatrix grows. `:ad :wide` is ~3× cheaper than `:locate` at `N_BASIS=32`. The
 per-backend tables below give the raw wallclock seconds.
 
 **Best-throughput layout depends on the solver** (for these `SCAN_N=20` runs):
@@ -188,18 +209,20 @@ per-backend tables below give the raw wallclock seconds.
   Running a single node with 4 workers draining a shared 20-radius claim queue
   keeps every GPU busy and gives the lowest node-hours.
 
-**Grid solver**: Fortran CPU (10 nodes) vs Julia CPU (10 nodes,
-SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
+**Grid solver**: Fortran CPU (10 nodes, `-n 1280` = 128 ranks/node) vs Julia CPU
+(10 nodes, SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
 
 | N_BASIS | Fortran CPU (s) | Julia CPU (s) | Julia GPU MPS (s) | GPU speedup vs Fortran (wallclock) |
 |--------:|----------------:|--------------:|------------------:|-----------------------------------:|
-| 6  | 62.5   | 141.3   | 140.4 | 0.45× |
-| 8  | 97.5   | 148.4   | 149.0 | 0.65× |
-| 16 | 347.0  | 250.0   | 161.7 | 2.15× |
-| 32 | 1546.0 | 1029.2  | 226.3 | **6.83×** |
+| 6  | 20.3  | 128.2   | 178.4 | 0.11× |
+| 8  | 25.4  | 179.5   | 184.3 | 0.14× |
+| 16 | 112.2 | 739.0   | 197.0 | 0.57× |
+| 32 | 888.8 | 5243.7  | 407.5 | **2.18×** |
 
-(Wallclock here compares a 5-node GPU run to a 10-node Fortran run; the fair
-node-hours comparison is in the node-hours plot/section above.)
+(Wallclock here compares a **5-node** GPU run to a **10-node** `-n 1280` Fortran run
+— *half* the nodes — so it understates the GPU, yet it still wins 2.18× at
+`N_BASIS=32`; the fair node-count-normalized margin is ~4.4×. Julia `:grid` on CPU,
+on the same 10 nodes as Fortran, is ~6× slower, so the GPU is doing the heavy lifting.)
 
 **`:ad :only` (bare `w≥1` AD, no faithful confirm)**: Julia GPU (5 A100 nodes,
 **in-process threads**), vs the grid GPU path (both 5-node, so this wallclock ratio is
@@ -207,25 +230,22 @@ apples-to-apples):
 
 | N_BASIS | Grid GPU MPS (s) | `:ad :only` GPU threads (s) | `:only` vs grid-GPU (wallclock) |
 |--------:|-----------------:|----------------------------:|--------------------------------:|
-| 6  | 140.4 | 69.3  | 2.0× |
-| 8  | 149.0 | 69.5  | 2.1× |
-| 16 | 161.7 | 103.8 | 1.6× |
-| 32 | 226.3 | 153.9 | **1.5×** |
+| 6  | 178.4 | 87.4  | 2.0× |
+| 8  | 184.3 | 90.3  | 2.0× |
+| 16 | 197.0 | 119.8 | 1.6× |
+| 32 | 407.5 | 220.9 | **1.8×** |
 
-The vs-grid wallclock advantage *shrinks* with `N_BASIS` (2.0× → 1.5×) because
-`:ad :only`'s wallclock grows faster with `N_BASIS` than the grid MPS path's. Note this
+`:ad :only` is ~1.6–2.0× faster than the grid MPS path in wallclock: it replaces the
+thousands of grid eigensolves/radius with a handful of AD Newton steps. Note this
 is the *same* `ad` solver run two ways: on an **MPS team** instead of threads it is
-*slower* (≈4.5 min at `N_BASIS=32`, worsening with `N_BASIS`): the per-radius AD regions
-are small and the descent is sequential, so team-spawn/remote-call overhead never
-amortizes. **Rule of thumb: `grid` → MPS, `ad` → threads.**
+*slower*, because the per-radius AD regions are small and the descent is sequential,
+so team-spawn/remote-call overhead never amortizes. **Rule of thumb: `grid` → MPS,
+`ad` → threads.**
 
-The `nbasis`-converged `truth` reference tier (validation only, ~34 min for the full
-profile at `N_BASIS=32`) is documented in
-[`docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md`](https://github.com/ProjectTorreyPines/TJLFEP.jl/blob/master/docs/AD_SOLVERS_AND_SEARCH_BOUNDS.md).
-
-Data: `docs/plots/scan20_timing.csv`. Reproduce: grid sweep with
-`build/timing/submit_timing_vs_nbasis.sh`, AD sweep with
-`build/timing/submit_timing_vs_nbasis_ad.sh` (capability 4).
+Data: `docs/plots/ucp_scan20_timing.csv`. Reproduce with
+`build/timing/submit_ucp_scan20.sh` (Fortran `-n 1280` + all GPU tiers). The
+smaller DIII-D verification case (bit-for-bit Fortran match) is in
+[`docs/README_DIII-D_example.md`](docs/README_DIII-D_example.md).
 
 ## Spectrum diagnostic (`PROCESS_IN=3`)
 

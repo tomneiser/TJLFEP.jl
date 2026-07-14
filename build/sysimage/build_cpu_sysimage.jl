@@ -15,7 +15,7 @@ using PackageCompiler
 
 create_sysimage(
     [:TJLF, :TJLFEP];
-    sysimage_path = normpath(@__DIR__, "..", "TJLFEP_cpu_sysimage.so"),
+    sysimage_path = get(ENV, "CPU_SYSIMAGE_OUT", normpath(@__DIR__, "..", "TJLFEP_cpu_sysimage.so")),
     precompile_execution_file = normpath(@__DIR__, "precompile_cpu_workload.jl"),
     cpu_target = PackageCompiler.default_app_cpu_target(),
 )

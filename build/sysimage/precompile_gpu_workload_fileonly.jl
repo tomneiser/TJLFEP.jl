@@ -37,6 +37,15 @@ let
         @info "file-only precompile workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
     end
 
+    # Hybrid batched shift-invert grid path (inner=:batched_si): bakes the batched cuBLAS SI
+    # eigensolver + the collect/replay two-phase driver so the first real batched_si call in a run
+    # does not JIT the GPU kernels.
+    mktempdir() do tmp
+        res = run_gacode_scan_task(GACODE, TGLFEP, 1;
+            out_dir=tmp, use_gpu=true, printout=false, inner=:batched_si, team=nothing)
+        @info "file-only precompile batched_si workload done" scan_index=res.scan_index ir=res.ir sfmin=res.sfmin
+    end
+
     # solver=:ad path (critical_factor_optimize): the fast-turnaround :only / :wide / :locate
     # modes all reach this, so baking it keeps the AD runs from JIT-ing per task.
     mktempdir() do tmp
