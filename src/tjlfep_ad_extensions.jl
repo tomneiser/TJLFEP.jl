@@ -12,6 +12,14 @@
 import ForwardDiff
 import TJLF
 
+# AD factor-search lower bound, tied to the grid's k_max so the AD solvers floor the same
+# way the grid does. The grid `kwscale_scan` runs k_max rounds of nfactor-point bracketing
+# (f1←2·fmark, f0←0), bottoming out at FACTOR_IN/(nfactor·4^(k_max-1)); with the canonical
+# nfactor=8, k_max=4 that is FACTOR_IN/512 (the historical hard-coded floor). Generalizing to
+# k_max lets a larger k_max deepen the AD factor search consistently with the grid, while
+# k_max=4 reproduces the previous shi/512 default bit-for-bit.
+_ad_factor_floor(shi::Real, k_max::Integer; nfactor::Integer = 8) = shi / (nfactor * 4.0^(k_max - 1))
+
 # ── AD-safe run for non-Float64 element types (Dual, etc.) ───────────────────
 #
 # TJLF.run's single-ky branch hardcodes zeros(Float64,...)/zeros(ComplexF64,...)
@@ -1482,7 +1490,7 @@ brute path at near-degenerate radii. Prefer it for CPU/serial runs or with `adap
 Keywords: `nkyhat=4, nefwid=8`, `refine_rounds=1`, `adaptive=true`, `confirm_grid=false`, `outer=:grid_zoom`,
 `feasible_frac=0.35`, `cap_frac=0.5`, `improve_tol=0.02`, `extend_width=true`, `ky_lo=0.05`,
 `w_lo=0.05`, `nseed_ky=6`, `nseed_w=10`, `n_eig_seed=12`, `k_descend=6`, `gamma_thresh=nothing`
-(case γ*), `scan_lo=nothing`(→`scan_hi/512`, the grid floor),
+(case γ*), `scan_lo=nothing`(→`scan_hi/(nfactor·4^(k_max-1))`, the grid floor; `scan_hi/512` at k_max=4),
 `scan_hi=nothing`(→`FACTOR_IN`), `inner=:threads`, `team=nothing`, `use_gpu=false`,
 `verbose=false`. The `(ky,w)` points are parallelized over the team/threads; each
 point's inner faithful sweep runs serially to avoid nested oversubscription.
@@ -1498,6 +1506,7 @@ width extension.
 """
 function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                                        nkyhat::Int = 4, nefwid::Int = 8,
+                                       k_max::Int = _k_max_env(),
                                        refine_rounds::Int = 1,
                                        adaptive::Bool = true,
                                        confirm_grid::Bool = false,
@@ -1522,7 +1531,7 @@ function critical_factor_robust(inputsEP::Options{Float64}, inputsPR::profile{Fl
     # bottom out at FACTOR_IN/(nfactor·4^(k_max-1)) = FACTOR_IN/512. A (ky,w) that is unstable
     # to arbitrarily small factor is reported by the grid at that floor (a discretization
     # artifact), so using the same floor keeps AD comparable instead of resolving below it.
-    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    slo = scan_lo === nothing ? _ad_factor_floor(shi, k_max) : scan_lo
     wlo = Float64(inputsEP.WIDTH_MIN); whi = Float64(inputsEP.WIDTH_MAX)
     kylo = 0.0; kyhi = 1.0
 
@@ -1819,7 +1828,7 @@ often (rotational ITER) more nodes are confirmed, degrading gracefully to the fu
 
 The `(ky,w)` grid mirrors `kwscale_scan`'s first round (`kyhat[i]=(1/nkyhat)·i`,
 `width[i]=WIDTH_MIN+(WIDTH_MAX-WIDTH_MIN)/(nefwid-1)·(i-1)`). Keywords: `nkyhat=4, nefwid=8`,
-`gamma_thresh=nothing` (case γ*), `scan_lo=nothing`(→`scan_hi/512`, the grid floor),
+`gamma_thresh=nothing` (case γ*), `scan_lo=nothing`(→`scan_hi/(nfactor·4^(k_max-1))`, the grid floor; `scan_hi/512` at k_max=4),
 `scan_hi=nothing`(→`FACTOR_IN`), `inner=:threads`, `team=nothing`, `use_gpu=false`,
 `verbose=false`.
 
@@ -1830,6 +1839,7 @@ nodes that actually got the `IFLUX=true` confirm.
 """
 function critical_factor_confirm(inputsEP::Options{Float64}, inputsPR::profile{Float64};
                                  nkyhat::Int = 4, nefwid::Int = 8,
+                                 k_max::Int = _k_max_env(),
                                  gamma_thresh::Union{Nothing,Float64} = nothing,
                                  scan_lo::Union{Nothing,Float64} = nothing, scan_hi::Union{Nothing,Float64} = nothing,
                                  inner::Symbol = :threads,
@@ -1837,7 +1847,7 @@ function critical_factor_confirm(inputsEP::Options{Float64}, inputsPR::profile{F
                                  use_gpu::Bool = false, verbose::Bool = false)
     gth = gamma_thresh === nothing ? _gamma_thresh_for(inputsEP, inputsPR) : gamma_thresh
     shi = scan_hi === nothing ? Float64(inputsEP.FACTOR_IN) : scan_hi
-    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    slo = scan_lo === nothing ? _ad_factor_floor(shi, k_max) : scan_lo
     wlo = Float64(inputsEP.WIDTH_MIN); whi = Float64(inputsEP.WIDTH_MAX)
     kyhats = [(1.0 / nkyhat) * i for i in 1:nkyhat]
     widths = nefwid == 1 ? [0.5 * (wlo + whi)] : [wlo + (whi - wlo) / (nefwid - 1) * (i - 1) for i in 1:nefwid]
@@ -2063,14 +2073,14 @@ Returns the critical factor together with trust diagnostics (e.g.
 `feasible_frac`, `cheap_gap`) used by the escalation gate.
 """
 function critical_factor_ad_f1seed(ep0, prof; gamma_thresh=nothing,
-                                   scan_lo=nothing, scan_hi=nothing,
+                                   scan_lo=nothing, scan_hi=nothing, k_max::Int=_k_max_env(),
                                    nseed_ky::Int=4, nseed_w::Int=4, n_eig_seed::Int=12,
                                    k_descend::Int=4, ky_lo::Float64=0.25,
                                    inner::Symbol=:threads, team=nothing,
                                    use_gpu::Bool=false, verbose::Bool=false, descent_kwargs...)
     gth = gamma_thresh === nothing ? _gamma_thresh_for(ep0, prof) : gamma_thresh
     shi = scan_hi === nothing ? Float64(ep0.FACTOR_IN) : scan_hi
-    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    slo = scan_lo === nothing ? _ad_factor_floor(shi, k_max) : scan_lo
     wlo, whi = Float64(ep0.WIDTH_MIN), Float64(ep0.WIDTH_MAX)
 
     kyhats = ky_lo <= 0.0 ? [(1.0/nseed_ky)*i for i in 1:nseed_ky] :
@@ -2235,6 +2245,7 @@ nb_ratio, nb_converged, nb_table, feasible_frac, n_confirm, total_evals_full, to
 the floor, `sfmin_work` the `robust_ad` value at `nb_work`, and `floored` whether the `w≥1` floor won.
 """
 function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing, scan_hi=nothing,
+                               k_max::Int=_k_max_env(),
                                ky_lo::Float64=0.05, w_lo::Float64=0.05,
                                nseed_ky::Int=6, nseed_w::Int=10, n_eig_seed::Int=12, k_descend::Int=6,
                                confirm_grid::Bool=false,
@@ -2244,7 +2255,7 @@ function critical_factor_truth(ep0, prof; gamma_thresh=nothing, scan_lo=nothing,
     @assert all(nb -> nb <= 56, nb_steps) "nb_steps must stay ≤56 (nb≥64 Hermite overlap matrix is singular)"
     gth = gamma_thresh === nothing ? _gamma_thresh_for(ep0, prof) : gamma_thresh
     shi = scan_hi === nothing ? Float64(ep0.FACTOR_IN) : scan_hi
-    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    slo = scan_lo === nothing ? _ad_factor_floor(shi, k_max) : scan_lo
 
     # ── Tier-2: locate the production (ky,w) optimum with the width-extended robust solver at
     # nb_work. This is the SAME object as solver=:robust_ad — min of the canonical w≥1 grid-zoom

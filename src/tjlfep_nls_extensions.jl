@@ -145,7 +145,7 @@ onset surface `f1(ky,w)` is multimodal, so global-ness comes from the multistart
      guards) plus all unstable descent samples — in ascending cheap order with an early-stop bound
      (`_confirm_candidates`) → the critical factor.
 
-Keywords: `local_algo=:LN_BOBYQA`, `gamma_thresh=nothing`, `scan_lo=nothing`(→`shi/512`),
+Keywords: `local_algo=:LN_BOBYQA`, `gamma_thresh=nothing`, `scan_lo=nothing`(→`shi/(nfactor·4^(k_max-1))`; `shi/512` at k_max=4),
 `scan_hi=nothing`(→`FACTOR_IN`), `ky_lo=0.05`, `w_lo=0.05`, `nseed_ky=6`, `nseed_w=10`,
 `n_eig_seed=12`, `n_eig=16`, `k_descend=3`, `local_evals=15`, `max_confirm=8`,
 `inner=:threads`, `team=nothing`, `use_gpu=false`, `verbose=false`.
@@ -160,6 +160,7 @@ function critical_factor_multistart(ep0::Options{Float64}, prof::profile{Float64
                                     gamma_thresh::Union{Nothing,Float64} = nothing,
                                     scan_lo::Union{Nothing,Float64} = nothing,
                                     scan_hi::Union{Nothing,Float64} = nothing,
+                                    k_max::Int = _k_max_env(),
                                     ky_lo::Float64 = 0.05, w_lo::Float64 = 0.05,
                                     nseed_ky::Int = 6, nseed_w::Int = 10, n_eig_seed::Int = 12,
                                     n_eig::Int = 16, k_descend::Int = 3, local_evals::Int = 15,
@@ -168,7 +169,7 @@ function critical_factor_multistart(ep0::Options{Float64}, prof::profile{Float64
                                     use_gpu::Bool = false, verbose::Bool = false)
     gth = gamma_thresh === nothing ? _gamma_thresh_for(ep0, prof) : gamma_thresh
     shi = scan_hi === nothing ? Float64(ep0.FACTOR_IN) : scan_hi
-    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    slo = scan_lo === nothing ? _ad_factor_floor(shi, k_max) : scan_lo
     kylo, kyhi = ky_lo, 1.0
     wlo, whi = w_lo, Float64(ep0.WIDTH_MAX)
 
@@ -267,12 +268,13 @@ function critical_factor_nlopt(ep0::Options{Float64}, prof::profile{Float64};
                                gamma_thresh::Union{Nothing,Float64} = nothing,
                                scan_lo::Union{Nothing,Float64} = nothing,
                                scan_hi::Union{Nothing,Float64} = nothing,
+                               k_max::Int = _k_max_env(),
                                ky_lo::Float64 = 0.05, w_lo::Float64 = 0.05, n_eig::Int = 16,
                                inner::Symbol = :threads, team = nothing,
                                use_gpu::Bool = false, verbose::Bool = false)
     gth = gamma_thresh === nothing ? _gamma_thresh_for(ep0, prof) : gamma_thresh
     shi = scan_hi === nothing ? Float64(ep0.FACTOR_IN) : scan_hi
-    slo = scan_lo === nothing ? shi / 512.0 : scan_lo
+    slo = scan_lo === nothing ? _ad_factor_floor(shi, k_max) : scan_lo
     kylo, kyhi = ky_lo, 1.0
     wlo, whi = w_lo, Float64(ep0.WIDTH_MAX)
     co = _make_cheap_objective(ep0, prof, gth; slo = slo, shi = shi, n_eig = n_eig,

@@ -84,17 +84,17 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
         end
 
         if solver == :ad
-            return _mainsub_ad(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team,
+            return _mainsub_ad(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team, k_max=k_max,
                                extend_mode=extend_mode, wide_kdesc=wide_kdesc, faithful_confirm=faithful_confirm)
         elseif solver == :robust_ad
             return _mainsub_robust_ad(inputsEP, inputsPR, printout; use_gpu=use_gpu,
-                                      inner=inner, team=team, refine_rounds=refine_rounds)
+                                      inner=inner, team=team, refine_rounds=refine_rounds, k_max=k_max)
         elseif solver == :truth
-            return _mainsub_truth(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
+            return _mainsub_truth(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team, k_max=k_max)
         elseif solver == :multistart
-            return _mainsub_multistart(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
+            return _mainsub_multistart(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team, k_max=k_max)
         elseif solver == :nlopt
-            return _mainsub_nlopt(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team)
+            return _mainsub_nlopt(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team, k_max=k_max)
         end
 
         growthrate, inputsEP, inputsPR, marginal_ql, scalefactor_buffer, wavebuffer_all =
@@ -212,12 +212,15 @@ contexts overlapping via Hyper-Q), else they run in-process threaded.
 function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_gpu::Bool = false,
                      inner::Symbol = :threads,
                      team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
+                     k_max::Int = _k_max_env(),
                      extend_mode::Union{Nothing,Symbol} = nothing,
                      wide_kdesc::Union{Nothing,Int} = nothing,
                      faithful_confirm::Union{Nothing,Bool} = nothing)
-    # Use the SAME scan floor as :robust_ad (scan_hi/512, not the optimizer's 1e-3 default) so the
-    # width-extended :ad reports the same floor-pinned sfmin as the production solver at near-marginal
-    # radii (otherwise it would clip ~10× lower at the 1e-3 floor and spuriously beat :robust_ad).
+    # Use the SAME scan floor as :robust_ad (the grid-equivalent _ad_factor_floor, not the optimizer's
+    # 1e-3 default) so the width-extended :ad reports the same floor-pinned sfmin as the production
+    # solver at near-marginal radii (otherwise it would clip ~10× lower at the 1e-3 floor and spuriously
+    # beat :robust_ad). The floor tracks k_max: FACTOR_IN/(nfactor·4^(k_max-1)) (= FACTOR_IN/512 at
+    # the default k_max=4), so a larger k_max deepens the AD factor search like it does the grid.
     #
     # The three AD-extension knobs resolve as: explicit kwarg (e.g. from the FUSE actor) when given,
     # else the matching environment variable, else the production default. This keeps env-driven runs
@@ -243,7 +246,7 @@ function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_g
     res = critical_factor_optimize(inputsEP, inputsPR; use_gpu=use_gpu, faithful_confirm=ad_confirm,
                                    extend_width=ad_extend,
                                    extend_mode=(ad_extend ? ad_mode : :locate), wide_kdesc=ad_kdesc,
-                                   scan_lo=Float64(inputsEP.FACTOR_IN) / 512.0,
+                                   scan_lo=_ad_factor_floor(Float64(inputsEP.FACTOR_IN), k_max),
                                    inner=inner, team=team)
 
     # Prefer the all-filter (faithful) onset when a mode actually binds; otherwise
@@ -312,8 +315,8 @@ faithful factor sweep runs serially to avoid nested oversubscription.
 function _mainsub_robust_ad(inputsEP::Options, inputsPR::profile, printout::Bool;
                             use_gpu::Bool = false, inner::Symbol = :threads,
                             team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
-                            refine_rounds::Int = 1)
-    res = critical_factor_robust(inputsEP, inputsPR; use_gpu=use_gpu,
+                            refine_rounds::Int = 1, k_max::Int = _k_max_env())
+    res = critical_factor_robust(inputsEP, inputsPR; use_gpu=use_gpu, k_max=k_max,
                                  inner=inner, team=team, refine_rounds=refine_rounds)
 
     sfmin  = res.sfmin
@@ -375,14 +378,14 @@ genuine onset is found (`status ∈ (:no_onset,:cap)`), `FACTOR_IN` is left unto
 """
 function _mainsub_truth(inputsEP::Options, inputsPR::profile, printout::Bool;
                         use_gpu::Bool = false, inner::Symbol = :threads,
-                        team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+                        team::Union{Nothing,AbstractVector{<:Integer}} = nothing, k_max::Int = _k_max_env())
     # Honor the requested working basis (N_BASIS); the nbasis-convergence sweep climbs from it in
     # +8 steps up to the max stable basis (nb=56; nb>=64 Hermite overlap is singular). At the
     # production nb=32 this is nb_steps=[32,40,48,56] -- the 4th point (56) is the best convergence
     # evidence available for the still-climbing outer radii and strengthens the geometric test.
     nbw = Int(inputsEP.N_BASIS)
     nb_steps = sort(unique(filter(<=(56), [nbw, nbw + 8, nbw + 16, nbw + 24])))
-    res = critical_factor_truth(inputsEP, inputsPR; use_gpu=use_gpu, inner=inner, team=team,
+    res = critical_factor_truth(inputsEP, inputsPR; use_gpu=use_gpu, inner=inner, team=team, k_max=k_max,
                                 nb_work=nbw, nb_steps=nb_steps)
 
     sfmin  = res.sfmin
@@ -474,16 +477,16 @@ descended, default 3), `NLS_LOCAL_EVALS` (cheap evals per descent, default 15), 
 """
 function _mainsub_multistart(inputsEP::Options, inputsPR::profile, printout::Bool;
                              use_gpu::Bool = false, inner::Symbol = :threads,
-                             team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+                             team::Union{Nothing,AbstractVector{<:Integer}} = nothing, k_max::Int = _k_max_env())
     lalgo = Symbol(get(ENV, "NLS_LOCAL_ALGO", "LN_BOBYQA"))
     kdesc = parse(Int, get(ENV, "NLS_KDESCEND", "3"))
     lev   = parse(Int, get(ENV, "NLS_LOCAL_EVALS", "15"))
     nky   = parse(Int, get(ENV, "NLS_NSEED_KY", "6"))
     nw    = parse(Int, get(ENV, "NLS_NSEED_W", "10"))
-    res = critical_factor_multistart(inputsEP, inputsPR; use_gpu = use_gpu, inner = inner, team = team,
+    res = critical_factor_multistart(inputsEP, inputsPR; use_gpu = use_gpu, inner = inner, team = team, k_max = k_max,
                                      local_algo = lalgo, k_descend = kdesc, local_evals = lev,
                                      nseed_ky = nky, nseed_w = nw,
-                                     scan_lo = Float64(inputsEP.FACTOR_IN) / 512.0)
+                                     scan_lo = _ad_factor_floor(Float64(inputsEP.FACTOR_IN), k_max))
     return _finalize_nls_result!(inputsEP, inputsPR, printout, res,
                                  "# TJLFEP derivative-free solver (critical_factor_multistart: $(lalgo) descents on cheap AE onset + faithful confirm)";
                                  use_gpu = use_gpu)
@@ -500,14 +503,14 @@ Derivative-free (`:nlopt`) branch of [`mainsub`](@ref) (PROCESS_IN==5). Runs
 """
 function _mainsub_nlopt(inputsEP::Options, inputsPR::profile, printout::Bool;
                         use_gpu::Bool = false, inner::Symbol = :threads,
-                        team::Union{Nothing,AbstractVector{<:Integer}} = nothing)
+                        team::Union{Nothing,AbstractVector{<:Integer}} = nothing, k_max::Int = _k_max_env())
     algo  = Symbol(get(ENV, "NLOPT_ALGO", "GN_DIRECT_L"))
     lstr  = get(ENV, "NLOPT_LOCAL", "LN_BOBYQA")
     lalgo = (isempty(lstr) || lstr == "none") ? nothing : Symbol(lstr)
     mev   = parse(Int, get(ENV, "NLOPT_MAXEVAL", "40"))
-    res = critical_factor_nlopt(inputsEP, inputsPR; use_gpu = use_gpu, inner = inner, team = team,
+    res = critical_factor_nlopt(inputsEP, inputsPR; use_gpu = use_gpu, inner = inner, team = team, k_max = k_max,
                                 algo = algo, local_algo = lalgo, max_evals = mev,
-                                scan_lo = Float64(inputsEP.FACTOR_IN) / 512.0)
+                                scan_lo = _ad_factor_floor(Float64(inputsEP.FACTOR_IN), k_max))
     return _finalize_nls_result!(inputsEP, inputsPR, printout, res,
                                  "# TJLFEP derivative-free solver (critical_factor_nlopt: NLopt $(algo) + faithful confirm)";
                                  use_gpu = use_gpu)
