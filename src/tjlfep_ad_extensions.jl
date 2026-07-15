@@ -1320,6 +1320,13 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
             faithful.factor_faithful : f
     win_ky = ky; win_w = w; win_faithful = faithful
     n_ext_confirm = 0
+    # `converged` must reflect whichever stage produced the WINNER, not just the initial canonical
+    # (w≥1) descent. For a narrow-width EP-driven AE mode the w≥1 box is infeasible (best_f = Inf,
+    # descent converged = false) and the real onset is supplied entirely by the width extension below;
+    # reporting the w≥1 descent's flag then spuriously shows converged = false at every such radius.
+    # Seed from the w≥1 descent/confirm and let the extension flip it true when it wins.
+    win_converged = (faithful !== nothing && faithful.binding != :none && isfinite(faithful.factor_faithful)) ?
+                    true : (isfinite(f) ? converged : false)
 
     # ── width extension: cheap log-spaced (ky,w) AE-onset rank → :ad descent → (optional) faithful
     # confirm. This is the SAME `_locate_extended` machinery `:robust_ad` uses, but seeded on the
@@ -1346,6 +1353,7 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
                 if r.binding != :none && isfinite(r.factor_faithful) &&
                    (!isfinite(win_f) || r.factor_faithful < win_f)
                     win_f = r.factor_faithful; win_ky = o.ky; win_w = o.w; win_faithful = r
+                    win_converged = true
                 end
             end
         else
@@ -1353,6 +1361,7 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
             for o in optima
                 if isfinite(o.f) && (!isfinite(win_f) || o.f < win_f)
                     win_f = o.f; win_ky = o.ky; win_w = o.w; win_faithful = nothing
+                    win_converged = o.converged
                 end
             end
         end
@@ -1383,6 +1392,7 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
                 if r.binding != :none && isfinite(r.factor_faithful) &&
                    (!isfinite(win_f) || r.factor_faithful < win_f)
                     win_f = r.factor_faithful; win_ky = c[1]; win_w = c[2]; win_faithful = r
+                    win_converged = true
                 end
             end
         else
@@ -1391,6 +1401,7 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
             for c in loc.cands
                 if isfinite(c[3]) && (!isfinite(win_f) || c[3] < win_f)
                     win_f = c[3]; win_ky = c[1]; win_w = c[2]; win_faithful = nothing
+                    win_converged = true
                 end
             end
         end
@@ -1399,7 +1410,7 @@ function critical_factor_optimize(inputsEP::Options{Float64}, inputsPR::profile{
 
     sfmin_out = isfinite(win_f) ? win_f : f
     return (; sfmin = sfmin_out, kyhat = win_ky, width = win_w, f_seedmin, ky_seed, w_seed,
-            iters = iters, evals = evals[], converged = converged, faithful = win_faithful,
+            iters = iters, evals = evals[], converged = win_converged, faithful = win_faithful,
             extended = extend_width, n_ext_confirm = n_ext_confirm)
 end
 

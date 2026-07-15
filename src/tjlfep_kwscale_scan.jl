@@ -6,6 +6,19 @@ function _scalefactor_section_header(kyhat::T, ky_write::T, efwid::T, fmark::T) 
     )
 end
 
+# `out.wavefunction..._sf` filename tag: FACTOR_IN as the 6-digit "NNN.NNN" string the Fortran
+# TGLFEP_kwscale_scan wrote. Shared by the grid inner loop and the AD-winner replay so both engines
+# emit identically-named wavefunction files.
+function _sf_factor_tag(factor::Real)
+    return string(Char(mod(floor(Int, factor/100.0), 10) + UInt32('0'))) *
+           string(Char(mod(floor(Int, factor/10.0), 10) + UInt32('0')))  *
+           string(Char(mod(floor(Int, factor), 10) + UInt32('0'))) *
+           "." *
+           string(Char(mod(floor(Int, 10*factor), 10) + UInt32('0'))) *
+           string(Char(mod(floor(Int, 100*factor), 10) + UInt32('0'))) *
+           string(Char(mod(floor(Int, 1000*factor), 10) + UInt32('0')))
+end
+
 function _scalefactor_factor_line(fac::T, g::AbstractVector{T}, f::AbstractVector{T}, keep_label::AbstractVector{String}) where {T<:Real}
     parts = [@sprintf("%11.4f", fac)]
     for n in eachindex(keep_label)
@@ -37,13 +50,7 @@ function _kw_combo(i::Int, k::Int, k_max::Int, nfactor::Int, nefwid::Int,
     local_inputsEP.WIDTH_IN = efwid[iefwid]
     debug_dump_kw_combo(local_inputsEP, i)
 
-    str_sf = string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/100.0), 10) + UInt32('0'))) *
-             string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN/10.0), 10) + UInt32('0')))  *
-             string(Char(mod(floor(Int, local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
-             "." *
-             string(Char(mod(floor(Int, 10*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
-             string(Char(mod(floor(Int, 100*local_inputsEP.FACTOR_IN), 10) + UInt32('0'))) *
-             string(Char(mod(floor(Int, 1000*local_inputsEP.FACTOR_IN), 10) + UInt32('0')))
+    str_sf = _sf_factor_tag(local_inputsEP.FACTOR_IN)
 
     str_wf_file = "out.wavefunction"*coalesce(local_inputsEP.SUFFIX, "")*"_sf"*str_sf
 

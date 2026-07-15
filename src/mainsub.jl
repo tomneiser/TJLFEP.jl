@@ -163,6 +163,29 @@ function _mainsub_spectrum(inputsEP::Options, inputsPR::profile, printout::Bool;
     return (growthrate, inputsEP, inputsPR, spectra), (nothing, file_buffers)
 end
 
+# Replay a single IFLUX=true TJLFEP_ky at an AD solver's winning (factor, ky, width) to emit the same
+# out.wavefunction file the grid path writes for that combo. The AD engines locate the critical point
+# via marginal-onset root-finding and never assemble the eigenvector/QL post-processing themselves, so
+# without this replay `WRITE_WAVEFUNCTION=1` yields no wavefunction file under ANY AD solver (the file
+# writers no-op on a `nothing` buffer). Returns the `[(filename, buffer)]` wf_buf_all the radius
+# writers expect, or `nothing` when not requested or the winner is not a finite located point.
+# `mode_in_override=2` matches the grid's PROCESS_IN=5 EP-drive selector; `_sf_factor_tag` reproduces
+# the grid's `_sfNNN.NNN` filename so both engines emit identically-named files.
+function _ad_wavefunction_buffer(inputsEP::Options, inputsPR::profile, sfmin, kymark, wmark,
+                                 printout::Bool; use_gpu::Bool = false)
+    (printout && coalesce(inputsEP.WRITE_WAVEFUNCTION, 0) == 1 &&
+     isfinite(sfmin) && isfinite(kymark) && isfinite(wmark)) || return nothing
+    local_ep = deepcopy(inputsEP)
+    local_ep.FACTOR_IN = sfmin
+    local_ep.KYHAT_IN  = kymark
+    local_ep.WIDTH_IN  = wmark
+    str_wf_file = "out.wavefunction" * coalesce(local_ep.SUFFIX, "") * "_sf" * _sf_factor_tag(sfmin)
+    _, _, _, _, wavefunction_buffer, _, _ =
+        TJLFEP_ky(local_ep, inputsPR, str_wf_file, 1; eigen_cache=nothing,
+                  use_gpu=use_gpu, mode_in_override=2)
+    return wavefunction_buffer === nothing ? nothing : [(str_wf_file, wavefunction_buffer)]
+end
+
 """
     _mainsub_ad(inputsEP, inputsPR, printout; use_gpu=false, inner=:threads, team=nothing) -> ((growthrate, ep, pr, marginal_ql), (sf_buf, wf_buf))
 
@@ -256,7 +279,10 @@ function _mainsub_ad(inputsEP::Options, inputsPR::profile, printout::Bool; use_g
         end
     end
 
-    return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, nothing)
+    # Wavefunction output at the AD winner (see `_ad_wavefunction_buffer`).
+    wf_buf_all = _ad_wavefunction_buffer(inputsEP, inputsPR, sfmin, kymark, wmark, printout; use_gpu=use_gpu)
+
+    return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, wf_buf_all)
 end
 
 """
@@ -322,7 +348,11 @@ function _mainsub_robust_ad(inputsEP::Options, inputsPR::profile, printout::Bool
         push!(sf_buf, "npts = $(res.npts)  evals_full = $(res.total_evals_full)  evals_eig = $(res.total_evals_eig)")
     end
 
-    return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, nothing)
+    # Wavefunction at the adopted winner (only for a genuine interior onset; see `_ad_wavefunction_buffer`).
+    wf_buf_all = genuine ?
+        _ad_wavefunction_buffer(inputsEP, inputsPR, sfmin, kymark, wmark, printout; use_gpu=use_gpu) : nothing
+
+    return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, wf_buf_all)
 end
 
 """
@@ -388,7 +418,11 @@ function _mainsub_truth(inputsEP::Options, inputsPR::profile, printout::Bool;
         push!(sf_buf, "n_confirm = $(res.n_confirm)  evals_full = $(res.total_evals_full)  evals_eig = $(res.total_evals_eig)")
     end
 
-    return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, nothing)
+    # Wavefunction at the adopted winner (only for a genuine interior onset; see `_ad_wavefunction_buffer`).
+    wf_buf_all = genuine ?
+        _ad_wavefunction_buffer(inputsEP, inputsPR, sfmin, kymark, wmark, printout; use_gpu=use_gpu) : nothing
+
+    return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, wf_buf_all)
 end
 
 # ── shared adopt+report tail for the derivative-free (ky,w) solvers ──
@@ -396,7 +430,7 @@ end
 # adopt the onset onto inputsEP only for a genuine interior onset (status===:ok); otherwise leave
 # FACTOR_IN untouched so the radius falls back to its prior value / the grid path.
 function _finalize_nls_result!(inputsEP::Options, inputsPR::profile, printout::Bool,
-                               res, header::String)
+                               res, header::String; use_gpu::Bool = false)
     sfmin  = res.sfmin
     kymark = res.kyhat
     wmark  = res.width
@@ -420,7 +454,10 @@ function _finalize_nls_result!(inputsEP::Options, inputsPR::profile, printout::B
         push!(sf_buf, "n_samples = $(res.n_samples)  n_confirm = $(res.n_confirm)")
         push!(sf_buf, "evals_full = $(res.total_evals_full)  evals_eig = $(res.total_evals_eig)")
     end
-    return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, nothing)
+    # Wavefunction at the adopted winner (only for a genuine interior onset; see `_ad_wavefunction_buffer`).
+    wf_buf_all = genuine ?
+        _ad_wavefunction_buffer(inputsEP, inputsPR, sfmin, kymark, wmark, printout; use_gpu=use_gpu) : nothing
+    return (growthrate, inputsEP, inputsPR, marginal_ql), (sf_buf, wf_buf_all)
 end
 
 """
@@ -447,7 +484,8 @@ function _mainsub_multistart(inputsEP::Options, inputsPR::profile, printout::Boo
                                      nseed_ky = nky, nseed_w = nw,
                                      scan_lo = Float64(inputsEP.FACTOR_IN) / 512.0)
     return _finalize_nls_result!(inputsEP, inputsPR, printout, res,
-                                 "# TJLFEP derivative-free solver (critical_factor_multistart: $(lalgo) descents on cheap AE onset + faithful confirm)")
+                                 "# TJLFEP derivative-free solver (critical_factor_multistart: $(lalgo) descents on cheap AE onset + faithful confirm)";
+                                 use_gpu = use_gpu)
 end
 
 """
@@ -470,5 +508,6 @@ function _mainsub_nlopt(inputsEP::Options, inputsPR::profile, printout::Bool;
                                 algo = algo, local_algo = lalgo, max_evals = mev,
                                 scan_lo = Float64(inputsEP.FACTOR_IN) / 512.0)
     return _finalize_nls_result!(inputsEP, inputsPR, printout, res,
-                                 "# TJLFEP derivative-free solver (critical_factor_nlopt: NLopt $(algo) + faithful confirm)")
+                                 "# TJLFEP derivative-free solver (critical_factor_nlopt: NLopt $(algo) + faithful confirm)";
+                                 use_gpu = use_gpu)
 end
