@@ -27,7 +27,8 @@ jobs:
       JULIA_NUM_THREADS: "4"
 
     steps:
-      # TJLF >= 1.2.4 (registered in FuseRegistry) provides the use_gpu kwarg and
+      # TJLF >= 1.2.12 (registered in FuseRegistry) provides the batched eigensolvers
+      # (SIConfig/ContourConfig/CertifiedSIConfig, *_eigvals_batch, _EIGSOLVE_HOOK) and
       # the TJLFCUDAExt/TJLFForwardDiffExt extensions TJLFEP relies on, so it is
       # resolved straight from the registry — no sibling path checkout needed.
       - uses: actions/checkout@v4
