@@ -123,7 +123,7 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
             Threads.atomic_add!(_PROBE_KY, (time_ns() - _t_ky) / 1e9)
             Threads.atomic_add!(_PROBE_N, 1)
         end
-        return fill(T(0), NM), fill(T(0), NM), inputTJLF, nothing, nothing, fill(T(NaN), 4), fill(T(NaN), 4)
+        return fill(T(0), NM), fill(T(0), NM), inputTJLF, nothing, nothing, fill(T(NaN), NM), fill(T(NaN), NM)
     end
     gamma_out        = result.eigenvalue[:, 1, 1]   # [nmodes], ky=1
     freq_out         = result.eigenvalue[:, 1, 2]   # [nmodes], ky=1
@@ -139,7 +139,7 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
         g[n] = gamma_out[n]
         f[n] = freq_out[n]
     end
-    for n = 1:min(4, inputTJLF.NMODES)
+    for n = 1:inputTJLF.NMODES
         debug_dump_ky_postrun(inputsEP, inputTJLF, g, f, n)
     end
 
@@ -180,7 +180,7 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     inputsEP.L_QL_RATIO .= false
     inputsEP.L_THETA_SQ .= false
     # inputsEP.L_MAX_OUTER_PANEL .= false
-    x_tear_test = fill(zero(T), 4)
+    x_tear_test = fill(zero(T), inputTJLF.NMODES)
     abswavefunction = abs.(wavefunction)
 
     
@@ -194,19 +194,20 @@ function TJLFEP_ky(inputsEP::Options{T}, inputsPR::profile{T}, str_wf_file::Stri
     max_plot = Int(18*ms/8+1) # 289 length vector
     maxmodes = inputTJLF.NMODES
 
-    i_QL_cond_flux = fill(zero(T), 4)
-    e_QL_cond_flux = fill(zero(T), 4)
-    QL_flux_ratio = fill(zero(T), 4)
-    EP_conv_frac = fill(zero(T), 4)
-    theta_2_moment = fill(zero(T), 4)
-    # TGLFEP hard-codes nmodes = 4, so that is why these are all defined like this.
-    DEP = fill(T(NaN), 4)
-    ep_ql_flux = fill(T(NaN), 4)
-    chi_th = fill(T(NaN), 4)
-    chi_i = fill(T(NaN), 4)
-    chi_i_cond = fill(T(NaN), 4)
-    chi_e = fill(T(NaN), 4)
-    chi_e_cond = fill(T(NaN), 4)
+    i_QL_cond_flux = fill(zero(T), inputTJLF.NMODES)
+    e_QL_cond_flux = fill(zero(T), inputTJLF.NMODES)
+    QL_flux_ratio = fill(zero(T), inputTJLF.NMODES)
+    EP_conv_frac = fill(zero(T), inputTJLF.NMODES)
+    theta_2_moment = fill(zero(T), inputTJLF.NMODES)
+    # These per-mode diagnostic vectors are sized to NMODES (the keep-count), which is a
+    # user input (env TJLFEP_NMODES / nmodes kwarg, default 4) — no longer hard-coded to 4.
+    DEP = fill(T(NaN), inputTJLF.NMODES)
+    ep_ql_flux = fill(T(NaN), inputTJLF.NMODES)
+    chi_th = fill(T(NaN), inputTJLF.NMODES)
+    chi_i = fill(T(NaN), inputTJLF.NMODES)
+    chi_i_cond = fill(T(NaN), inputTJLF.NMODES)
+    chi_e = fill(T(NaN), inputTJLF.NMODES)
+    chi_e_cond = fill(T(NaN), inputTJLF.NMODES)
 
     for n = 1:inputsEP.NMODES
         # The use of NMODES here is slightly confusing but needed as the Fortran uses assumed values for modes

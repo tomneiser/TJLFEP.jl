@@ -47,6 +47,7 @@ do not assemble the full QL buffers).
 function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; use_gpu::Bool = false,
                  inner::Symbol = :threads, team::Union{Nothing,AbstractVector{<:Integer}} = nothing,
                  ql_flux_scan::Bool = false, solver::Symbol = :grid, refine_rounds::Int = 1,
+                 k_max::Int = _k_max_env(),
                  extend_mode::Union{Nothing,Symbol} = nothing, wide_kdesc::Union{Nothing,Int} = nothing,
                  faithful_confirm::Union{Nothing,Bool} = nothing)
     solver in (:grid, :ad, :robust_ad, :truth, :multistart, :nlopt) ||
@@ -98,7 +99,7 @@ function mainsub(inputsEP::Options, inputsPR::profile, printout::Bool = true; us
 
         growthrate, inputsEP, inputsPR, marginal_ql, scalefactor_buffer, wavebuffer_all =
             kwscale_scan(inputsEP, inputsPR, printout; use_gpu=use_gpu, inner=inner, team=team,
-                         ql_flux_scan=ql_flux_scan, mode_in=mode_in)
+                         ql_flux_scan=ql_flux_scan, mode_in=mode_in, k_max=k_max)
         return (growthrate, inputsEP, inputsPR, marginal_ql), (scalefactor_buffer, wavebuffer_all)
     else
         _process_in_unsupported(x)

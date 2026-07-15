@@ -114,6 +114,7 @@ function _runTHD_radius!(
     ql_flux_scan::Bool = false,
     solver::Symbol = :grid,
     refine_rounds::Int = 1,
+    k_max::Int = _k_max_env(),
     arrbuffers::Union{Nothing,AbstractVector} = nothing,
 )
     arrTGLFEP[i].IR = arrTGLFEP[i].IR_EXP[i]
@@ -129,7 +130,7 @@ function _runTHD_radius!(
         end
     end
     ret = TJLFEP.mainsub(arrTGLFEP[i], arrMTGLF[i], printout; use_gpu=use_gpu, inner=inner, team=team,
-                         ql_flux_scan=ql_flux_scan, solver=solver, refine_rounds=refine_rounds)
+                         ql_flux_scan=ql_flux_scan, solver=solver, refine_rounds=refine_rounds, k_max=k_max)
     growth, ep, mt, _ = _unpack_mainsub!(ret)
     arrgrowth[i] = growth
     arrTGLFEP[i] = ep
@@ -203,6 +204,7 @@ function _runTHD_core!(
     ql_flux_scan::Bool=false,
     solver::Symbol=:grid,
     refine_rounds::Int=1,
+    k_max::Int=_k_max_env(),
 )
     ni, Ti, dlnnidr, dlntidr = expro.ni, expro.Ti, expro.dlnnidr, expro.dlntidr
 
@@ -230,7 +232,7 @@ function _runTHD_core!(
         Threads.@threads for i in 1:n_ir
             _runTHD_radius!(i, arrTGLFEP, arrMTGLF, arrgrowth, printout, use_gpu;
                             stdout_lock=stdout_lock, inner=inner, team=team, ql_flux_scan=ql_flux_scan,
-                            solver=solver, refine_rounds=refine_rounds, arrbuffers=arrbuffers)
+                            solver=solver, refine_rounds=refine_rounds, k_max=k_max, arrbuffers=arrbuffers)
         end
         end
         if printout
@@ -249,7 +251,7 @@ function _runTHD_core!(
             println("worker $(myid()) on $(gethostname()): i=$i ir=$ir start")
             flush(stdout)
             ret = TJLFEP.mainsub(ep, mt, printout; use_gpu=use_gpu, ql_flux_scan=ql_flux_scan,
-                                 solver=solver, refine_rounds=refine_rounds)
+                                 solver=solver, refine_rounds=refine_rounds, k_max=k_max)
             println("worker $(myid()) on $(gethostname()): i=$i ir=$ir done")
             flush(stdout)
             return ret
@@ -495,7 +497,12 @@ EXPRO-derived setup, and runs the scan.
 - `team`                   - GPU ids for the MPS team layout
 - `ql_flux_scan::Bool`     - also extract QL fluxes at the marginal point
 - `solver::Symbol=:grid`   - critical-factor solver (`:grid`, `:ad`, `:truth`, ...)
-- `refine_rounds::Int=1`   - refinement passes
+- `refine_rounds::Int=1`   - AD (ky,width) refinement passes
+- `nmodes::Int`            - number of eigenmodes kept per solve (default from
+  `TJLFEP_NMODES`, else 4). Applies to all solvers; raise it to catch a higher
+  (e.g. 5th) AE mode.
+- `k_max::Int`             - number of `:grid` scale-factor bracketing rounds
+  (default from `TJLFEP_K_MAX`, else 4). `:grid` solver only (inert for the AD solvers).
 
 Returns `(width, kymark_out, SFmin, dpdr_crit_out, dndr_crit_out)`.
 
@@ -505,7 +512,8 @@ available when the `TJLFEPIMASExt` extension is loaded (e.g. under FUSE).
 function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::String;
                 printout::Bool=false, use_gpu::Bool=false, parallel::Symbol=:auto,
                 inner::Symbol=:threads, team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
-                ql_flux_scan::Bool=_ql_flux_scan_env(), solver::Symbol=:grid, refine_rounds::Int=1)
+                ql_flux_scan::Bool=_ql_flux_scan_env(), solver::Symbol=:grid, refine_rounds::Int=1,
+                nmodes::Int=_nmodes_env(), k_max::Int=_k_max_env())
 
     # Auto-detect device via TJLF.pick_device(:auto); shadows the use_gpu parameter.
     # Thread safety: Threads.@threads runs each iteration in a separate Julia task.
@@ -518,7 +526,7 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     prof = TJLFEP.readMTGLF(mtglffilepath)
     profile = prof[1]
     ir_exp = prof[2]
-    Options = TJLFEP.readTGLFEP(tglfepfilepath, ir_exp)
+    Options = TJLFEP.readTGLFEP(tglfepfilepath, ir_exp; nmodes=nmodes)
 
     gacode_dump = get(ENV, "GACODE_DUMP", nothing)
     ni, Ti, dlnnidr, dlntidr, cs, rmin_ex, gammaE, gammap, omegaGAM = TJLFEP.read_expro_for_alpha(
@@ -531,7 +539,7 @@ function runTHD(tglfepfilepath::String, mtglffilepath::String, exprofilepath::St
     _apply_runthd_expro_setup!(Options, profile, expro)
     return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel,
                          inner=inner, team=team, ql_flux_scan=ql_flux_scan, solver=solver,
-                         refine_rounds=refine_rounds)
+                         refine_rounds=refine_rounds, k_max=k_max)
 end
 
 """
@@ -561,12 +569,14 @@ function runTHD_from_gacode(
     ql_flux_scan::Bool=_ql_flux_scan_env(),
     solver::Symbol=:grid,
     refine_rounds::Int=1,
+    nmodes::Int=_nmodes_env(),
+    k_max::Int=_k_max_env(),
 )
-    Options, profile, expro = preprocess_gacode_inputs(gacode_file, tglfep_file)
+    Options, profile, expro = preprocess_gacode_inputs(gacode_file, tglfep_file; nmodes=nmodes)
     _apply_runthd_expro_setup!(Options, profile, expro)
     return _runTHD_core!(Options, profile, expro; printout=printout, use_gpu=use_gpu, parallel=parallel,
                          inner=inner, team=team, ql_flux_scan=ql_flux_scan, solver=solver,
-                         refine_rounds=refine_rounds)
+                         refine_rounds=refine_rounds, k_max=k_max)
 end  # runTHD_from_gacode
 
 """Apply `tjlfep_complete_output` padding on `SFmin`, then write α profiles (matches `_runTHD_core`)."""
@@ -703,9 +713,11 @@ function run_gacode_scan_task(
     ql_flux_scan::Bool=_ql_flux_scan_env(),
     solver::Symbol=:grid,
     refine_rounds::Int=1,
+    nmodes::Int=_nmodes_env(),
+    k_max::Int=_k_max_env(),
 )
     mkpath(out_dir)
-    Options, profile, expro = preprocess_gacode_inputs(gacode_file, tglfep_file)
+    Options, profile, expro = preprocess_gacode_inputs(gacode_file, tglfep_file; nmodes=nmodes)
     _apply_runthd_expro_setup!(Options, profile, expro)
     1 <= scan_index <= Options.SCAN_N ||
         error("scan_index=$scan_index out of range 1:$(Options.SCAN_N)")
@@ -721,7 +733,7 @@ function run_gacode_scan_task(
     logmsg("scan_index=$scan_index ir=$ir use_gpu=$use_gpu host=$(gethostname()) inner=$inner team=$(team === nothing ? "—" : length(team))")
 
     ret = TJLFEP.mainsub(ep, mt, printout; use_gpu=use_gpu, inner=inner, team=team, ql_flux_scan=ql_flux_scan,
-                         solver=solver, refine_rounds=refine_rounds)
+                         solver=solver, refine_rounds=refine_rounds, k_max=k_max)
     growth, ep_out, mt_out, fourth = _unpack_mainsub!(ret)
     sfmin = ep_out.FACTOR_IN
     width = coalesce(ep_out.WIDTH_IN, ep_out.WIDTH, NaN)

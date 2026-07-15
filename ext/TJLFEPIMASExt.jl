@@ -69,7 +69,8 @@ function TJLFEP.preprocess_imas_inputs(dd::IMAS.dd, rho::AbstractVector{Float64}
     prof = TJLFEP.profile{Float64}(extraEP["NR"], extraEP["NS"])
     profile = TJLFEP.populate_tjlfep_profile!(prof, extraEP, extraEP["NR"], extraEP["NS"])
 
-    Options = TJLFEP.Options{Float64}(OptionsDict["SCAN_N"], OptionsDict["WIDTH_IN_FLAG"], OptionsDict["nn"], extraEP["NR"], OptionsDict["jtscale_max"], OptionsDict["nmodes"])
+    nmodes = get(OptionsDict, "nmodes", TJLFEP._nmodes_env())  # keep/reject count; env TJLFEP_NMODES default 4
+    Options = TJLFEP.Options{Float64}(OptionsDict["SCAN_N"], OptionsDict["WIDTH_IN_FLAG"], OptionsDict["nn"], extraEP["NR"], OptionsDict["jtscale_max"], nmodes)
 
     if OptionsDict["KY_MODEL"] == 0
         Options.NTOROIDAL = 4
@@ -93,7 +94,7 @@ function TJLFEP.preprocess_imas_inputs(dd::IMAS.dd, rho::AbstractVector{Float64}
     end
 
     Options.IR_EXP = fill(0, Options.SCAN_N)
-    Options.NMODES = OptionsDict["nmodes"]
+    Options.NMODES = nmodes
 
     Options.IS_EP = ep_slot - 1
     ni = extraEP["DENS_$ep_slot"]
@@ -152,7 +153,7 @@ function _dd_radius_output(Options, profile, i::Int;
         use_gpu::Bool=false, inner::Symbol=:threads,
         team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
         ql_flux_scan::Bool=false, printout::Bool=false, solver::Symbol=:grid,
-        refine_rounds::Int=1, extend_mode::Union{Nothing,Symbol}=nothing,
+        refine_rounds::Int=1, k_max::Int=TJLFEP._k_max_env(), extend_mode::Union{Nothing,Symbol}=nothing,
         wide_kdesc::Union{Nothing,Int}=nothing, faithful_confirm::Union{Nothing,Bool}=nothing)
     arrTGLFEP_i = deepcopy(Options)
     arrMTGLF_i = deepcopy(profile)
@@ -168,7 +169,7 @@ function _dd_radius_output(Options, profile, i::Int;
     println("=============================================================")
 
     return TJLFEP.mainsub(arrTGLFEP_i, arrMTGLF_i, printout; use_gpu=use_gpu, inner=inner,
-        team=team, ql_flux_scan=ql_flux_scan, solver=solver, refine_rounds=refine_rounds,
+        team=team, ql_flux_scan=ql_flux_scan, solver=solver, refine_rounds=refine_rounds, k_max=k_max,
         extend_mode=extend_mode, wide_kdesc=wide_kdesc, faithful_confirm=faithful_confirm)
 end
 
@@ -186,7 +187,7 @@ cross-radius post-processing below is identical to the in-process path.
 function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::Dict{String, Any};
                 printout::Bool=false, saveFiles::Bool=false, dir::String="ddFiles", use_gpu::Bool=false,
                 ql_flux_scan::Bool=false, inner::Symbol=:threads, mps_team::Int=0, solver::Symbol=:grid,
-                refine_rounds::Int=1, extend_mode::Union{Nothing,Symbol}=nothing,
+                refine_rounds::Int=1, k_max::Int=TJLFEP._k_max_env(), extend_mode::Union{Nothing,Symbol}=nothing,
                 wide_kdesc::Union{Nothing,Int}=nothing, faithful_confirm::Union{Nothing,Bool}=nothing,
                 precomputed_dir::AbstractString=get(ENV, "TJLFEP_PRECOMPUTED_DIR", ""))
 
@@ -212,7 +213,7 @@ function TJLFEP.runTHD(dd::IMAS.dd, rho::AbstractVector{Float64}, OptionsDict::D
         # SPMD layout (run_tjlfep inner=:mps_team -> runTHD_dd_radius per task + this merge).
         pmap_outputs = pmap(i -> _dd_radius_output(Options, profile, i;
             use_gpu=use_gpu, inner=:threads, team=nothing, ql_flux_scan=ql_flux_scan,
-            printout=printout, solver=solver, refine_rounds=refine_rounds,
+            printout=printout, solver=solver, refine_rounds=refine_rounds, k_max=k_max,
             extend_mode=extend_mode, wide_kdesc=wide_kdesc, faithful_confirm=faithful_confirm), 1:n_ir)
     else
         @info "runTHD(dd): loading precomputed per-radius results (SPMD merge)" precomputed_dir n_ir
@@ -517,7 +518,7 @@ function TJLFEP.runTHD_dd_radius(dd::IMAS.dd, rho::AbstractVector{Float64},
         inner::Symbol=:mps_team,
         team::Union{Nothing,AbstractVector{<:Integer}}=nothing,
         ql_flux_scan::Bool=false, printout::Bool=false, solver::Symbol=:grid,
-        refine_rounds::Int=1, extend_mode::Union{Nothing,Symbol}=nothing,
+        refine_rounds::Int=1, k_max::Int=TJLFEP._k_max_env(), extend_mode::Union{Nothing,Symbol}=nothing,
         wide_kdesc::Union{Nothing,Int}=nothing, faithful_confirm::Union{Nothing,Bool}=nothing)
     Options, profile, _, _ = preprocess_imas_inputs(dd, rho, OptionsDict; verbose=printout)
     1 <= scan_index <= Options.SCAN_N ||
@@ -528,7 +529,7 @@ function TJLFEP.runTHD_dd_radius(dd::IMAS.dd, rho::AbstractVector{Float64},
 
     output = _dd_radius_output(Options, profile, scan_index;
         use_gpu=use_gpu, inner=inner, team=team, ql_flux_scan=ql_flux_scan, printout=printout,
-        solver=solver, refine_rounds=refine_rounds, extend_mode=extend_mode,
+        solver=solver, refine_rounds=refine_rounds, k_max=k_max, extend_mode=extend_mode,
         wide_kdesc=wide_kdesc, faithful_confirm=faithful_confirm)
 
     task_file = joinpath(out_dir, "task_$(scan_index).jls")

@@ -15,6 +15,12 @@ end
 """Opt-in env override for file/driver workflows (`TJLFEP_QL_FLUX_SCAN=1`). FUSE gates via `ql_flux_scan` kwarg."""
 _ql_flux_scan_env() = get(ENV, "TJLFEP_QL_FLUX_SCAN", "0") == "1"
 
+"""Env-var default for the number of eigenmodes kept (`TJLFEP_NMODES`, default 4). Overridden by an explicit `nmodes` kwarg."""
+_nmodes_env() = parse(Int, get(ENV, "TJLFEP_NMODES", "4"))
+
+"""Env-var default for the grid scale-factor iteration count (`TJLFEP_K_MAX`, default 4). Overridden by an explicit `k_max` kwarg; affects the `:grid` solver only."""
+_k_max_env() = parse(Int, get(ENV, "TJLFEP_K_MAX", "4"))
+
 function _gyrobohm_D(cs_cm::T, bunit::T, a_m::T) where {T<:Real}
     mp = T(1.6726219e-27)
     e = T(1.602176634e-19)

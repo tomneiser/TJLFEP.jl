@@ -557,12 +557,13 @@ Returns `(Options, profile, expro_state)` where `expro_state` holds EP vectors f
 """
 function preprocess_gacode_inputs(
     gacode_file::AbstractString,
-    tglfep_file::AbstractString,
+    tglfep_file::AbstractString;
+    nmodes::Int = _nmodes_env(),
 )
     @assert isfile(gacode_file) "missing gacode file: $gacode_file"
     @assert isfile(tglfep_file) "missing tglfep file: $tglfep_file"
 
-    opts = readTGLFEP(tglfep_file, Int[])
+    opts = readTGLFEP(tglfep_file, Int[]; nmodes=nmodes)
     prof = profile_from_gacode(gacode_file;
         is_ep=coalesce(opts.IS_EP, 2),
         tglfep_nion=opts.N_ION,
@@ -590,6 +591,7 @@ function setup_gacode_file_inputs(
     gacode_file::AbstractString,
     out_dir::AbstractString;
     tglfep_file::Union{Nothing,String}=nothing,
+    nmodes::Int = _nmodes_env(),
     kwargs...,
 )
     tglfep_file = something(tglfep_file, joinpath(dirname(gacode_file), "input.TGLFEP"))
@@ -597,7 +599,7 @@ function setup_gacode_file_inputs(
     @assert isfile(tglfep_file) "missing $tglfep_file"
     mkpath(out_dir)
 
-    opts = readTGLFEP(tglfep_file, Int[])
+    opts = readTGLFEP(tglfep_file, Int[]; nmodes=nmodes)
     prof = profile_from_gacode(gacode_file;
         is_ep=coalesce(opts.IS_EP, 2),
         tglfep_nion=opts.N_ION,
@@ -620,7 +622,7 @@ end
 
 """Write `input.MTGLF`, `input.EXPRO` from Fortran `dump.profile` + `input.TGLFEP`."""
 function setup_fortran_file_inputs(case_dir::AbstractString, out_dir::AbstractString;
-        tglfep_file::Union{Nothing,String}=nothing)
+        tglfep_file::Union{Nothing,String}=nothing, nmodes::Int = _nmodes_env())
     profile_file = joinpath(case_dir, "dump.profile")
     tglfep_file = something(tglfep_file, joinpath(case_dir, "input.TGLFEP"))
     @assert isfile(profile_file) "missing $profile_file"
@@ -628,7 +630,7 @@ function setup_fortran_file_inputs(case_dir::AbstractString, out_dir::AbstractSt
     mkpath(out_dir)
 
     prof = read_input_profile(profile_file)
-    opts = readTGLFEP(tglfep_file, Int[])
+    opts = readTGLFEP(tglfep_file, Int[]; nmodes=nmodes)
     prof.IRS = opts.IRS
     prof.N_ION = opts.N_ION
     ir_exp = ir_exp_from_scan(prof.NR, prof.IRS, opts.SCAN_N)
@@ -653,7 +655,7 @@ Inputs: filename
 
 Outputs: Options struct
 """
-function readTGLFEP(filename::String, ir_exp::Vector{Int64})
+function readTGLFEP(filename::String, ir_exp::Vector{Int64}; nmodes::Int = _nmodes_env())
     open(filename)
     lines = readlines(filename)
 
@@ -716,7 +718,8 @@ function readTGLFEP(filename::String, ir_exp::Vector{Int64})
     =#
     # See TGLFEP_interface.f90:
     jtscale_max = 1
-    nmodes = 4
+    # nmodes (number of eigenmodes kept) is a user input: `nmodes` kwarg / TJLFEP_NMODES env
+    # (default 4). Used to size the keep/reject vectors in the Options constructor below.
 
     # NR is derived from the profile! This means that in order to read TJLFEP in Julia, we have to call the previous inputMTGLF
     # function call's NR. It will now be a required input for this function. 
