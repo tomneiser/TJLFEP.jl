@@ -1488,8 +1488,12 @@ function readEXPRO(filename::String, is_EP::Int64)
         @. dlnnidr4 = max(dlnnidr4, 1.0)
         return ni4, Ti4, dlnnidr4, dlntidr4, cs, rmin_ex, gammaE, gammap, omegaGAM
     else
-        println("is_EP not within range. Check input.TGLFEP input")
-        return 1
+        # Loud failure: the old silent `return 1` sentinel surfaced two frames up as a
+        # cryptic `BoundsError: attempt to access Int64 at index [2]` at the caller's
+        # tuple destructuring (hit via IS_EP=4 -> expro species 5 before the
+        # read_expro_for_alpha clamp existed).
+        error("readEXPRO: species selector is_EP=$is_EP not in 1:4 for $filename; " *
+              "for GACODE energetic-ion indices use read_expro_for_alpha instead")
     end
 
 end 

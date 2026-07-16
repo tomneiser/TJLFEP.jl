@@ -234,16 +234,17 @@ basis dynamically, so the Julia solvers run any `N_BASIS` unmodified.
 | 8  | 25.4   | 179.5   | 184.3 | 0.14× |
 | 16 | 112.2  | 739.0   | 197.0 | 0.57× |
 | 32 | 888.8  | 5243.7  | 407.5 | **2.18×** |
-| 40 | 1741.3 | —       | 518.9 | 3.36× |
-| 48 | 2982.5 | —       | 743.9 | **4.01×** |
+| 40 | 1741.3 | 11082.4 | 518.9 | 3.36× |
+| 48 | 2982.5 | 20489.1 | 743.9 | **4.01×** |
 
 (Wallclock here compares a **5-node** GPU run to a **10-node** `-n 1280` Fortran run
 — *half* the nodes — so it understates the GPU, yet it still wins 2.18× at
 `N_BASIS=32` and 4.01× at 48; the fair node-count-normalized margins are ~4.4× and
-~8.0×. Julia `:grid` on CPU, on the same 10 nodes as Fortran, is ~6× slower, so the
-GPU is doing the heavy lifting; the CPU rows stop at `N_BASIS=32` — the point is
-made, and re-timing them above the Fortran cap adds nothing to the comparison.
-The 40/48 Fortran times use the `nb=48` rebuild described above.)
+~8.0×. Julia `:grid` on CPU, on the same 10 nodes as Fortran, is a steady ~6–7×
+*slower* at every `N_BASIS`, so the GPU is doing the heavy lifting. The 40/48
+Fortran times use the `nb=48` rebuild described above; the 40/48 Julia CPU rows ran
+on a v2.0.13 CPU sysimage — the `N_BASIS≤32` rows used an earlier bake — so there is
+a minor code-version seam in the CPU column only.)
 
 **`:ad :only` (bare `w≥1` AD, no faithful confirm)**: Julia GPU (5 A100 nodes,
 **in-process threads**), vs the grid GPU path (both 5-node, so this wallclock ratio is

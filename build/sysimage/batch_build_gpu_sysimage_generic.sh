@@ -21,8 +21,16 @@ set -euo pipefail
 
 module load cudatoolkit/12.9
 module load julia/1.11.7
-export JULIA_DEPOT_PATH="${PSCRATCH}/.julia"
-mkdir -p "${JULIA_DEPOT_PATH}/compiled"
+# TJLFEP_BAKE_DEPOT: optional isolated primary depot for the bake (stacked in front of
+# the shared depot, which stays read-only for packages/artifacts). Avoids cross-flavor
+# precompile-cache collisions (pkgimages=no emit vs pkgimages=true shared caches, or two
+# projects resolving different versions of the same package into one compiled/ dir).
+if [[ -n "${TJLFEP_BAKE_DEPOT:-}" ]]; then
+    export JULIA_DEPOT_PATH="${TJLFEP_BAKE_DEPOT}:${PSCRATCH}/.julia"
+else
+    export JULIA_DEPOT_PATH="${PSCRATCH}/.julia"
+fi
+mkdir -p "${JULIA_DEPOT_PATH%%:*}/compiled"
 
 # GENERIC image: IMAS/GACODE/TurbulentTransport are weak deps of TJLFEP and load the
 # TJLFEPIMASExt extension (the dd/FUSE actor path) automatically when present. The build

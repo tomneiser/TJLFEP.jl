@@ -36,8 +36,9 @@ const _DIIID_DIR = joinpath(_IO_ROOT, "examples", "DIIID_202017C42_500ms_v3.1")
         end
         # EP dln n/dr is floored at 1.0 (Fortran TGLFEP_read_EXPRO).
         @test all(dlnnidr .>= 1.0)
-        # Out-of-range is_EP returns the sentinel 1.
-        @test readEXPRO(f, 9) == 1
+        # Out-of-range is_EP fails loudly (was a silent `return 1` sentinel that
+        # surfaced as a BoundsError at the caller's tuple destructuring).
+        @test_throws ErrorException readEXPRO(f, 9)
     end
 
     @testset "readTGLFEP (DIII-D scan)" begin
