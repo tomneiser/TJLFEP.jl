@@ -15,8 +15,10 @@ plus Julia-native **autodiff (`ad`) solvers**. On the reactor-relevant
 `UCP_complete` case these make TJLFEP substantially **faster** than a *fully
 MPI-parallel* Fortran CPU reference (`-n 1280`) — ~4–8× in node-hours at
 `N_BASIS=32` — and, through the `ad` solvers, **more accurate**: they resolve the
-narrow-width (`w<1`) EP-driven Alfvén modes that Fortran's fixed `w≥1` factor grid
-cannot.
+narrow-width (`w<1`) EP-driven Alfvén modes that Fortran misses at its default
+`WIDTH_MIN=1` width floor. (Lowering `WIDTH_MIN` lets Fortran *span* those widths,
+but its linearly-spaced width grid and quantized factor grid still miss modes the
+Julia solvers land on via log-spaced width seeding and exact-AD root-finding.)
 
 **Which solver?** Choose along two axes. Do you want to *match* Fortran or
 *improve* on it, and do you want the faithful value or a faster approximation?
