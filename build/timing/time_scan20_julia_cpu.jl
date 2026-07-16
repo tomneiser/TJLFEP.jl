@@ -60,7 +60,9 @@ if haskey(ENV, "SLURM_JOB_ID") || haskey(ENV, "SLURM_JOBID")
     ntasks = parse(Int, get(ENV, "SLURM_NTASKS", string(SCAN_N)))
     @assert ntasks == SCAN_N
     logmsg("SlurmClusterManager: ntasks=$ntasks threads=$THREADS_PER_WORKER")
-    addprocs(SlurmManager(); exeflags=exeflags, env=worker_env)
+    # launch_timeout: default 60s is too tight when the depot precompile cache is cold
+    # (a Project/Manifest bump since the sysimage bake triggers a fresh precompile pass).
+    addprocs(SlurmManager(launch_timeout=1200.0); exeflags=exeflags, env=worker_env)
 else
     addprocs(SCAN_N; exeflags=exeflags, env=worker_env)
 end

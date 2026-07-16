@@ -10,7 +10,7 @@ Pkg.activate(normpath(@__DIR__, "..", ".."))
 
 const BUILD = normpath(@__DIR__, "..")
 const OUT_CSV = joinpath(BUILD, "timing_runs", "ucp_scan20_timing.csv")
-const BASIS = [6, 8, 16, 32]
+const BASIS = [6, 8, 16, 32, 40, 48]
 
 # label => default node count (used only if a log lacks a nodes= token)
 const SERIES = [

@@ -30,7 +30,8 @@ Multipliers are **node-hours vs the fully MPI-parallel Fortran CPU reference**
 (`-n 1280`, 10 CPU nodes) at `N_BASIS=32` on the reactor-relevant `UCP_complete`
 case (the fair, node-count-normalized cost; see the
 [benchmark](#benchmark-cost-vs-n_basis-ucp-scan_n20) below). The GPU advantage
-grows with eigenmatrix size, so it is largest for reactor cases at production
+grows with eigenmatrix size (`:grid` reaches **~8×** at `N_BASIS=48`), so it is
+largest for reactor cases at production
 `N_BASIS`; on the smaller DIII-D case the margins are thinner (see
 [`docs/README_DIII-D_example.md`](docs/README_DIII-D_example.md)). `:ad :locate` is
 the production default (the `ActorTJLFEP` default) and reports the faithful
@@ -185,7 +186,7 @@ outer radii (IR ≳ 40; ~10× below grid at IR≈117, up to ~16× at IR≈180). 
 stays within ~1–2× of `:ad :locate` and never below it. Colors and legend order match
 the node-hours plot below for quick cross-reference.
 
-![UCP node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ucp_scan20_timing_nodehours.png?v=1)
+![UCP node-hours vs N_BASIS](https://raw.githubusercontent.com/ProjectTorreyPines/TJLFEP.jl/master/docs/plots/ucp_scan20_timing_nodehours.png?v=2)
 
 Absolute node-hours at `N_BASIS=32`, each solver on its fastest layout (Fortran
 `-n 1280` on 10 CPU nodes; `grid`/`:ad :only` on 5 MPS GPU nodes; `:ad
@@ -196,8 +197,20 @@ queue): Fortran ≈2.47; `:ad :only` ≈0.31, `:ad :wide` ≈0.46, `grid` ≈0.5
 Fortran) is ~6× *slower* than Fortran: the GPU eigensolver is what makes the Julia
 port competitive. The GPU advantage *grows* with `N_BASIS` (Fortran is cheaper at
 `N_BASIS ≤ 8`, break-even is near 16, and the GPU pulls ~4–8× ahead by 32) as the
-eigenmatrix grows. `:ad :wide` is ~3× cheaper than `:locate` at `N_BASIS=32`. The
-per-backend tables below give the raw wallclock seconds.
+eigenmatrix grows: at `N_BASIS=48` (Fortran ≈8.29 node-hours) the margins are
+`:grid` **~8.0×** (≈1.03), `:ad :only` **~8.7×** (≈0.95), `:ad :wide` **~5.4×**
+(≈1.53), `:ad :locate` **~2.1×** (≈3.97). `:ad :wide` is ~3× cheaper than
+`:locate` at `N_BASIS=32`. The per-backend tables below give the raw wallclock
+seconds.
+
+**Fortran cannot run `N_BASIS>32` without recompiling.** Stock TGLF hard-caps the
+Hermite basis at a compile-time `PARAMETER (nb=32)`; requesting more does **not**
+error — a `put_switches` sanity check silently resets the run to the *default*
+`nbasis=4`, returning garbage in seconds (the failure is only visible as an
+impossibly fast run). The `N_BASIS=40/48` Fortran columns here required rebuilding
+the TGLF library with `nb=48`, `nxm=95` (a full `make clean` rebuild — the gacode
+Makefile does not track Fortran module dependencies). TJLF/TJLFEP allocate the
+basis dynamically, so the Julia solvers run any `N_BASIS` unmodified.
 
 **Best-throughput layout depends on the solver** (for these `SCAN_N=20` runs):
 - **`:grid` and `:ad :only` → 5 GPU nodes.** Per-radius cost is uniform, so
@@ -207,22 +220,30 @@ per-backend tables below give the raw wallclock seconds.
   much longer (the narrow-width `w<1` locate is triggered there), so a fixed
   multi-node split would leave nodes idle waiting on the straggler edge radii.
   Running a single node with 4 workers draining a shared 20-radius claim queue
-  keeps every GPU busy and gives the lowest node-hours.
+  keeps every GPU busy and gives the lowest node-hours. At `N_BASIS=48` the
+  default 32-worker team OOMs the node's 256 GB host RAM, so the nb48
+  `:locate`/`:wide` rows run a halved team (`MPS_TEAM=4`, 16 workers) on 80 GB
+  A100 nodes (`-C gpu&hbm80g`) — the fastest layout that fits.
 
 **Grid solver**: Fortran CPU (10 nodes, `-n 1280` = 128 ranks/node) vs Julia CPU
 (10 nodes, SlurmClusterManager) vs Julia GPU (5 A100 nodes, **MPS team**):
 
 | N_BASIS | Fortran CPU (s) | Julia CPU (s) | Julia GPU MPS (s) | GPU speedup vs Fortran (wallclock) |
 |--------:|----------------:|--------------:|------------------:|-----------------------------------:|
-| 6  | 20.3  | 128.2   | 178.4 | 0.11× |
-| 8  | 25.4  | 179.5   | 184.3 | 0.14× |
-| 16 | 112.2 | 739.0   | 197.0 | 0.57× |
-| 32 | 888.8 | 5243.7  | 407.5 | **2.18×** |
+| 6  | 20.3   | 128.2   | 178.4 | 0.11× |
+| 8  | 25.4   | 179.5   | 184.3 | 0.14× |
+| 16 | 112.2  | 739.0   | 197.0 | 0.57× |
+| 32 | 888.8  | 5243.7  | 407.5 | **2.18×** |
+| 40 | 1741.3 | —       | 518.9 | 3.36× |
+| 48 | 2982.5 | —       | 743.9 | **4.01×** |
 
 (Wallclock here compares a **5-node** GPU run to a **10-node** `-n 1280` Fortran run
 — *half* the nodes — so it understates the GPU, yet it still wins 2.18× at
-`N_BASIS=32`; the fair node-count-normalized margin is ~4.4×. Julia `:grid` on CPU,
-on the same 10 nodes as Fortran, is ~6× slower, so the GPU is doing the heavy lifting.)
+`N_BASIS=32` and 4.01× at 48; the fair node-count-normalized margins are ~4.4× and
+~8.0×. Julia `:grid` on CPU, on the same 10 nodes as Fortran, is ~6× slower, so the
+GPU is doing the heavy lifting; the CPU rows stop at `N_BASIS=32` — the point is
+made, and re-timing them above the Fortran cap adds nothing to the comparison.
+The 40/48 Fortran times use the `nb=48` rebuild described above.)
 
 **`:ad :only` (bare `w≥1` AD, no faithful confirm)**: Julia GPU (5 A100 nodes,
 **in-process threads**), vs the grid GPU path (both 5-node, so this wallclock ratio is
@@ -234,8 +255,12 @@ apples-to-apples):
 | 8  | 184.3 | 90.3  | 2.0× |
 | 16 | 197.0 | 119.8 | 1.6× |
 | 32 | 407.5 | 220.9 | **1.8×** |
+| 40 | 518.9 | 320.8 | 1.6× |
+| 48 | 743.9 | 681.7 | 1.1× |
 
-`:ad :only` is ~1.6–2.0× faster than the grid MPS path in wallclock: it replaces the
+`:ad :only` is ~1.6–2.0× faster than the grid MPS path in wallclock (narrowing to
+~1.1× at `N_BASIS=48`, where the few-but-huge AD eigensolves stop amortizing their
+serial descent): it replaces the
 thousands of grid eigensolves/radius with a handful of AD Newton steps. Note this
 is the *same* `ad` solver run two ways: on an **MPS team** instead of threads it is
 *slower*, because the per-radius AD regions are small and the descent is sequential,

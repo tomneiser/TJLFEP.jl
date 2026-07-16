@@ -60,6 +60,20 @@ cd "${TJLFEP_ROOT}/build"
 echo "=== UCP Julia CPU timing: SCAN_N=${SCAN_N} N_BASIS=${NB} solver=${SOLVER} nodes=${SLURM_NNODES:-?} ntasks=${SLURM_NTASKS:-?} (SlurmClusterManager) ==="
 echo "FILE_DIR=${FILE_DIR}"
 
+# Pre-flight: prove an in-allocation srun step can start on all tasks before the julia
+# head process attempts its worker launch (SlurmClusterManager srun has failed silently
+# with no stderr on some runs; this localizes slurm-step vs julia-worker failures).
+echo "preflight: srun -n ${SLURM_NTASKS:-20} hostname"
+if timeout 120 srun -n "${SLURM_NTASKS:-20}" hostname | sort | uniq -c | sort -rn | head -3; then
+    echo "preflight srun OK"
+else
+    echo "preflight srun FAILED/HUNG (rc=$?)"
+fi
+echo "preflight: worker julia startup (1 task, sysimage load + --project)"
+timeout 300 srun -n 1 julia --startup-file=no --project="${TJLFEP_ROOT}" \
+    "${MASTER_SYSIMG_ARGS[@]}" -e 'println("worker-preflight OK: ", VERSION)' \
+    || echo "preflight worker julia FAILED (rc=$?)"
+
 stdbuf -oL -eL julia --startup-file=no --project="${TJLFEP_ROOT}" \
     "${MASTER_SYSIMG_ARGS[@]}" \
     -t 8 timing/time_scan20_julia_cpu.jl
